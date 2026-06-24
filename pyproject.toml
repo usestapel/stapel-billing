@@ -26,7 +26,7 @@ all = ["stapel-billing[stripe]"]
 
 [tool.setuptools]
 package-dir = {"stapel_billing" = "."}
-packages = ["stapel_billing", "stapel_billing.migrations"]
+packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.tests"]
 
 [tool.setuptools.package-data]
 stapel_billing = ["migrations/*.py", "migrations/**/*.py"]
