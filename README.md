@@ -30,10 +30,6 @@ INSTALLED_APPS = [
 | `user.deleted` | [schema](schemas/consumes/user.deleted.json) |
 | `user.deletion_initiated` | [schema](schemas/consumes/user.deletion_initiated.json) |
 
-## Contributing
-
-The source for this package lives inside the [client-project-backend](https://github.com/UCSoftworks) monorepo as a git submodule.
-
 ## License
 
 MIT — see [LICENSE](LICENSE)

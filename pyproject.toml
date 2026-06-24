@@ -30,3 +30,7 @@ packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.tests
 
 [tool.setuptools.package-data]
 stapel_billing = ["migrations/*.py", "migrations/**/*.py"]
+
+[tool.pytest.ini_options]
+django_find_project = false
+addopts = "--tb=short -q"
