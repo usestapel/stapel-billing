@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "payment.completed",
+  "description": "A payment transaction completed successfully.",
+  "type": "object",
+  "required": ["user_id", "amount_cents", "currency", "transaction_id", "created_at"],
+  "properties": {
+    "user_id":        { "type": "integer" },
+    "amount_cents":   { "type": "integer" },
+    "currency":       { "type": "string" },
+    "transaction_id": { "type": "integer" },
+    "created_at":     { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

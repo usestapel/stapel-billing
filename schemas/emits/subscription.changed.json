@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "subscription.changed",
+  "description": "User subscription plan or status changed.",
+  "type": "object",
+  "required": ["user_id", "plan", "status"],
+  "properties": {
+    "user_id":             { "type": "integer" },
+    "plan":                { "type": "string" },
+    "status":              { "type": "string" },
+    "current_period_end":  { "type": "string", "format": "date-time", "nullable": true }
+  },
+  "additionalProperties": false
+}

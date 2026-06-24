@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "stapel-billing"
+version = "0.1.0"
+description = "Billing and payments Django app for the Stapel framework"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+keywords = ["django", "stapel", "billing", "payments", "stripe"]
+classifiers = [
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "stapel-core>=0.1.0",
+]
+
+[project.optional-dependencies]
+stripe = ["stripe>=8.0,<12"]
+all = ["stapel-billing[stripe]"]
+
+[tool.setuptools]
+package-dir = {"stapel_billing" = "."}
+packages = ["stapel_billing", "stapel_billing.migrations"]
+
+[tool.setuptools.package-data]
+stapel_billing = ["migrations/*.py", "migrations/**/*.py"]
