@@ -7,7 +7,6 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from stapel_core.django.errors import IronResponse, IronErrorResponse
@@ -33,7 +32,6 @@ from .errors import (
     ERR_402_INSUFFICIENT_CREDITS,
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
-    ERR_409_DUPLICATE_WEBHOOK,
 )
 from .models import StripeWebhookEvent, Subscription, Wallet
 from .serializers import (
@@ -45,7 +43,6 @@ from .serializers import (
     CustomerPortalResponseSerializer,
     SubscriptionResponseSerializer,
     TransactionListResponseSerializer,
-    TransactionResponseSerializer,
     WalletResponseSerializer,
     WalletUpdateRequestSerializer,
 )

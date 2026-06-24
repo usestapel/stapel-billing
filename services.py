@@ -7,11 +7,9 @@ import os
 from typing import Optional
 
 from django.db import transaction
-from django.db.models import F
 
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from .models import (
-    Plan,
     Subscription,
     SubscriptionStatus,
     Transaction,
