@@ -1,6 +1,6 @@
 """Custom error keys for the billing service."""
 
-from stapel_core.django.errors import ErrorKeysView, register_service_errors
+from stapel_core.django.api.errors import ErrorKeysView, register_service_errors
 
 ERR_404_WALLET_NOT_FOUND = "error.404.wallet_not_found"
 ERR_404_SUBSCRIPTION_NOT_FOUND = "error.404.subscription_not_found"
