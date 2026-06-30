@@ -1,6 +1,6 @@
 """Serializers for the billing API."""
 
-from stapel_core.django.api.errors import IronValidationError
+from stapel_core.django.api.errors import StapelValidationError
 from stapel_core.django.api.serializers import IronDataclassSerializer
 
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
@@ -38,7 +38,7 @@ class WalletUpdateRequestSerializer(IronDataclassSerializer):
 
     def validate_auto_recharge_package(self, value):
         if value is not None and value not in CREDIT_PACKAGES_BY_SLUG:
-            raise IronValidationError(ERR_400_INVALID_PACKAGE)
+            raise StapelValidationError(ERR_400_INVALID_PACKAGE)
         return value
 
 
@@ -75,11 +75,11 @@ class CheckoutRequestSerializer(IronDataclassSerializer):
         package = getattr(data, "package", None)
         plan = getattr(data, "plan", None)
         if (package and plan) or (not package and not plan):
-            raise IronValidationError(ERR_400_INVALID_PACKAGE)
+            raise StapelValidationError(ERR_400_INVALID_PACKAGE)
         if package and package not in CREDIT_PACKAGES_BY_SLUG:
-            raise IronValidationError(ERR_400_INVALID_PACKAGE)
+            raise StapelValidationError(ERR_400_INVALID_PACKAGE)
         if plan and plan not in PLANS_BY_SLUG:
-            raise IronValidationError(ERR_400_INVALID_PLAN)
+            raise StapelValidationError(ERR_400_INVALID_PLAN)
         return data
 
 
@@ -104,12 +104,12 @@ class CreditDebitRequestSerializer(IronDataclassSerializer):
 
     def validate_credits(self, value):
         if value <= 0:
-            raise IronValidationError(ERR_400_AMOUNT_INVALID)
+            raise StapelValidationError(ERR_400_AMOUNT_INVALID)
         return value
 
     def validate_type(self, value):
         if value not in TransactionType.values:
-            raise IronValidationError(ERR_400_AMOUNT_INVALID)
+            raise StapelValidationError(ERR_400_AMOUNT_INVALID)
         return value
 
 

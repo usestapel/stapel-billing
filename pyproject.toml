@@ -33,4 +33,4 @@ stapel_billing = ["migrations/*.py", "migrations/**/*.py"]
 
 [tool.pytest.ini_options]
 django_find_project = false
-addopts = "--tb=short -q"
+addopts = "--tb=short -q --import-mode=importlib"
