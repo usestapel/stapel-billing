@@ -1,5 +1,8 @@
 # stapel-billing
 
+[![CI](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/usestapel/stapel-billing/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-billing)
+
 > Billing — Stripe subscriptions, credit wallets, transaction history
 
 Part of the [Stapel framework](https://github.com/usestapel) — composable Django apps for building production-grade platforms.
