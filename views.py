@@ -8,8 +8,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
-
-from stapel_core.django.api.errors import IronResponse, IronErrorResponse
+from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
 from stapel_core.django.api.permissions import IsServiceRequest, IsStaffUser
 
 from . import services
@@ -84,8 +83,12 @@ def _sub_to_dto(s: Subscription) -> SubscriptionResponse:
         plan=s.plan,
         status=s.status,
         stripe_subscription_id=s.stripe_subscription_id,
-        current_period_start=s.current_period_start.isoformat() if s.current_period_start else None,
-        current_period_end=s.current_period_end.isoformat() if s.current_period_end else None,
+        current_period_start=s.current_period_start.isoformat()
+        if s.current_period_start
+        else None,
+        current_period_end=s.current_period_end.isoformat()
+        if s.current_period_end
+        else None,
         cancelled_at=s.cancelled_at.isoformat() if s.cancelled_at else None,
     )
 
@@ -100,7 +103,7 @@ class WalletView(APIView):
     @extend_schema(responses={200: WalletResponseSerializer})
     def get(self, request):
         wallet = services.get_or_create_wallet(request.user)
-        return IronResponse(WalletResponseSerializer(_wallet_to_dto(wallet)))
+        return StapelResponse(WalletResponseSerializer(_wallet_to_dto(wallet)))
 
     @extend_schema(
         request=WalletUpdateRequestSerializer,
@@ -120,7 +123,7 @@ class WalletView(APIView):
         if getattr(data, "low_balance_alert", None) is not None:
             wallet.low_balance_alert = data.low_balance_alert
         wallet.save()
-        return IronResponse(WalletResponseSerializer(_wallet_to_dto(wallet)))
+        return StapelResponse(WalletResponseSerializer(_wallet_to_dto(wallet)))
 
 
 @extend_schema(tags=["Wallet"])
@@ -131,7 +134,7 @@ class TransactionListView(APIView):
     def get(self, request):
         wallet = services.get_or_create_wallet(request.user)
         qs = wallet.transactions.order_by("-created_at")[:100]
-        return IronResponse(
+        return StapelResponse(
             TransactionListResponseSerializer(
                 TransactionListResponse(
                     transactions=[_txn_to_dto(t) for t in qs],
@@ -172,10 +175,8 @@ class CatalogView(APIView):
             )
             for p in PLANS
         ]
-        return IronResponse(
-            CatalogResponseSerializer(
-                CatalogResponse(packages=packages, plans=plans)
-            )
+        return StapelResponse(
+            CatalogResponseSerializer(CatalogResponse(packages=packages, plans=plans))
         )
 
 
@@ -201,7 +202,7 @@ class CheckoutView(APIView):
             success_url=data.success_url or "https://example.com/success",
             cancel_url=data.cancel_url or "https://example.com/cancel",
         )
-        return IronResponse(
+        return StapelResponse(
             CheckoutResponseSerializer(
                 CheckoutResponse(checkout_url=url, session_id=session_id)
             )
@@ -221,10 +222,8 @@ class CustomerPortalView(APIView):
             return_url=request.query_params.get("return_url")
             or "https://example.com/billing",
         )
-        return IronResponse(
-            CustomerPortalResponseSerializer(
-                CustomerPortalResponse(portal_url=url)
-            )
+        return StapelResponse(
+            CustomerPortalResponseSerializer(CustomerPortalResponse(portal_url=url))
         )
 
 
@@ -240,7 +239,7 @@ class SubscriptionView(APIView):
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
             sub = Subscription.objects.create(user=request.user)
-        return IronResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
+        return StapelResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
 
 
 @extend_schema(tags=["Subscription"])
@@ -251,7 +250,7 @@ class SubscriptionCancelView(APIView):
     def post(self, request):
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
-            return IronErrorResponse(404, ERR_404_SUBSCRIPTION_NOT_FOUND)
+            return StapelErrorResponse(404, ERR_404_SUBSCRIPTION_NOT_FOUND)
         if sub.stripe_subscription_id:
             stripe = services._stripe_module()
             if stripe and services.STRIPE_API_KEY:
@@ -263,7 +262,7 @@ class SubscriptionCancelView(APIView):
                     logger.exception("Stripe subscription cancel failed")
         sub.cancelled_at = timezone.now()
         sub.save(update_fields=["cancelled_at", "updated_at"])
-        return IronResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
+        return StapelResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
 
 
 # ─── Stripe webhook ─────────────────────────────────────────
@@ -278,15 +277,15 @@ class StripeWebhookView(APIView):
         try:
             event = services.verify_stripe_signature(request.body, sig)
         except ValueError:
-            return IronErrorResponse(400, ERR_400_INVALID_STRIPE_SIGNATURE)
+            return StapelErrorResponse(400, ERR_400_INVALID_STRIPE_SIGNATURE)
         except Exception:
             logger.exception("Stripe webhook signature verification crashed")
-            return IronErrorResponse(400, ERR_400_INVALID_WEBHOOK_PAYLOAD)
+            return StapelErrorResponse(400, ERR_400_INVALID_WEBHOOK_PAYLOAD)
 
         event_id = event.get("id")
         event_type = event.get("type")
         if not event_id or not event_type:
-            return IronErrorResponse(400, ERR_400_INVALID_WEBHOOK_PAYLOAD)
+            return StapelErrorResponse(400, ERR_400_INVALID_WEBHOOK_PAYLOAD)
 
         # Idempotency: skip already-processed events.
         log, created = StripeWebhookEvent.objects.get_or_create(
@@ -294,7 +293,7 @@ class StripeWebhookView(APIView):
             defaults={"event_type": event_type, "payload": event},
         )
         if not created:
-            return IronResponse({"status": "duplicate"}, status=status.HTTP_200_OK)
+            return StapelResponse({"status": "duplicate"}, status=status.HTTP_200_OK)
 
         try:
             with transaction.atomic():
@@ -315,8 +314,10 @@ class StripeWebhookView(APIView):
             logger.exception("Stripe webhook handler failed")
             log.error = str(exc)
             log.save(update_fields=["error"])
-            return IronResponse({"status": "error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        return IronResponse({"status": "ok"})
+            return StapelResponse(
+                {"status": "error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        return StapelResponse({"status": "ok"})
 
 
 # ─── Internal service-to-service ────────────────────────────
@@ -340,7 +341,7 @@ class InternalDebitView(APIView):
 
         user = User.objects.filter(id=data.user_id).first()
         if not user:
-            return IronErrorResponse(404, ERR_404_WALLET_NOT_FOUND)
+            return StapelErrorResponse(404, ERR_404_WALLET_NOT_FOUND)
         try:
             txn = services.debit(
                 user=user,
@@ -350,8 +351,8 @@ class InternalDebitView(APIView):
                 metadata=data.metadata or {},
             )
         except services.InsufficientCreditsError:
-            return IronErrorResponse(402, ERR_402_INSUFFICIENT_CREDITS)
-        return IronResponse(
+            return StapelErrorResponse(402, ERR_402_INSUFFICIENT_CREDITS)
+        return StapelResponse(
             CreditOperationResponseSerializer(
                 CreditOperationResponse(
                     transaction_id=txn.id, balance_after=txn.balance_after

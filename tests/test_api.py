@@ -2,7 +2,7 @@
 
 import pytest
 
-from billing import services
+from stapel_billing import services
 from stapel_billing.models import Transaction, TransactionType, Wallet
 
 
