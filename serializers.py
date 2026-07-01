@@ -1,7 +1,7 @@
 """Serializers for the billing API."""
 
 from stapel_core.django.api.errors import StapelValidationError
-from stapel_core.django.api.serializers import IronDataclassSerializer
+from stapel_core.django.api.serializers import StapelDataclassSerializer
 
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from .dto import (
@@ -27,12 +27,12 @@ from .errors import (
 from .models import TransactionType
 
 
-class WalletResponseSerializer(IronDataclassSerializer):
+class WalletResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = WalletResponse
 
 
-class WalletUpdateRequestSerializer(IronDataclassSerializer):
+class WalletUpdateRequestSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = WalletUpdateRequest
 
@@ -42,32 +42,32 @@ class WalletUpdateRequestSerializer(IronDataclassSerializer):
         return value
 
 
-class TransactionResponseSerializer(IronDataclassSerializer):
+class TransactionResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = TransactionResponse
 
 
-class TransactionListResponseSerializer(IronDataclassSerializer):
+class TransactionListResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = TransactionListResponse
 
 
-class PackageResponseSerializer(IronDataclassSerializer):
+class PackageResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = PackageResponse
 
 
-class PlanResponseSerializer(IronDataclassSerializer):
+class PlanResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = PlanResponse
 
 
-class CatalogResponseSerializer(IronDataclassSerializer):
+class CatalogResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CatalogResponse
 
 
-class CheckoutRequestSerializer(IronDataclassSerializer):
+class CheckoutRequestSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CheckoutRequest
 
@@ -83,22 +83,22 @@ class CheckoutRequestSerializer(IronDataclassSerializer):
         return data
 
 
-class CheckoutResponseSerializer(IronDataclassSerializer):
+class CheckoutResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CheckoutResponse
 
 
-class SubscriptionResponseSerializer(IronDataclassSerializer):
+class SubscriptionResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = SubscriptionResponse
 
 
-class CustomerPortalResponseSerializer(IronDataclassSerializer):
+class CustomerPortalResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CustomerPortalResponse
 
 
-class CreditDebitRequestSerializer(IronDataclassSerializer):
+class CreditDebitRequestSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CreditDebitRequest
 
@@ -113,6 +113,6 @@ class CreditDebitRequestSerializer(IronDataclassSerializer):
         return value
 
 
-class CreditOperationResponseSerializer(IronDataclassSerializer):
+class CreditOperationResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CreditOperationResponse
