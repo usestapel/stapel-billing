@@ -80,7 +80,7 @@ class Migration(migrations.Migration):
                 ('description', models.CharField(blank=True, max_length=255, null=True)),
                 ('metadata', models.JSONField(blank=True, default=dict)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('wallet', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='transactions', to='stapel_billing.wallet')),
+                ('wallet', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='transactions', to='billing.wallet')),
             ],
             options={
                 'db_table': 'billing_transaction',
