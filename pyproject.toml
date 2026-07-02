@@ -34,3 +34,13 @@ stapel_billing = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migration
 [tool.pytest.ini_options]
 django_find_project = false
 addopts = "--tb=short -q --import-mode=importlib"
+
+[tool.coverage.run]
+# Measure the shipped library code only: the packaged test suite, its
+# conftest and the migration files are distributed for reuse but are not
+# runtime code exercised by the host project.
+omit = [
+    "*/tests/*",
+    "*/conftest.py",
+    "*/migrations/*",
+]

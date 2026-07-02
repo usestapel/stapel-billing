@@ -49,6 +49,28 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
+# ─── Serializer seams ────────────────────────────────────────
+
+
+class SerializerSeamMixin:
+    """Overridable serializer seam for every billing APIView.
+
+    Host projects can swap the request/response serializer of any view by
+    subclassing and setting ``request_serializer_class`` /
+    ``response_serializer_class`` (or overriding the getters for
+    per-request decisions) — no need to rewrite the HTTP method bodies.
+    """
+
+    request_serializer_class = None
+    response_serializer_class = None
+
+    def get_request_serializer_class(self):
+        return self.request_serializer_class
+
+    def get_response_serializer_class(self):
+        return self.response_serializer_class
+
+
 # ─── Mappers ─────────────────────────────────────────────────
 
 
@@ -97,13 +119,16 @@ def _sub_to_dto(s: Subscription) -> SubscriptionResponse:
 
 
 @extend_schema(tags=["Wallet"])
-class WalletView(APIView):
+class WalletView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = WalletUpdateRequestSerializer
+    response_serializer_class = WalletResponseSerializer
 
     @extend_schema(responses={200: WalletResponseSerializer})
     def get(self, request):
         wallet = services.get_or_create_wallet(request.user)
-        return StapelResponse(WalletResponseSerializer(_wallet_to_dto(wallet)))
+        response_cls = self.get_response_serializer_class()
+        return StapelResponse(response_cls(_wallet_to_dto(wallet)))
 
     @extend_schema(
         request=WalletUpdateRequestSerializer,
@@ -111,7 +136,7 @@ class WalletView(APIView):
     )
     def patch(self, request):
         wallet = services.get_or_create_wallet(request.user)
-        ser = WalletUpdateRequestSerializer(data=request.data, partial=True)
+        ser = self.get_request_serializer_class()(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         if getattr(data, "auto_recharge_enabled", None) is not None:
@@ -123,19 +148,22 @@ class WalletView(APIView):
         if getattr(data, "low_balance_alert", None) is not None:
             wallet.low_balance_alert = data.low_balance_alert
         wallet.save()
-        return StapelResponse(WalletResponseSerializer(_wallet_to_dto(wallet)))
+        response_cls = self.get_response_serializer_class()
+        return StapelResponse(response_cls(_wallet_to_dto(wallet)))
 
 
 @extend_schema(tags=["Wallet"])
-class TransactionListView(APIView):
+class TransactionListView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    response_serializer_class = TransactionListResponseSerializer
 
     @extend_schema(responses={200: TransactionListResponseSerializer})
     def get(self, request):
         wallet = services.get_or_create_wallet(request.user)
         qs = wallet.transactions.order_by("-created_at")[:100]
+        response_cls = self.get_response_serializer_class()
         return StapelResponse(
-            TransactionListResponseSerializer(
+            response_cls(
                 TransactionListResponse(
                     transactions=[_txn_to_dto(t) for t in qs],
                     has_more=False,
@@ -148,8 +176,9 @@ class TransactionListView(APIView):
 
 
 @extend_schema(tags=["Catalog"])
-class CatalogView(APIView):
+class CatalogView(SerializerSeamMixin, APIView):
     permission_classes = [AllowAny]
+    response_serializer_class = CatalogResponseSerializer
 
     @extend_schema(responses={200: CatalogResponseSerializer})
     def get(self, request):
@@ -175,8 +204,9 @@ class CatalogView(APIView):
             )
             for p in PLANS
         ]
+        response_cls = self.get_response_serializer_class()
         return StapelResponse(
-            CatalogResponseSerializer(CatalogResponse(packages=packages, plans=plans))
+            response_cls(CatalogResponse(packages=packages, plans=plans))
         )
 
 
@@ -184,15 +214,17 @@ class CatalogView(APIView):
 
 
 @extend_schema(tags=["Checkout"])
-class CheckoutView(APIView):
+class CheckoutView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = CheckoutRequestSerializer
+    response_serializer_class = CheckoutResponseSerializer
 
     @extend_schema(
         request=CheckoutRequestSerializer,
         responses={200: CheckoutResponseSerializer},
     )
     def post(self, request):
-        ser = CheckoutRequestSerializer(data=request.data)
+        ser = self.get_request_serializer_class()(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         url, session_id = services.create_checkout_session(
@@ -202,16 +234,16 @@ class CheckoutView(APIView):
             success_url=data.success_url or "https://example.com/success",
             cancel_url=data.cancel_url or "https://example.com/cancel",
         )
+        response_cls = self.get_response_serializer_class()
         return StapelResponse(
-            CheckoutResponseSerializer(
-                CheckoutResponse(checkout_url=url, session_id=session_id)
-            )
+            response_cls(CheckoutResponse(checkout_url=url, session_id=session_id))
         )
 
 
 @extend_schema(tags=["Checkout"])
-class CustomerPortalView(APIView):
+class CustomerPortalView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    response_serializer_class = CustomerPortalResponseSerializer
 
     @extend_schema(responses={200: CustomerPortalResponseSerializer})
     def get(self, request):
@@ -222,29 +254,31 @@ class CustomerPortalView(APIView):
             return_url=request.query_params.get("return_url")
             or "https://example.com/billing",
         )
-        return StapelResponse(
-            CustomerPortalResponseSerializer(CustomerPortalResponse(portal_url=url))
-        )
+        response_cls = self.get_response_serializer_class()
+        return StapelResponse(response_cls(CustomerPortalResponse(portal_url=url)))
 
 
 # ─── Subscription ───────────────────────────────────────────
 
 
 @extend_schema(tags=["Subscription"])
-class SubscriptionView(APIView):
+class SubscriptionView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    response_serializer_class = SubscriptionResponseSerializer
 
     @extend_schema(responses={200: SubscriptionResponseSerializer})
     def get(self, request):
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
             sub = Subscription.objects.create(user=request.user)
-        return StapelResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
+        response_cls = self.get_response_serializer_class()
+        return StapelResponse(response_cls(_sub_to_dto(sub)))
 
 
 @extend_schema(tags=["Subscription"])
-class SubscriptionCancelView(APIView):
+class SubscriptionCancelView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
+    response_serializer_class = SubscriptionResponseSerializer
 
     @extend_schema(responses={200: SubscriptionResponseSerializer})
     def post(self, request):
@@ -264,14 +298,15 @@ class SubscriptionCancelView(APIView):
                 )
         sub.cancelled_at = timezone.now()
         sub.save(update_fields=["cancelled_at", "updated_at"])
-        return StapelResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
+        response_cls = self.get_response_serializer_class()
+        return StapelResponse(response_cls(_sub_to_dto(sub)))
 
 
 # ─── Stripe webhook ─────────────────────────────────────────
 
 
 @extend_schema(tags=["Webhooks"])
-class StripeWebhookView(APIView):
+class StripeWebhookView(SerializerSeamMixin, APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -339,17 +374,19 @@ class StripeWebhookView(APIView):
 
 
 @extend_schema(tags=["Internal"])
-class InternalDebitView(APIView):
+class InternalDebitView(SerializerSeamMixin, APIView):
     """Charge a user's wallet from another service (transcription/AI etc.)."""
 
     permission_classes = [IsServiceRequest | IsStaffUser]
+    request_serializer_class = CreditDebitRequestSerializer
+    response_serializer_class = CreditOperationResponseSerializer
 
     @extend_schema(
         request=CreditDebitRequestSerializer,
         responses={200: CreditOperationResponseSerializer},
     )
     def post(self, request):
-        ser = CreditDebitRequestSerializer(data=request.data)
+        ser = self.get_request_serializer_class()(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         from django.contrib.auth import get_user_model
@@ -368,8 +405,9 @@ class InternalDebitView(APIView):
             )
         except services.InsufficientCreditsError:
             return StapelErrorResponse(402, ERR_402_INSUFFICIENT_CREDITS)
+        response_cls = self.get_response_serializer_class()
         return StapelResponse(
-            CreditOperationResponseSerializer(
+            response_cls(
                 CreditOperationResponse(
                     transaction_id=txn.id, balance_after=txn.balance_after
                 )
