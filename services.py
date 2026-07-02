@@ -248,6 +248,49 @@ def handle_checkout_completed(event: dict) -> None:
             )
 
 
+def handle_invoice_paid(event: dict) -> None:
+    """Grant the monthly plan credits on each renewal invoice.
+
+    The initial grant happens in handle_checkout_completed; without this
+    handler subscribers receive credits only in month one.
+    """
+    obj = event["data"]["object"]
+    subscription_id = obj.get("subscription")
+    invoice_id = obj.get("id")
+    if not subscription_id:
+        return
+    # Stripe sends an invoice for the initial checkout too — that grant is
+    # already handled by checkout.session.completed.
+    if obj.get("billing_reason") == "subscription_create":
+        return
+    sub = Subscription.objects.filter(stripe_subscription_id=subscription_id).first()
+    if not sub or sub.plan not in PLANS_BY_SLUG:
+        return
+    monthly = PLANS_BY_SLUG[sub.plan].monthly_credits_included
+    if not monthly:
+        return
+    # Idempotency per invoice: at-least-once webhook delivery must not
+    # double-grant a renewal.
+    already = Transaction.objects.filter(
+        wallet__user=sub.user,
+        type=TransactionType.SUBSCRIPTION_BONUS,
+        metadata__stripe_invoice_id=invoice_id,
+    ).exists()
+    if already:
+        return
+    credit(
+        user=sub.user,
+        credits=monthly,
+        type=TransactionType.SUBSCRIPTION_BONUS,
+        description=f"Plan renewal: {sub.plan}",
+        metadata={
+            "plan": sub.plan,
+            "stripe_subscription_id": subscription_id,
+            "stripe_invoice_id": invoice_id,
+        },
+    )
+
+
 def handle_subscription_updated(event: dict) -> None:
     obj = event["data"]["object"]
     sub = Subscription.objects.filter(

@@ -53,7 +53,7 @@ class BillingGDPRProvider(GDPRProvider):
             pass
 
         try:
-            Wallet.objects.filter(user_id=user_id).update(user_id=None)  # noqa: anonymise
+            Wallet.objects.filter(user_id=user_id).update(user_id=None)  # anonymise
         except Exception:
             pass
 

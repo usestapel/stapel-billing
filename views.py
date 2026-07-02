@@ -259,7 +259,13 @@ class SubscriptionCancelView(APIView):
                         sub.stripe_subscription_id, cancel_at_period_end=True
                     )
                 except Exception:
+                    # Do NOT mark cancelled locally: the user would believe
+                    # the subscription is off while Stripe keeps charging.
                     logger.exception("Stripe subscription cancel failed")
+                    return StapelResponse(
+                        {"status": "error"},
+                        status=status.HTTP_502_BAD_GATEWAY,
+                    )
         sub.cancelled_at = timezone.now()
         sub.save(update_fields=["cancelled_at", "updated_at"])
         return StapelResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
@@ -287,18 +293,30 @@ class StripeWebhookView(APIView):
         if not event_id or not event_type:
             return StapelErrorResponse(400, ERR_400_INVALID_WEBHOOK_PAYLOAD)
 
-        # Idempotency: skip already-processed events.
+        # Idempotency: skip already-PROCESSED events. An event row without
+        # processed_at is a previous failed attempt — Stripe's retry must
+        # reprocess it, otherwise a paid checkout is lost forever.
         log, created = StripeWebhookEvent.objects.get_or_create(
             stripe_event_id=event_id,
             defaults={"event_type": event_type, "payload": event},
         )
-        if not created:
+        if not created and log.processed_at is not None:
             return StapelResponse({"status": "duplicate"}, status=status.HTTP_200_OK)
 
         try:
             with transaction.atomic():
+                # Lock the claim so a concurrent retry of the same event
+                # cannot run the handler twice; the processed mark commits
+                # atomically with the handler's effects.
+                locked = StripeWebhookEvent.objects.select_for_update().get(pk=log.pk)
+                if locked.processed_at is not None:
+                    return StapelResponse(
+                        {"status": "duplicate"}, status=status.HTTP_200_OK
+                    )
                 if event_type == "checkout.session.completed":
                     services.handle_checkout_completed(event)
+                elif event_type in ("invoice.paid", "invoice.payment_succeeded"):
+                    services.handle_invoice_paid(event)
                 elif event_type in (
                     "customer.subscription.updated",
                     "customer.subscription.created",
@@ -308,8 +326,9 @@ class StripeWebhookView(APIView):
                     services.handle_subscription_deleted(event)
                 else:
                     logger.info("Unhandled Stripe event %s", event_type)
-            log.processed_at = timezone.now()
-            log.save(update_fields=["processed_at"])
+                locked.processed_at = timezone.now()
+                locked.error = ""
+                locked.save(update_fields=["processed_at", "error"])
         except Exception as exc:
             logger.exception("Stripe webhook handler failed")
             log.error = str(exc)

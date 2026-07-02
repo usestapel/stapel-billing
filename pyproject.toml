@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 keywords = ["django", "stapel", "billing", "payments", "stripe"]
 classifiers = [
     "Framework :: Django",
-    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.2",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
@@ -29,7 +29,7 @@ package-dir = {"stapel_billing" = "."}
 packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.tests"]
 
 [tool.setuptools.package-data]
-stapel_billing = ["migrations/*.py", "migrations/**/*.py"]
+stapel_billing = ["migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
 
 [tool.pytest.ini_options]
 django_find_project = false
