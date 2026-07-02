@@ -123,13 +123,20 @@ class CustomerPortalResponse:
 
 @dataclass
 class CreditDebitRequest:
-    """Service-to-service debit (transcription/AI charge)."""
+    """Service-to-service debit (transcription/AI charge).
+
+    Attributes:
+        idempotency_key: Optional caller-supplied key; retries with the
+            same key return the original transaction instead of debiting
+            twice.
+    """
 
     user_id: UUID
     credits: int
     type: str
     description: Optional[str] = None
     metadata: Optional[dict] = None
+    idempotency_key: Optional[str] = None
 
 
 @dataclass

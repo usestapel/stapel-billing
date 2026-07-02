@@ -252,20 +252,16 @@ class SubscriptionCancelView(APIView):
         if not sub:
             return StapelErrorResponse(404, ERR_404_SUBSCRIPTION_NOT_FOUND)
         if sub.stripe_subscription_id:
-            stripe = services._stripe_module()
-            if stripe and services.STRIPE_API_KEY:
-                try:
-                    stripe.Subscription.modify(
-                        sub.stripe_subscription_id, cancel_at_period_end=True
-                    )
-                except Exception:
-                    # Do NOT mark cancelled locally: the user would believe
-                    # the subscription is off while Stripe keeps charging.
-                    logger.exception("Stripe subscription cancel failed")
-                    return StapelResponse(
-                        {"status": "error"},
-                        status=status.HTTP_502_BAD_GATEWAY,
-                    )
+            try:
+                services.cancel_provider_subscription(sub.stripe_subscription_id)
+            except Exception:
+                # Do NOT mark cancelled locally: the user would believe
+                # the subscription is off while the provider keeps charging.
+                logger.exception("Provider subscription cancel failed")
+                return StapelResponse(
+                    {"status": "error"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
         sub.cancelled_at = timezone.now()
         sub.save(update_fields=["cancelled_at", "updated_at"])
         return StapelResponse(SubscriptionResponseSerializer(_sub_to_dto(sub)))
@@ -356,9 +352,9 @@ class InternalDebitView(APIView):
         ser = CreditDebitRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        from stapel_core.django.users.models import User
+        from django.contrib.auth import get_user_model
 
-        user = User.objects.filter(id=data.user_id).first()
+        user = get_user_model().objects.filter(id=data.user_id).first()
         if not user:
             return StapelErrorResponse(404, ERR_404_WALLET_NOT_FOUND)
         try:
@@ -368,6 +364,7 @@ class InternalDebitView(APIView):
                 type=data.type,
                 description=data.description,
                 metadata=data.metadata or {},
+                idempotency_key=getattr(data, "idempotency_key", None),
             )
         except services.InsufficientCreditsError:
             return StapelErrorResponse(402, ERR_402_INSUFFICIENT_CREDITS)

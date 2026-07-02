@@ -1,12 +1,20 @@
-"""Wallet operations and Stripe integration helpers."""
+"""Wallet operations and payment-provider integration helpers.
+
+The payment backend is pluggable: ``get_provider()`` resolves the
+``STAPEL_BILLING["PAYMENT_PROVIDER"]`` dotted path (Stripe by default)
+and the checkout/portal/webhook helpers below delegate to it.  Provider
+credentials are read lazily at call time — nothing is frozen at import.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 from django.db import transaction
+
+from stapel_core.comm import emit
+from stapel_core.signals import payment_completed, subscription_changed
 
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from .models import (
@@ -16,12 +24,19 @@ from .models import (
     TransactionType,
     Wallet,
 )
+from .providers.base import PaymentProvider
 
 logger = logging.getLogger(__name__)
 
 
 class InsufficientCreditsError(Exception):
     pass
+
+
+def _get_user_model():
+    from django.contrib.auth import get_user_model
+
+    return get_user_model()
 
 
 def get_or_create_wallet(user) -> Wallet:
@@ -67,13 +82,34 @@ def debit(
     type: str,
     description: Optional[str] = None,
     metadata: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Transaction:
-    """Deduct credits from a user's wallet.  Raises InsufficientCreditsError."""
+    """Deduct credits from a user's wallet.  Raises InsufficientCreditsError.
+
+    When *idempotency_key* is given, a duplicate call (same key, same
+    wallet) short-circuits and returns the original transaction without
+    debiting again — safe under at-least-once service-to-service retries.
+    The key is stored on ``Transaction.metadata["idempotency_key"]``.
+    """
     if credits <= 0:
         raise ValueError("credits must be positive")
     wallet = (
         Wallet.objects.select_for_update().get_or_create(user=user)[0]
     )
+    if idempotency_key:
+        # The wallet row is locked above, so concurrent duplicates
+        # serialize here and the second caller sees the first's row.
+        existing = Transaction.objects.filter(
+            wallet=wallet,
+            metadata__idempotency_key=idempotency_key,
+        ).first()
+        if existing is not None:
+            logger.info(
+                "debit short-circuited by idempotency_key=%s (txn %s)",
+                idempotency_key,
+                existing.id,
+            )
+            return existing
     if wallet.balance < credits:
         raise InsufficientCreditsError(
             f"balance={wallet.balance} < required={credits}"
@@ -81,6 +117,9 @@ def debit(
     new_balance = wallet.balance - credits
     wallet.balance = new_balance
     wallet.save(update_fields=["balance", "updated_at"])
+    metadata = dict(metadata or {})
+    if idempotency_key:
+        metadata["idempotency_key"] = idempotency_key
     return Transaction.objects.create(
         wallet=wallet,
         type=type,
@@ -88,110 +127,100 @@ def debit(
         credits_delta=-credits,
         balance_after=new_balance,
         description=description,
-        metadata=metadata or {},
+        metadata=metadata,
     )
 
 
-# ─── Stripe ─────────────────────────────────────────────────
+# ─── Payment provider ───────────────────────────────────────
 
 
-STRIPE_API_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+def get_provider() -> PaymentProvider:
+    """Instantiate the configured PaymentProvider (Stripe by default)."""
+    from .conf import billing_settings
 
-
-def _stripe_module():
-    try:
-        import stripe  # type: ignore
-    except ImportError:
-        return None
-    if STRIPE_API_KEY:
-        stripe.api_key = STRIPE_API_KEY
-    return stripe
+    cls = billing_settings.PAYMENT_PROVIDER
+    if not (isinstance(cls, type) and issubclass(cls, PaymentProvider)):
+        raise TypeError(
+            "STAPEL_BILLING['PAYMENT_PROVIDER'] must point to a "
+            f"PaymentProvider subclass, got {cls!r}"
+        )
+    return cls()
 
 
 def create_checkout_session(
     *, user, package: Optional[str], plan: Optional[str], success_url: str, cancel_url: str
 ):
-    """Create a Stripe Checkout session for either a one-off package or a plan.
+    """Create a checkout session for either a one-off package or a plan.
 
-    Returns a (checkout_url, session_id) tuple.  Falls back to a dev
-    placeholder URL when Stripe is not configured — the call still
-    succeeds so the rest of the flow is testable end-to-end.
+    Returns a (checkout_url, session_id) tuple.  Delegates to the
+    configured payment provider.
     """
-    stripe = _stripe_module()
-    if package:
-        pkg = CREDIT_PACKAGES_BY_SLUG[package]
-        if not stripe or not STRIPE_API_KEY:
-            return _placeholder_checkout("package", pkg.slug)
-        session = stripe.checkout.Session.create(
-            mode="payment",
-            payment_method_types=["card"],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            client_reference_id=str(user.id),
-            metadata={"user_id": str(user.id), "package": pkg.slug},
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": pkg.currency.lower(),
-                        "product_data": {"name": f"Credit pack: {pkg.name}"},
-                        "unit_amount": pkg.price_cents,
-                    },
-                    "quantity": 1,
-                }
-            ],
-        )
-        return session["url"], session["id"]
-
-    plan_entry = PLANS_BY_SLUG[plan]
-    if not stripe or not STRIPE_API_KEY:
-        return _placeholder_checkout("plan", plan_entry.slug)
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        payment_method_types=["card"],
+    return get_provider().create_checkout_session(
+        user=user,
+        package=package,
+        plan=plan,
         success_url=success_url,
         cancel_url=cancel_url,
-        client_reference_id=str(user.id),
-        metadata={"user_id": str(user.id), "plan": plan_entry.slug},
-        line_items=[
-            {
-                "price_data": {
-                    "currency": plan_entry.currency.lower(),
-                    "recurring": {"interval": "month"},
-                    "product_data": {"name": plan_entry.name},
-                    "unit_amount": plan_entry.price_cents,
-                },
-                "quantity": 1,
-            }
-        ],
     )
-    return session["url"], session["id"]
-
-
-def _placeholder_checkout(kind: str, slug: str):
-    """Used in dev/staging when Stripe is unconfigured."""
-    return (f"https://example.invalid/stripe-not-configured/{kind}/{slug}", f"cs_dev_{slug}")
 
 
 def create_customer_portal(*, customer_id: str, return_url: str) -> str:
-    stripe = _stripe_module()
-    if not stripe or not STRIPE_API_KEY or not customer_id:
-        return "https://example.invalid/stripe-portal-not-configured"
-    portal = stripe.billing_portal.Session.create(
-        customer=customer_id,
-        return_url=return_url,
+    return get_provider().create_portal_session(
+        customer_id=customer_id, return_url=return_url
     )
-    return portal["url"]
+
+
+def cancel_provider_subscription(subscription_id: str) -> None:
+    """Cancel the provider-side subscription. Raises on remote failure."""
+    get_provider().cancel_subscription(subscription_id)
 
 
 def verify_stripe_signature(payload: bytes, sig_header: str) -> dict:
-    """Parse + verify a Stripe webhook payload.  Returns the event dict."""
-    stripe = _stripe_module()
-    if not stripe or not STRIPE_WEBHOOK_SECRET:
-        raise ValueError("Stripe is not configured")
-    return stripe.Webhook.construct_event(
-        payload, sig_header, STRIPE_WEBHOOK_SECRET
+    """Parse + verify a provider webhook payload.  Returns the event dict."""
+    return get_provider().verify_webhook(payload, sig_header)
+
+
+# ─── Milestones (comm actions + Django signals) ─────────────
+
+
+def _announce_payment(*, user, txn: Transaction, amount_cents: int, currency: str, **extra) -> None:
+    """Emit payment.completed + send the payment_completed signal.
+
+    Called inside the webhook's atomic block: the comm event goes through
+    the transactional outbox, so it leaves iff the transaction commits.
+    """
+    emit(
+        "payment.completed",
+        {
+            "user_id": str(user.id),
+            "amount_cents": int(amount_cents or 0),
+            "currency": currency,
+            "transaction_id": str(txn.id),
+            "created_at": txn.created_at.isoformat(),
+            **extra,
+        },
+        key=str(user.id),
     )
+    payment_completed.send(
+        sender=Transaction, user=user, credits=txn.credits_delta, transaction=txn
+    )
+
+
+def _announce_subscription(sub: Subscription) -> None:
+    """Emit subscription.changed + send the subscription_changed signal."""
+    emit(
+        "subscription.changed",
+        {
+            "user_id": str(sub.user_id),
+            "plan": sub.plan,
+            "status": sub.status,
+            "current_period_end": sub.current_period_end.isoformat()
+            if sub.current_period_end
+            else None,
+        },
+        key=str(sub.user_id),
+    )
+    subscription_changed.send(sender=Subscription, subscription=sub)
 
 
 # ─── Webhook handlers ──────────────────────────────────────
@@ -207,7 +236,7 @@ def handle_checkout_completed(event: dict) -> None:
     if not user_id:
         logger.warning("checkout.session.completed without user_id")
         return
-    from stapel_core.django.users.models import User
+    User = _get_user_model()
 
     user = User.objects.filter(id=user_id).first()
     if not user:
@@ -215,7 +244,7 @@ def handle_checkout_completed(event: dict) -> None:
         return
     if package_slug and package_slug in CREDIT_PACKAGES_BY_SLUG:
         pkg = CREDIT_PACKAGES_BY_SLUG[package_slug]
-        credit(
+        txn = credit(
             user=user,
             credits=pkg.credits,
             type=TransactionType.CREDIT_PURCHASE,
@@ -226,7 +255,15 @@ def handle_checkout_completed(event: dict) -> None:
                 "stripe_session_id": obj.get("id"),
             },
         )
+        _announce_payment(
+            user=user,
+            txn=txn,
+            amount_cents=pkg.price_cents,
+            currency=pkg.currency.lower(),
+            package=pkg.slug,
+        )
     if plan_slug and plan_slug in PLANS_BY_SLUG:
+        plan_entry = PLANS_BY_SLUG[plan_slug]
         sub, _ = Subscription.objects.update_or_create(
             user=user,
             defaults={
@@ -237,15 +274,23 @@ def handle_checkout_completed(event: dict) -> None:
             },
         )
         # Initial monthly credit grant for plans that bundle credits.
-        monthly = PLANS_BY_SLUG[plan_slug].monthly_credits_included
+        monthly = plan_entry.monthly_credits_included
         if monthly:
-            credit(
+            txn = credit(
                 user=user,
                 credits=monthly,
                 type=TransactionType.SUBSCRIPTION_BONUS,
                 description=f"Plan bonus: {plan_slug}",
                 metadata={"plan": plan_slug, "stripe_subscription_id": sub.stripe_subscription_id},
             )
+            _announce_payment(
+                user=user,
+                txn=txn,
+                amount_cents=plan_entry.price_cents,
+                currency=plan_entry.currency.lower(),
+                plan=plan_slug,
+            )
+        _announce_subscription(sub)
 
 
 def handle_invoice_paid(event: dict) -> None:
@@ -266,7 +311,8 @@ def handle_invoice_paid(event: dict) -> None:
     sub = Subscription.objects.filter(stripe_subscription_id=subscription_id).first()
     if not sub or sub.plan not in PLANS_BY_SLUG:
         return
-    monthly = PLANS_BY_SLUG[sub.plan].monthly_credits_included
+    plan_entry = PLANS_BY_SLUG[sub.plan]
+    monthly = plan_entry.monthly_credits_included
     if not monthly:
         return
     # Idempotency per invoice: at-least-once webhook delivery must not
@@ -278,7 +324,7 @@ def handle_invoice_paid(event: dict) -> None:
     ).exists()
     if already:
         return
-    credit(
+    txn = credit(
         user=sub.user,
         credits=monthly,
         type=TransactionType.SUBSCRIPTION_BONUS,
@@ -288,6 +334,16 @@ def handle_invoice_paid(event: dict) -> None:
             "stripe_subscription_id": subscription_id,
             "stripe_invoice_id": invoice_id,
         },
+    )
+    amount = obj.get("amount_paid")
+    if not isinstance(amount, int):
+        amount = plan_entry.price_cents
+    _announce_payment(
+        user=sub.user,
+        txn=txn,
+        amount_cents=amount,
+        currency=(obj.get("currency") or plan_entry.currency).lower(),
+        plan=sub.plan,
     )
 
 
@@ -307,6 +363,7 @@ def handle_subscription_updated(event: dict) -> None:
     }
     sub.status = status_map.get(obj.get("status"), sub.status)
     sub.save(update_fields=["status", "updated_at"])
+    _announce_subscription(sub)
 
 
 def handle_subscription_deleted(event: dict) -> None:
@@ -321,3 +378,4 @@ def handle_subscription_deleted(event: dict) -> None:
     sub.status = SubscriptionStatus.CANCELLED
     sub.cancelled_at = timezone.now()
     sub.save(update_fields=["status", "cancelled_at", "updated_at"])
+    _announce_subscription(sub)

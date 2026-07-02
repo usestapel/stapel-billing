@@ -5,11 +5,13 @@
   "type": "object",
   "required": ["user_id", "amount_cents", "currency", "transaction_id", "created_at"],
   "properties": {
-    "user_id":        { "type": "integer" },
+    "user_id":        { "type": "string", "format": "uuid" },
     "amount_cents":   { "type": "integer" },
     "currency":       { "type": "string" },
-    "transaction_id": { "type": "integer" },
-    "created_at":     { "type": "string", "format": "date-time" }
+    "transaction_id": { "type": "string", "format": "uuid" },
+    "created_at":     { "type": "string", "format": "date-time" },
+    "package":        { "type": "string" },
+    "plan":           { "type": "string" }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }

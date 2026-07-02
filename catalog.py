@@ -1,12 +1,29 @@
 """
 Credit packages and subscription plan catalogue.
 
-In a future iteration this moves into a Stripe-managed product catalog
-(Stripe Products + Prices).  For R1 we keep it in code so the UI has
-something to show without depending on Stripe configuration.
+The lists below are *defaults*.  Host projects override them through the
+``STAPEL_BILLING`` settings namespace without forking::
+
+    STAPEL_BILLING = {
+        "CREDIT_PACKAGES": [
+            {"slug": "mini", "name": "Mini", "credits": 100, "price_cents": 200},
+        ],
+        "PLANS": [
+            {"slug": "free", "name": "Free", "price_cents": 0,
+             "monthly_credits_included": 0, "storage_limit_bytes": 0,
+             "description": "..."},
+        ],
+    }
+
+Entries may be dicts (converted to the dataclasses below) or dataclass
+instances.  The module-level names ``CREDIT_PACKAGES`` / ``PLANS`` /
+``CREDIT_PACKAGES_BY_SLUG`` / ``PLANS_BY_SLUG`` keep working — they are
+lazy views that re-read the configuration on every access.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Callable, Iterator
 
 
 @dataclass(frozen=True)
@@ -29,15 +46,13 @@ class PlanCatalogEntry:
     currency: str = "USD"
 
 
-CREDIT_PACKAGES = [
+DEFAULT_CREDIT_PACKAGES = [
     CreditPackage("starter", "Starter", credits=500, price_cents=500),
     CreditPackage("standard", "Standard", credits=2200, price_cents=2000),
     CreditPackage("bulk", "Bulk", credits=6000, price_cents=5000),
 ]
 
-CREDIT_PACKAGES_BY_SLUG = {p.slug: p for p in CREDIT_PACKAGES}
-
-PLANS = [
+DEFAULT_PLANS = [
     PlanCatalogEntry(
         slug="free",
         name="Free",
@@ -72,4 +87,75 @@ PLANS = [
     ),
 ]
 
-PLANS_BY_SLUG = {p.slug: p for p in PLANS}
+
+def _coerce(entry, cls):
+    if isinstance(entry, cls):
+        return entry
+    if isinstance(entry, Mapping):
+        return cls(**entry)
+    raise TypeError(
+        f"catalog entries must be {cls.__name__} instances or dicts, got {entry!r}"
+    )
+
+
+def get_credit_packages() -> list[CreditPackage]:
+    """Resolve the credit-package catalogue through STAPEL_BILLING config."""
+    from .conf import billing_settings
+
+    raw = billing_settings.CREDIT_PACKAGES
+    return [_coerce(e, CreditPackage) for e in raw]
+
+
+def get_plans() -> list[PlanCatalogEntry]:
+    """Resolve the plan catalogue through STAPEL_BILLING config."""
+    from .conf import billing_settings
+
+    raw = billing_settings.PLANS
+    return [_coerce(e, PlanCatalogEntry) for e in raw]
+
+
+class _LazyCatalogList(Sequence):
+    """Sequence view over a loader — re-reads configuration on access."""
+
+    def __init__(self, loader: Callable[[], list]) -> None:
+        self._loader = loader
+
+    def __getitem__(self, index):
+        return self._loader()[index]
+
+    def __len__(self) -> int:
+        return len(self._loader())
+
+    def __iter__(self) -> Iterator:
+        return iter(self._loader())
+
+    def __repr__(self) -> str:
+        return repr(self._loader())
+
+
+class _LazyBySlug(Mapping):
+    """Mapping view keyed by slug — re-reads configuration on access."""
+
+    def __init__(self, loader: Callable[[], list]) -> None:
+        self._loader = loader
+
+    def _mapping(self) -> dict:
+        return {entry.slug: entry for entry in self._loader()}
+
+    def __getitem__(self, key):
+        return self._mapping()[key]
+
+    def __iter__(self) -> Iterator:
+        return iter(self._mapping())
+
+    def __len__(self) -> int:
+        return len(self._mapping())
+
+    def __repr__(self) -> str:
+        return repr(self._mapping())
+
+
+CREDIT_PACKAGES = _LazyCatalogList(get_credit_packages)
+PLANS = _LazyCatalogList(get_plans)
+CREDIT_PACKAGES_BY_SLUG = _LazyBySlug(get_credit_packages)
+PLANS_BY_SLUG = _LazyBySlug(get_plans)

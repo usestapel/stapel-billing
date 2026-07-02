@@ -28,6 +28,14 @@ def pytest_configure(config):
             },
             # In-memory bus — no Kafka/Redis broker needed
             STAPEL_BUS_BACKEND="stapel_core.bus.backends.memory.MemoryBus",
+            # Synchronous in-process action delivery (no outbox table needed)
+            # and schema validation ON so emits are checked against
+            # schemas/emits/*.json in tests.
+            STAPEL_COMM={
+                "OUTBOX_ENABLED": False,
+                "ACTION_TRANSPORT": "inprocess",
+                "VALIDATE_SCHEMAS": True,
+            },
             MIDDLEWARE=[
                 "django.middleware.common.CommonMiddleware",
                 "stapel_core.django.jwt.middleware.ServiceAPIKeyMiddleware",
@@ -41,6 +49,11 @@ def pytest_configure(config):
         )
         import django
         django.setup()
+
+        # Register schemas/emits/*.json with the comm registries so emit()
+        # payloads are validated against the committed contracts in tests.
+        from stapel_core.comm.schemas import autoload_schemas
+        autoload_schemas()
 
 
 import pytest  # noqa: E402
@@ -72,6 +85,17 @@ def authed_client(user):
 
 
 @pytest.fixture
-def stripe_disabled(settings):
+def stripe_disabled(settings, monkeypatch):
+    """Disable Stripe regardless of the host environment.
+
+    Keys are read lazily through stapel_billing.conf.billing_settings, so
+    overriding the Django settings here actually takes effect at call
+    time (they are no longer frozen at import via os.getenv).  The env
+    vars are cleared too so the AppSettings env fallback cannot leak a
+    real key into the test.
+    """
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
     settings.STRIPE_SECRET_KEY = ""
+    settings.STRIPE_WEBHOOK_SECRET = ""
     return settings

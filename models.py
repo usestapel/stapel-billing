@@ -9,8 +9,8 @@ inside a DB transaction.  Stripe webhooks land at
 """
 
 import uuid
+from django.conf import settings
 from django.db import models
-from stapel_core.django.users.models import User
 
 
 # =====================================================================
@@ -51,7 +51,9 @@ class Wallet(models.Model):
     """Per-user credit balance. One wallet per User."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="wallet")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet"
+    )
     balance = models.IntegerField(default=0, help_text="Integer credits — never fractional.")
     currency = models.CharField(max_length=3, default="USD")
     auto_recharge_enabled = models.BooleanField(default=False)
@@ -102,7 +104,7 @@ class Subscription(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(
-        User, on_delete=models.CASCADE, related_name="subscription"
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="subscription"
     )
     plan = models.CharField(max_length=16, choices=Plan.choices, default=Plan.FREE)
     status = models.CharField(
