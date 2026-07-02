@@ -3,7 +3,7 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-07-02
 
 ### Added
 - **PaymentProvider abstraction** (`providers/base.py`): ABC with
