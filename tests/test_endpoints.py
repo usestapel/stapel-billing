@@ -288,3 +288,105 @@ class TestInternalDebitValidation:
         )
         assert resp.status_code == 200
         assert resp.json()["balance_after"] == 40
+
+
+class RecordingProvider(PaymentProvider):
+    """Captures the redirect URLs the views pass to the provider."""
+
+    name = "recording"
+    last_checkout = None
+    last_portal = None
+
+    def create_checkout_session(self, *, user, package, plan, success_url, cancel_url):
+        RecordingProvider.last_checkout = {
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+        }
+        return ("https://x", "cs_1")
+
+    def create_portal_session(self, *, customer_id, return_url):
+        RecordingProvider.last_portal = {"return_url": return_url}
+        return "https://x/portal"
+
+    def cancel_subscription(self, subscription_id):
+        return None
+
+    def verify_webhook(self, payload, signature):
+        return {}
+
+
+RECORDING_PATH = f"{RecordingProvider.__module__}.{RecordingProvider.__qualname__}"
+
+
+@pytest.mark.django_db
+class TestRedirectUrlResolution:
+    """request URL → STAPEL_BILLING fallback → FRONTEND_URL — never a
+    placeholder domain; nothing configured is a 400, not example.com."""
+
+    def test_checkout_derives_urls_from_frontend_url(self, authed_client, settings):
+        settings.STAPEL_BILLING = {"PAYMENT_PROVIDER": RECORDING_PATH}
+        resp = authed_client.post(
+            "/billing/api/checkout", {"package": "starter"}, format="json"
+        )
+        assert resp.status_code == 200
+        assert RecordingProvider.last_checkout == {
+            "success_url": "https://front.example/billing/success",
+            "cancel_url": "https://front.example/billing/cancel",
+        }
+
+    def test_settings_fallback_beats_frontend_url(self, authed_client, settings):
+        settings.STAPEL_BILLING = {
+            "PAYMENT_PROVIDER": RECORDING_PATH,
+            "CHECKOUT_SUCCESS_URL": "https://app.example/ok",
+            "CHECKOUT_CANCEL_URL": "https://app.example/no",
+        }
+        resp = authed_client.post(
+            "/billing/api/checkout", {"package": "starter"}, format="json"
+        )
+        assert resp.status_code == 200
+        assert RecordingProvider.last_checkout == {
+            "success_url": "https://app.example/ok",
+            "cancel_url": "https://app.example/no",
+        }
+
+    def test_request_urls_beat_everything(self, authed_client, settings):
+        settings.STAPEL_BILLING = {
+            "PAYMENT_PROVIDER": RECORDING_PATH,
+            "CHECKOUT_SUCCESS_URL": "https://app.example/ok",
+        }
+        resp = authed_client.post(
+            "/billing/api/checkout",
+            {
+                "package": "starter",
+                "success_url": "https://req.example/s",
+                "cancel_url": "https://req.example/c",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert RecordingProvider.last_checkout == {
+            "success_url": "https://req.example/s",
+            "cancel_url": "https://req.example/c",
+        }
+
+    def test_portal_uses_portal_return_url_fallback(self, authed_client, settings):
+        settings.STAPEL_BILLING = {
+            "PAYMENT_PROVIDER": RECORDING_PATH,
+            "PORTAL_RETURN_URL": "https://app.example/billing",
+        }
+        resp = authed_client.get("/billing/api/portal")
+        assert resp.status_code == 200
+        assert RecordingProvider.last_portal == {
+            "return_url": "https://app.example/billing"
+        }
+
+    def test_checkout_400_when_nothing_configured(
+        self, authed_client, settings, monkeypatch
+    ):
+        monkeypatch.delenv("FRONTEND_URL", raising=False)
+        del settings.FRONTEND_URL
+        resp = authed_client.post(
+            "/billing/api/checkout", {"package": "starter"}, format="json"
+        )
+        assert resp.status_code == 400
+        assert "redirect_url_not_configured" in resp.content.decode()

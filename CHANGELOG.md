@@ -3,6 +3,18 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- **Checkout/portal redirect URLs no longer fall back to `example.com`.**
+  Resolution order is now: request value → `STAPEL_BILLING` keys
+  (`CHECKOUT_SUCCESS_URL`, `CHECKOUT_CANCEL_URL`, `PORTAL_RETURN_URL`,
+  all new, empty by default) → derived from the flat `FRONTEND_URL`
+  setting/env (`{FRONTEND_URL}/billing/success`, `/billing/cancel`,
+  `/billing`). With none configured the request is rejected with the new
+  `error.400.redirect_url_not_configured` instead of silently sending
+  users to a placeholder domain.
+
 ## 0.3.0 — 2026-07-03
 
 No functional changes — version alignment with the Stapel 0.3

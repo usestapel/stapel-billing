@@ -10,6 +10,7 @@ ERR_400_INVALID_PACKAGE = "error.400.invalid_package"
 ERR_400_INVALID_PLAN = "error.400.invalid_plan"
 ERR_400_AMOUNT_INVALID = "error.400.amount_invalid"
 ERR_400_INVALID_STRIPE_SIGNATURE = "error.400.invalid_stripe_signature"
+ERR_400_REDIRECT_URL_NOT_CONFIGURED = "error.400.redirect_url_not_configured"
 ERR_400_INVALID_WEBHOOK_PAYLOAD = "error.400.invalid_webhook_payload"
 ERR_403_FORBIDDEN_BILLING = "error.403.forbidden_billing"
 ERR_409_DUPLICATE_WEBHOOK = "error.409.duplicate_webhook_event"
@@ -23,6 +24,9 @@ BILLING_ERRORS = {
     ERR_400_INVALID_PLAN: "Invalid subscription plan",
     ERR_400_AMOUNT_INVALID: "Amount must be a positive integer",
     ERR_400_INVALID_STRIPE_SIGNATURE: "Invalid Stripe webhook signature",
+    ERR_400_REDIRECT_URL_NOT_CONFIGURED: (
+        "Redirect URL not provided and no fallback configured"
+    ),
     ERR_400_INVALID_WEBHOOK_PAYLOAD: "Invalid Stripe webhook payload",
     ERR_403_FORBIDDEN_BILLING: "Forbidden: cannot manage this billing account",
     ERR_409_DUPLICATE_WEBHOOK: "Stripe event already processed",

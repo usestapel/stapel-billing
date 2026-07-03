@@ -41,6 +41,9 @@ same name → environment variable → default. All keys are read **lazily at ca
 | `STRIPE_WEBHOOK_SECRET` | `""` | Stripe webhook signature secret (read lazily per call). |
 | `CREDIT_PACKAGES` | `catalog.DEFAULT_CREDIT_PACKAGES` (starter/standard/bulk) | One-off credit package catalog. List of dicts or `CreditPackage` instances. |
 | `PLANS` | `catalog.DEFAULT_PLANS` (free/pro/team/enterprise) | Subscription plan catalog. List of dicts or `PlanCatalogEntry` instances. |
+| `CHECKOUT_SUCCESS_URL` | `""` | Fallback Stripe Checkout success redirect when the request carries none. Empty → derived from the flat `FRONTEND_URL` setting/env (`{FRONTEND_URL}/billing/success`); with neither configured the request fails with `error.400.redirect_url_not_configured`. |
+| `CHECKOUT_CANCEL_URL` | `""` | Same resolution for the cancel redirect (`{FRONTEND_URL}/billing/cancel`). |
+| `PORTAL_RETURN_URL` | `""` | Same resolution for the customer-portal return URL (`{FRONTEND_URL}/billing`). |
 
 ### Payment providers (dotted-path swap)
 

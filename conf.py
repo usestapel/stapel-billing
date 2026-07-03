@@ -33,6 +33,15 @@ billing_settings = AppSettings(
         # dataclasses) or dataclass instances. Defaults live in catalog.py.
         "CREDIT_PACKAGES": _catalog.DEFAULT_CREDIT_PACKAGES,
         "PLANS": _catalog.DEFAULT_PLANS,
+        # Fallback redirect targets for Stripe Checkout / customer portal,
+        # used when the request does not carry them. Empty by default;
+        # when unset the fallback is derived from the flat FRONTEND_URL
+        # setting, and with neither configured the request is rejected
+        # with error.400.redirect_url_not_configured (no placeholder
+        # domains, ever).
+        "CHECKOUT_SUCCESS_URL": "",
+        "CHECKOUT_CANCEL_URL": "",
+        "PORTAL_RETURN_URL": "",
     },
     import_strings=("PAYMENT_PROVIDER",),
 )

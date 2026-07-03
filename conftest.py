@@ -45,6 +45,9 @@ def pytest_configure(config):
                 "stapel_core.django.jwt.middleware.ServiceAPIKeyMiddleware",
             ],
             SERVICE_API_KEY="",
+            # Checkout/portal redirect fallbacks derive from this when the
+            # request and STAPEL_BILLING don't provide URLs.
+            FRONTEND_URL="https://front.example",
             # Skip migrations — create tables directly from models
             MIGRATION_MODULES={
                 "users": None,

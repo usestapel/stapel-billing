@@ -1,18 +1,25 @@
 """DRF views for the billing service."""
 
 import logging
+import os
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
-from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
+from stapel_core.django.api.errors import (
+    StapelErrorResponse,
+    StapelResponse,
+    StapelValidationError,
+)
 from stapel_core.django.api.permissions import IsServiceRequest, IsStaffUser
 
 from . import services
 from .catalog import CREDIT_PACKAGES, PLANS
+from .conf import billing_settings
 from .dto import (
     CatalogResponse,
     CheckoutResponse,
@@ -28,6 +35,7 @@ from .dto import (
 from .errors import (
     ERR_400_INVALID_STRIPE_SIGNATURE,
     ERR_400_INVALID_WEBHOOK_PAYLOAD,
+    ERR_400_REDIRECT_URL_NOT_CONFIGURED,
     ERR_402_INSUFFICIENT_CREDITS,
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
@@ -213,6 +221,24 @@ class CatalogView(SerializerSeamMixin, APIView):
 # ─── Checkout / portal ──────────────────────────────────────
 
 
+def _redirect_url(explicit: str | None, setting_key: str, path: str) -> str:
+    """Resolve a Stripe redirect target — never a placeholder domain.
+
+    Order: request value → ``STAPEL_BILLING[setting_key]`` → derived from
+    the flat ``FRONTEND_URL`` setting/env. With none of them configured
+    the request is rejected.
+    """
+    url = explicit or getattr(billing_settings, setting_key)
+    if url:
+        return url
+    frontend = getattr(settings, "FRONTEND_URL", "") or os.environ.get(
+        "FRONTEND_URL", ""
+    )
+    if frontend:
+        return frontend.rstrip("/") + path
+    raise StapelValidationError(ERR_400_REDIRECT_URL_NOT_CONFIGURED)
+
+
 @extend_schema(tags=["Checkout"])
 class CheckoutView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -231,8 +257,12 @@ class CheckoutView(SerializerSeamMixin, APIView):
             user=request.user,
             package=getattr(data, "package", None),
             plan=getattr(data, "plan", None),
-            success_url=data.success_url or "https://example.com/success",
-            cancel_url=data.cancel_url or "https://example.com/cancel",
+            success_url=_redirect_url(
+                data.success_url, "CHECKOUT_SUCCESS_URL", "/billing/success"
+            ),
+            cancel_url=_redirect_url(
+                data.cancel_url, "CHECKOUT_CANCEL_URL", "/billing/cancel"
+            ),
         )
         response_cls = self.get_response_serializer_class()
         return StapelResponse(
@@ -251,8 +281,11 @@ class CustomerPortalView(SerializerSeamMixin, APIView):
         customer_id = sub.stripe_customer_id if sub else ""
         url = services.create_customer_portal(
             customer_id=customer_id,
-            return_url=request.query_params.get("return_url")
-            or "https://example.com/billing",
+            return_url=_redirect_url(
+                request.query_params.get("return_url"),
+                "PORTAL_RETURN_URL",
+                "/billing",
+            ),
         )
         response_cls = self.get_response_serializer_class()
         return StapelResponse(response_cls(CustomerPortalResponse(portal_url=url)))
