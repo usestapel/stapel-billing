@@ -6,7 +6,8 @@ import os
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import permissions, status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
@@ -16,6 +17,7 @@ from stapel_core.django.api.errors import (
     StapelValidationError,
 )
 from stapel_core.django.api.permissions import IsServiceRequest, IsStaffUser
+from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
 from . import services
 from .catalog import CREDIT_PACKAGES, PLANS
@@ -313,7 +315,19 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = SubscriptionResponseSerializer
 
-    @extend_schema(responses={200: SubscriptionResponseSerializer})
+    @extend_schema(
+        description=(
+            "Cancel the authenticated user's subscription. Cancels the "
+            "subscription at the Stripe provider (when one exists) and marks "
+            "it cancelled locally. Takes no request body."
+        ),
+        request=None,
+        responses={
+            200: SubscriptionResponseSerializer,
+            404: StapelErrorSerializer,
+            502: OpenApiTypes.OBJECT,
+        },
+    )
     def post(self, request):
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
@@ -338,7 +352,33 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
 # ─── Stripe webhook ─────────────────────────────────────────
 
 
-@extend_schema(tags=["Webhooks"])
+@extend_schema(
+    tags=["Webhooks"],
+    summary="Stripe webhook receiver",
+    description=(
+        "External Stripe webhook endpoint. The request body is a raw Stripe "
+        "Event object (JSON) whose authenticity is verified against the "
+        "`Stripe-Signature` header using the configured webhook secret. "
+        "Events are processed idempotently. Not called by first-party clients."
+    ),
+    request=OpenApiTypes.OBJECT,
+    parameters=[
+        OpenApiParameter(
+            "Stripe-Signature",
+            str,
+            location=OpenApiParameter.HEADER,
+            required=True,
+            description=(
+                "Stripe signature header used to verify the event payload."
+            ),
+        ),
+    ],
+    responses={
+        200: OpenApiTypes.OBJECT,
+        400: StapelErrorSerializer,
+        500: OpenApiTypes.OBJECT,
+    },
+)
 class StripeWebhookView(SerializerSeamMixin, APIView):
     permission_classes = [AllowAny]
 
