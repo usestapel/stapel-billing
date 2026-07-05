@@ -3,6 +3,16 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.1 — 2026-07-05
+
+### Fixed
+- `user_id` in comm schemas typed uuid, was integer — rejected valid
+  `user.deleted` events. `schemas/consumes/user.deleted.json` and
+  `schemas/consumes/user.deletion_initiated.json` now type `user_id` as
+  `{"type": "string", "format": "uuid"}`, matching the UUID-pk canonical
+  user and the auth/gdpr producers.
+
+
 ## 0.4.0 — 2026-07-04
 ### Changed
 - **Checkout/portal redirect URLs no longer fall back to `example.com`.**
