@@ -4,21 +4,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.4.2"
+version = "0.4.3"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 keywords = ["django", "stapel", "billing", "payments", "stripe"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Framework :: Django",
     "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
 ]
 dependencies = [
     "stapel-core>=0.3.0,<0.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/usestapel/stapel-billing"
+Repository = "https://github.com/usestapel/stapel-billing"
+Documentation = "https://github.com/usestapel/stapel-billing#readme"
+Changelog = "https://github.com/usestapel/stapel-billing/blob/main/CHANGELOG.md"
+Issues = "https://github.com/usestapel/stapel-billing/issues"
 
 [project.optional-dependencies]
 stripe = ["stripe>=8.0,<12"]
@@ -26,10 +40,18 @@ all = ["stapel-billing[stripe]"]
 
 [tool.setuptools]
 package-dir = {"stapel_billing" = "."}
-packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.providers", "stapel_billing.tests"]
+packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.providers"]
 
 [tool.setuptools.package-data]
 stapel_billing = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Single source for the git hooks and CI (they pass the same flags on the CLI).
+select = ["E", "F", "W"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 django_find_project = false
