@@ -150,6 +150,19 @@ mark commits atomically with the handler's effects (credit grants, emits). Renew
 grants are additionally idempotent per invoice (`metadata__stripe_invoice_id` check in
 `handle_invoice_paid`).
 
+### Admin categories (`stapel_core.access`, admin-suite AS-5)
+
+`StripeWebhookEvent` is decorated `@access.ops` (read-only journal — add/change/delete
+forbidden for everyone including superuser at the admin layer; view requires HIGH
+clearance) and its `ModelAdmin` subclasses `stapel_core.django.admin.base.
+StapelModelAdmin`. It is an idempotency/delivery log for inbound Stripe webhooks
+(`stripe_event_id`, `payload`, `processed_at`) that staff never edit — mutation only
+happens through the webhook claim protocol above. `Wallet`, `Transaction`, and
+`Subscription` are business tables and stay undecorated (implicit `@access.standard`).
+No model in this repo stores a secret/token/credential value — `STRIPE_SECRET_KEY` /
+`STRIPE_WEBHOOK_SECRET` are process settings read lazily via `billing_settings`, never
+persisted to a DB field — so `@access.secret` does not apply anywhere here.
+
 ### Error localization
 
 `docs/errors.json` is the existing en canon (the `generate_error_keys` codegen

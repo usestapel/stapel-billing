@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from stapel_core.django.admin.base import StapelModelAdmin
+
 from .models import StripeWebhookEvent, Subscription, Transaction, Wallet
 
 
@@ -35,8 +37,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
 
 
 @admin.register(StripeWebhookEvent)
-class StripeWebhookEventAdmin(admin.ModelAdmin):
+class StripeWebhookEventAdmin(StapelModelAdmin):
     list_display = ["stripe_event_id", "event_type", "processed_at", "received_at"]
     list_filter = ["event_type"]
     search_fields = ["stripe_event_id"]
-    readonly_fields = ["id", "received_at"]

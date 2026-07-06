@@ -12,6 +12,8 @@ import uuid
 from django.conf import settings
 from django.db import models
 
+from stapel_core.access import access
+
 
 # =====================================================================
 # Enums
@@ -129,6 +131,7 @@ class Subscription(models.Model):
         return f"{self.user_id}: {self.plan} ({self.status})"
 
 
+@access.ops
 class StripeWebhookEvent(models.Model):
     """Idempotency log for incoming Stripe webhooks."""
 

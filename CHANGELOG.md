@@ -3,6 +3,19 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.7 — 2026-07-06
+
+### Changed — admin-suite AS-5: `@access` category rollout
+
+`StripeWebhookEvent` decorated `@access.ops` (idempotency/delivery log for inbound
+Stripe webhooks — read-only journal, mutated only through the webhook claim
+protocol, never through the admin) and its `ModelAdmin` swapped to
+`stapel_core.django.admin.base.StapelModelAdmin`. `Wallet`, `Transaction`, and
+`Subscription` stay undecorated (business tables, implicit `@access.standard`).
+No model in this repo carries a secret/token/credential field — Stripe
+credentials are process settings, not persisted — so `@access.secret` was not
+applicable. Attribute-only change: no migrations.
+
 ## 0.4.6 — 2026-07-06
 
 ### Added — ru error catalog + bilingual error reference (i18n-shipping волна 2)
