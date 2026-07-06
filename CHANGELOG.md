@@ -3,6 +3,38 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.5 — 2026-07-06
+
+### Added
+- **Declarative error registry + `docs/errors.json` codegen artifact.** All
+  twelve service error keys now declare a machine-readable `remediation` hint
+  via `register_service_errors(..., remediation=...)` (backend = canon). Where
+  the status+name heuristic lies for a billing key, the declaration overrides
+  it: the `*_not_found` 404s and `insufficient_credits` (402) declare `fix_input`
+  because retrying the same lookup/spend just loops (the heuristic would resolve
+  a 404 `not_found` to `retry` and fall a 402 through to `retry`); the webhook
+  and config keys — `invalid_stripe_signature`, `invalid_webhook_payload`,
+  `redirect_url_not_configured` — declare `contact_support` (machine-to-machine
+  or operator misconfiguration, no user field for `fix_input` to point at);
+  `forbidden_billing` (403) declares `contact_support` (an authorization
+  boundary, where the heuristic's `retry` would loop); `duplicate_webhook_event`
+  (409) declares `retry` (a benign idempotency replay the service no-ops, not the
+  heuristic's `fix_input`).
+- `docs/errors.json` — the language-agnostic error-key registry (53 entries:
+  core `COMMON_ERRORS` + cross-cutting keys + the twelve service keys), emitted
+  by `generate_error_keys` and consumed by the frontend (`stapel-react` billing
+  pair) as the errors-bundle source.
+- `tests/test_error_keys.py` — byte-stable drift gate (regenerate-and-diff, same
+  discipline as schema.json/flow docs) plus artifact-shape and
+  declared-remediation assertions. Regenerate with
+  `STAPEL_REGEN_ERROR_KEYS=1 pytest tests/test_error_keys.py`.
+
+### Changed
+- Test settings (`conftest.py`) install `stapel_core.django.apps.CommonDjangoConfig`
+  so the `generate_error_keys` management command is discoverable for the drift
+  gate. No `@flow_step` flows exist in this module (0 flows is valid).
+
+
 ## 0.4.4 — 2026-07-06
 
 ### Changed

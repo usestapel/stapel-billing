@@ -11,6 +11,9 @@ def pytest_configure(config):
                 # contrib.admin so the ModelAdmin registrations in admin.py
                 # are importable (and covered) in tests.
                 "django.contrib.admin",
+                # CommonDjangoConfig ships the stapel_core management commands
+                # (generate_error_keys, used by the errors.json drift gate).
+                "stapel_core.django.apps.CommonDjangoConfig",
                 "stapel_core.django.users",
                 "rest_framework",
                 "stapel_billing",
