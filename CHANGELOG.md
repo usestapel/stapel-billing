@@ -3,6 +3,24 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.4.6 — 2026-07-06
+
+### Added — ru error catalog + bilingual error reference (i18n-shipping волна 2)
+
+Reference-pattern application of the `stapel_core.i18n` catalog contour to the
+`errors` domain (i18n-shipping.md §5), copied 1:1 from the stapel-auth pilot.
+
+- `translations/errors.ru.json` — flat `{code: text}` ru catalog covering all
+  53 keys, with `translations/.state.json` provenance sidecar. 50 keys seeded
+  from the curated `stapel-translate` builtin fixtures (`origin:
+  seed:stapel-builtin`, no tokens spent), 3 machine-translated (`origin:
+  llm`, unreviewed). `translations/.errors.ru.llm-cache.json` is the
+  committed, content-hash translation cache.
+- `docs/errors.en.md` · `docs/errors.ru.md` — generated human-readable
+  references; README + MODULE.md link both languages.
+- `tests/test_error_i18n.py` — `check_translation_catalogs` gate + env-gated
+  regen (`STAPEL_REGEN_ERROR_I18N=1`).
+
 ## 0.4.5 — 2026-07-06
 
 ### Added

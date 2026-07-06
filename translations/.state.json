@@ -1,0 +1,216 @@
+{
+  "errors.ru": {
+    "error.400.amount_invalid": {
+      "hash": "d0485533de03f7fa",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.bad_request": {
+      "hash": "917ef22f94f46014",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.captcha_invalid": {
+      "hash": "25503336f2734a2c",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.captcha_required": {
+      "hash": "b9e8e17f5f41d501",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.expected_list": {
+      "hash": "c3a54ef8b2668571",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.blank": {
+      "hash": "24240e0d4ee25246",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.does_not_exist": {
+      "hash": "fe05b1cc91670da4",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.invalid": {
+      "hash": "a77de121de3de1a8",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.invalid_choice": {
+      "hash": "cd885abfaa53ca33",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.max_length": {
+      "hash": "76b7f121ccd03177",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.max_value": {
+      "hash": "323355f5dc9169a6",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.min_length": {
+      "hash": "80b429a34b4f2369",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.min_value": {
+      "hash": "6cbb2a2555652ff4",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.null": {
+      "hash": "23955fdc9daee1ff",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.required": {
+      "hash": "243cda5228ec8015",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.field.unique": {
+      "hash": "bcfc98f9c891efe9",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.invalid_ad_id": {
+      "hash": "5e522ee317c6fcbc",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.invalid_package": {
+      "hash": "a664893c64c5223f",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.invalid_plan": {
+      "hash": "ac8955cfea24e42e",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.invalid_stripe_signature": {
+      "hash": "cd2544812b9f569d",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.invalid_webhook_payload": {
+      "hash": "7cdcc346290c0f03",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.redirect_url_not_configured": {
+      "hash": "14933e9b44ea7152",
+      "origin": "llm"
+    },
+    "error.400.validation_error": {
+      "hash": "2aa2d0b411dd04b1",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.verification_failed": {
+      "hash": "f0f2383f8af8d23d",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.verification_invalid_factor": {
+      "hash": "91a4e8daf1450bd9",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.401.unauthorized": {
+      "hash": "0fcfb12dfad07ba0",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.402.insufficient_credits": {
+      "hash": "ab39dd4e7ca13617",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.402.payment_required": {
+      "hash": "9b7e0bd8dc8b6974",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.403.forbidden": {
+      "hash": "f49aebf1b5899f56",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.403.forbidden_billing": {
+      "hash": "3577985533f14c3c",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.403.network_blocked": {
+      "hash": "73418e2ec86c7544",
+      "origin": "llm"
+    },
+    "error.403.verification_enrollment_required": {
+      "hash": "726adb4e63e9ae80",
+      "origin": "llm"
+    },
+    "error.403.verification_required": {
+      "hash": "b6a8631430a90a2e",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.ad_not_found": {
+      "hash": "f7439d15c4d40a50",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.not_found": {
+      "hash": "009c8799daaa0bdf",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.subscription_not_found": {
+      "hash": "af68de250e564fbd",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.transaction_not_found": {
+      "hash": "eb7c4fd482b03186",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.verification_challenge_not_found": {
+      "hash": "bfb64110e2f2e712",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.wallet_not_found": {
+      "hash": "69c7c3e3fe5a0c96",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.405.method_not_allowed": {
+      "hash": "371b26886bee5e55",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.406.not_acceptable": {
+      "hash": "5e08fb869bdfd099",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.408.request_timeout": {
+      "hash": "70f60044d161bbdd",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.409.conflict": {
+      "hash": "b79d6998c7b1fe74",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.409.duplicate_webhook_event": {
+      "hash": "687547e333bb140a",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.410.gone": {
+      "hash": "9b3a484bf2478795",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.413.payload_too_large": {
+      "hash": "fd973ee25cb9f87a",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.415.unsupported_media_type": {
+      "hash": "5a4d5ddc4995aacf",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.422.unprocessable_entity": {
+      "hash": "a74da92771f0597b",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.423.locked": {
+      "hash": "7f58ca03e08c7a0d",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.423.verification_locked": {
+      "hash": "b842ece80255e06f",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.429.rate_limit": {
+      "hash": "4c27e391f537df96",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.429.too_many_requests": {
+      "hash": "65e299e97186b8cd",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.500.internal": {
+      "hash": "ab827e3fe17da220",
+      "origin": "seed:stapel-builtin"
+    }
+  }
+}

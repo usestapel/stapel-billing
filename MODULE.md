@@ -150,6 +150,30 @@ mark commits atomically with the handler's effects (credit grants, emits). Renew
 grants are additionally idempotent per invoice (`metadata__stripe_invoice_id` check in
 `handle_invoice_paid`).
 
+### Error localization
+
+`docs/errors.json` is the existing en canon (the `generate_error_keys` codegen
+artifact — the array of `{code, status, params, remediation, en}` the frontend
+error bundle is generated from). **Error localization** (i18n-shipping.md §5):
+ru ships as a flat `translations/errors.ru.json` catalog with a
+`translations/.state.json` provenance sidecar, and human-readable references
+[Errors (EN)](docs/errors.en.md) · [Ошибки (RU)](docs/errors.ru.md). Semantics
+of the i18n seams (library-standard §3.3 — MODULE.md states the merge
+semantics of each key): the **error registry** is `dict.update`/**last-wins**
+(a host `errors.py` autodiscovered after ours overrides an en text — and its
+raise-time render — without a fork); the **locale catalogs** are discovered
+over INSTALLED_APPS and merged **later-wins** (a host app's
+`translations/errors.<lang>.json` overrides our texts, and an override MUST
+keep the canon's `{param}` slots — gated). ru provenance is honest: 50 keys
+seeded from the curated `stapel-translate` builtin fixtures (`origin:
+seed:stapel-builtin`, no tokens spent), 3 billing-only keys
+machine-translated (`origin: llm`, unreviewed — the gate's W-counter, cleared
+by `translate_catalogs --approve`). Gate + regenerate: `tests/test_error_i18n.py`
+(`check_translation_catalogs` — E on missing/stale/params/byte-instability);
+regenerate with `STAPEL_REGEN_ERROR_I18N=1 pytest
+tests/test_error_i18n.py::test_regen` and commit `translations/errors.ru.json`,
+`translations/.state.json`, `docs/errors.{en,ru}.md`.
+
 ## Anti-patterns
 
 - **Don't fork to add a payment provider.** Subclass `PaymentProvider` in the app layer

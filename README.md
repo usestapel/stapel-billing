@@ -7,6 +7,8 @@
 
 Part of the [Stapel framework](https://github.com/usestapel) — composable Django apps for building production-grade platforms.
 
+**Error reference:** [Errors (EN)](docs/errors.en.md) · [Ошибки (RU)](docs/errors.ru.md)
+
 ## Installation
 
 ```bash
