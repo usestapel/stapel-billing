@@ -187,6 +187,50 @@ regenerate with `STAPEL_REGEN_ERROR_I18N=1 pytest
 tests/test_error_i18n.py::test_regen` and commit `translations/errors.ru.json`,
 `translations/.state.json`, `docs/errors.{en,ru}.md`.
 
+### Contract emission — the `schema` + `flows` + `errors` triad
+
+This module emits its **own** machine-readable API contract, per-module, so the
+frontend codegen reads a committed, version-pinned artifact instead of checking
+out the monolith aggregate at floating `main` (contract-pipeline.md §2, verdict
+**A**: contract = a reviewable commit, like `docs/errors.json` always was; copied
+from stapel-auth's reference implementation, contract-pipeline.md §7 Wave 1). The
+triad lives in `docs/`:
+
+```
+docs/schema.json   drf-spectacular OpenAPI, this module only, canonical /billing/api/ prefix
+docs/flows.json    generate_flow_docs machine artifact — [] (no @flow_step in this module)
+docs/errors.json   generate_error_keys registry (unchanged by this — already the etalon)
+```
+
+The emitted `schema.json` is **byte-identical to the monolith aggregate's billing
+slice** — the 9 paths under `/billing/api/` plus the transitive `$ref` component
+closure (14 components) they reference.
+`tests/test_contract.py::test_matches_monolith_billing_slice` asserts it in the
+workspace (skipped in module CI, where the monolith isn't checked out).
+
+**Harness** (`_codegen_settings.py` / `codegen_urls.py` / `_codegen.py`, copied
+from stapel-auth): `codegen_urls.py` mounts only `stapel_billing.urls` — unlike
+auth+gdpr, billing has no sibling co-mounted under the same monolith prefix.
+`_codegen.py` pins `spectacular_settings.SCHEMA_PATH_PREFIX = "/"` (same
+multi-module-common-prefix reproduction as auth) and, **billing-specific**, also
+calls `stapel_core.django.openapi.swagger._register_jwt_auth_extension()`
+directly. That registration is normally a side effect of some *other* module's
+`urls.py` calling `get_swagger_urls()` (auth+gdpr both do) — process-global, so
+it silently applies to every operation drf-spectacular sees in the same schema
+pass, including billing's, in the monolith. Billing has no such sibling to
+co-mount (one under `billing/api/` would incorrectly add its paths to this
+module's own schema), so the harness reproduces the side effect directly instead
+of borrowing a sibling's endpoints. Without it, drf-spectacular logs "could not
+resolve authenticator" and every operation is missing its `security` /
+`JWTCookieAuth` block relative to the monolith slice.
+
+**Gate:** `make contract` re-emits; `make contract-check` regenerates into a temp
+dir and diffs. Regenerate after any serializer/view/url/error change:
+
+    make contract        # or: python -m stapel_billing._codegen --out docs
+
+then commit `docs/{schema,flows,errors}.json`.
+
 ## Anti-patterns
 
 - **Don't fork to add a payment provider.** Subclass `PaymentProvider` in the app layer

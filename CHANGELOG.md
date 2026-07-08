@@ -3,6 +3,47 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added — per-module contract emission: `schema` + `flows` triad (contract-pipeline.md Wave 1)
+
+stapel-billing now emits its **own** API contract per-module, completing the
+triad `docs/{schema,flows,errors}.json` (`errors.json` already existed,
+unchanged). The frontend codegen can now read billing's committed artifacts
+instead of the monolith aggregate at floating `main` — contract-pipeline.md
+verdict **A** (contract = a reviewable, version-pinned commit). Copied from the
+stapel-auth reference implementation (contract-pipeline.md §7 Wave 1 recipe).
+
+- **Harness** (reuses `stapel_tools.codegen`):
+  - `_codegen_settings.py` — single source of truth for the `settings.configure`
+    block, shared with `conftest.py` (extracted, no test-behavior change); a
+    `contract=True` mode swaps in the production `REST_FRAMEWORK`.
+  - `codegen_urls.py` — mounts `stapel_billing.urls` at the canonical
+    `billing/api/` prefix (billing has no sibling co-mounted under this prefix
+    in the monolith, unlike auth+gdpr).
+  - `_codegen.py` — the `python -m stapel_billing._codegen --out docs`
+    entrypoint; pins `SCHEMA_PATH_PREFIX="/"` like auth, and additionally
+    directly registers the drf-spectacular JWT-cookie auth extension
+    (`stapel_core.django.openapi.swagger._register_jwt_auth_extension()`) —
+    in the monolith this is a process-global side effect of *another*
+    module's `urls.py` calling `get_swagger_urls()`, so a single-module
+    harness with no such sibling must trigger it directly or every operation
+    is missing its `security`/`JWTCookieAuth` block relative to the monolith
+    slice. See MODULE.md for the full explanation.
+- **`docs/schema.json`** (new) — drf-spectacular OpenAPI for billing only,
+  canonical prefix; **`docs/flows.json`** (new) — `[]` (this module has no
+  `@flow_step` annotations yet).
+- **Byte-identity** with the monolith aggregate's billing slice (9 paths under
+  `/billing/api/` + their 14-component closure) is **exact**: zero diff vs the
+  monolith, verified under matching Python 3.12 (drf-spectacular's
+  dataclass-derived component `description` text renders `Optional[X]` vs
+  `X | None` differently across Python versions — an environment artifact, not
+  a harness/mount difference; both sides must run the same interpreter minor
+  version to compare byte-for-byte).
+- **Gate:** `make contract` / `make contract-check`; `tests/test_contract.py`
+  (drift + determinism + canonical-prefix + monolith-slice identity, the last
+  skipped when the monolith isn't checked out) is the CI-enforced gate.
+
 ## 0.4.7 — 2026-07-06
 
 ### Changed — admin-suite AS-5: `@access` category rollout
