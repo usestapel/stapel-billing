@@ -1,0 +1,803 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "",
+    "version": "0.0.0"
+  },
+  "paths": {
+    "/billing/api/checkout": {
+      "post": {
+        "operationId": "billing_api_checkout_create",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Checkout"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/internal/debit": {
+      "post": {
+        "operationId": "billing_api_internal_debit_create",
+        "description": "Charge a user's wallet from another service (transcription/AI etc.).\n\n**Permissions:** `OperandHolder`",
+        "tags": [
+          "Internal"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreditDebitRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/CreditDebitRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/CreditDebitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditOperationResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/portal": {
+      "get": {
+        "operationId": "billing_api_portal_retrieve",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Checkout"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerPortalResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/products": {
+      "get": {
+        "operationId": "billing_api_products_retrieve",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `AllowAny`",
+        "tags": [
+          "Catalog"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/subscription": {
+      "get": {
+        "operationId": "billing_api_subscription_retrieve",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Subscription"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/subscription/cancel": {
+      "post": {
+        "operationId": "billing_api_subscription_cancel_create",
+        "description": "Cancel the authenticated user's subscription. Cancels the subscription at the Stripe provider (when one exists) and marks it cancelled locally. Takes no request body.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Subscription"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/wallet": {
+      "get": {
+        "operationId": "billing_api_wallet_retrieve",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Wallet"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "operationId": "billing_api_wallet_partial_update",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Wallet"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWalletUpdateRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWalletUpdateRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedWalletUpdateRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/wallet/transactions": {
+      "get": {
+        "operationId": "billing_api_wallet_transactions_retrieve",
+        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Wallet"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionListResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/billing/api/webhooks/stripe": {
+      "post": {
+        "operationId": "billing_api_webhooks_stripe_create",
+        "description": "External Stripe webhook endpoint. The request body is a raw Stripe Event object (JSON) whose authenticity is verified against the `Stripe-Signature` header using the configured webhook secret. Events are processed idempotently. Not called by first-party clients.\n\n**Permissions:** `AllowAny`",
+        "summary": "Stripe webhook receiver",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Stripe-Signature",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stripe signature header used to verify the event payload.",
+            "required": true
+          }
+        ],
+        "tags": [
+          "Webhooks"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CatalogResponse": {
+        "type": "object",
+        "description": "CatalogResponse(packages: List[stapel_billing.dto.PackageResponse] = <factory>, plans: List[stapel_billing.dto.PlanResponse] = <factory>)",
+        "properties": {
+          "packages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageResponse"
+            }
+          },
+          "plans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanResponse"
+            }
+          }
+        }
+      },
+      "CheckoutRequest": {
+        "type": "object",
+        "description": "Initiate a Stripe Checkout session.",
+        "properties": {
+          "package": {
+            "type": "string",
+            "nullable": true,
+            "description": "Credit-package slug (one-time top-up)"
+          },
+          "plan": {
+            "type": "string",
+            "nullable": true,
+            "description": "Subscription plan slug (recurring); mutually exclusive with package"
+          },
+          "success_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where Stripe redirects on success"
+          },
+          "cancel_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where Stripe redirects on cancel"
+          }
+        }
+      },
+      "CheckoutResponse": {
+        "type": "object",
+        "description": "CheckoutResponse(checkout_url: str, session_id: str)",
+        "properties": {
+          "checkout_url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkout_url",
+          "session_id"
+        ]
+      },
+      "CreditDebitRequest": {
+        "type": "object",
+        "description": "Service-to-service debit (transcription/AI charge).",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "credits": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "nullable": true
+          },
+          "idempotency_key": {
+            "type": "string",
+            "nullable": true,
+            "description": "Optional caller-supplied key; retries with the"
+          }
+        },
+        "required": [
+          "credits",
+          "type",
+          "user_id"
+        ]
+      },
+      "CreditOperationResponse": {
+        "type": "object",
+        "description": "CreditOperationResponse(transaction_id: uuid.UUID, balance_after: int)",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "balance_after": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "balance_after",
+          "transaction_id"
+        ]
+      },
+      "CustomerPortalResponse": {
+        "type": "object",
+        "description": "CustomerPortalResponse(portal_url: str)",
+        "properties": {
+          "portal_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "portal_url"
+        ]
+      },
+      "PackageResponse": {
+        "type": "object",
+        "description": "PackageResponse(slug: str, name: str, credits: int, price_cents: int, currency: str)",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "credits": {
+            "type": "integer"
+          },
+          "price_cents": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "credits",
+          "currency",
+          "name",
+          "price_cents",
+          "slug"
+        ]
+      },
+      "PatchedWalletUpdateRequest": {
+        "type": "object",
+        "description": "WalletUpdateRequest(auto_recharge_enabled: Optional[bool] = None, auto_recharge_threshold: Optional[int] = None, auto_recharge_package: Optional[str] = None, low_balance_alert: Optional[int] = None)",
+        "properties": {
+          "auto_recharge_enabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "auto_recharge_threshold": {
+            "type": "integer",
+            "nullable": true
+          },
+          "auto_recharge_package": {
+            "type": "string",
+            "nullable": true
+          },
+          "low_balance_alert": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "PlanResponse": {
+        "type": "object",
+        "description": "PlanResponse(slug: str, name: str, price_cents: int, currency: str, monthly_credits_included: int, storage_limit_bytes: int, description: str)",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "price_cents": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "monthly_credits_included": {
+            "type": "integer"
+          },
+          "storage_limit_bytes": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "description",
+          "monthly_credits_included",
+          "name",
+          "price_cents",
+          "slug",
+          "storage_limit_bytes"
+        ]
+      },
+      "StapelError": {
+        "type": "object",
+        "description": "Structured error returned by all Stapel API endpoints.",
+        "properties": {
+          "localizable_error": {
+            "type": "string",
+            "description": "Translation key for client-side localization",
+            "example": "error.404.not_found"
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable message in English",
+            "example": "Requested resource not found"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Context values for template placeholders",
+            "example": {
+              "retry_after": 30
+            }
+          }
+        },
+        "required": [
+          "error",
+          "localizable_error"
+        ]
+      },
+      "SubscriptionResponse": {
+        "type": "object",
+        "description": "SubscriptionResponse(plan: str, status: str, stripe_subscription_id: Optional[str], current_period_start: Optional[str], current_period_end: Optional[str], cancelled_at: Optional[str])",
+        "properties": {
+          "plan": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "stripe_subscription_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "current_period_start": {
+            "type": "string",
+            "nullable": true
+          },
+          "current_period_end": {
+            "type": "string",
+            "nullable": true
+          },
+          "cancelled_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "cancelled_at",
+          "current_period_end",
+          "current_period_start",
+          "plan",
+          "status",
+          "stripe_subscription_id"
+        ]
+      },
+      "TransactionListResponse": {
+        "type": "object",
+        "description": "TransactionListResponse(transactions: List[stapel_billing.dto.TransactionResponse] = <factory>, next_cursor: Optional[str] = None, has_more: bool = False)",
+        "properties": {
+          "transactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransactionResponse"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TransactionResponse": {
+        "type": "object",
+        "description": "TransactionResponse(id: uuid.UUID, type: str, amount_cents: Optional[int], credits_delta: int, balance_after: int, description: Optional[str], metadata: dict, created_at: str)",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "nullable": true
+          },
+          "credits_delta": {
+            "type": "integer"
+          },
+          "balance_after": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_cents",
+          "balance_after",
+          "created_at",
+          "credits_delta",
+          "description",
+          "id",
+          "metadata",
+          "type"
+        ]
+      },
+      "WalletResponse": {
+        "type": "object",
+        "description": "Wallet snapshot.",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Wallet owner UUID"
+          },
+          "balance": {
+            "type": "integer",
+            "description": "Integer credits"
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217 currency code"
+          },
+          "auto_recharge_enabled": {
+            "type": "boolean",
+            "description": "Auto-recharge flag"
+          },
+          "auto_recharge_threshold": {
+            "type": "integer",
+            "description": "Trigger balance"
+          },
+          "auto_recharge_package": {
+            "type": "string",
+            "nullable": true,
+            "description": "Package slug used for top-up"
+          },
+          "low_balance_alert": {
+            "type": "integer",
+            "description": "Alert threshold"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "ISO 8601"
+          }
+        },
+        "required": [
+          "auto_recharge_enabled",
+          "auto_recharge_package",
+          "auto_recharge_threshold",
+          "balance",
+          "currency",
+          "low_balance_alert",
+          "updated_at",
+          "user_id"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "JWTCookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "stapel_jwt",
+        "description": "JWT token stored in cookie. Login via /auth/admin/ to get the cookie."
+      }
+    }
+  }
+}
