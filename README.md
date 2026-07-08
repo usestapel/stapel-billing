@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/usestapel/stapel-billing/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-billing)
+[![PyPI](https://img.shields.io/pypi/v/stapel-billing.svg)](https://pypi.org/project/stapel-billing/)
 
 > Billing — Stripe subscriptions, credit wallets, transaction history
 
