@@ -21,28 +21,33 @@ from stapel_core.conf import AppSettings
 
 from . import catalog as _catalog
 
+#: AppSettings-shaped literal dict (capability-config.md §2): a top-level
+#: DEFAULTS lets the capabilities.json emitter introspect axis keys/kinds
+#: without re-parsing the AppSettings() call.
+DEFAULTS = {
+    # Dotted path to a stapel_billing.providers.base.PaymentProvider subclass.
+    "PAYMENT_PROVIDER": "stapel_billing.providers.stripe.StripeProvider",
+    # Read lazily at call time (never frozen at import).
+    "STRIPE_SECRET_KEY": "",
+    "STRIPE_WEBHOOK_SECRET": "",
+    # Catalog overrides: lists of dicts (converted to the catalog
+    # dataclasses) or dataclass instances. Defaults live in catalog.py.
+    "CREDIT_PACKAGES": _catalog.DEFAULT_CREDIT_PACKAGES,
+    "PLANS": _catalog.DEFAULT_PLANS,
+    # Fallback redirect targets for Stripe Checkout / customer portal,
+    # used when the request does not carry them. Empty by default;
+    # when unset the fallback is derived from the flat FRONTEND_URL
+    # setting, and with neither configured the request is rejected
+    # with error.400.redirect_url_not_configured (no placeholder
+    # domains, ever).
+    "CHECKOUT_SUCCESS_URL": "",
+    "CHECKOUT_CANCEL_URL": "",
+    "PORTAL_RETURN_URL": "",
+}
+
 billing_settings = AppSettings(
     "STAPEL_BILLING",
-    defaults={
-        # Dotted path to a stapel_billing.providers.base.PaymentProvider subclass.
-        "PAYMENT_PROVIDER": "stapel_billing.providers.stripe.StripeProvider",
-        # Read lazily at call time (never frozen at import).
-        "STRIPE_SECRET_KEY": "",
-        "STRIPE_WEBHOOK_SECRET": "",
-        # Catalog overrides: lists of dicts (converted to the catalog
-        # dataclasses) or dataclass instances. Defaults live in catalog.py.
-        "CREDIT_PACKAGES": _catalog.DEFAULT_CREDIT_PACKAGES,
-        "PLANS": _catalog.DEFAULT_PLANS,
-        # Fallback redirect targets for Stripe Checkout / customer portal,
-        # used when the request does not carry them. Empty by default;
-        # when unset the fallback is derived from the flat FRONTEND_URL
-        # setting, and with neither configured the request is rejected
-        # with error.400.redirect_url_not_configured (no placeholder
-        # domains, ever).
-        "CHECKOUT_SUCCESS_URL": "",
-        "CHECKOUT_CANCEL_URL": "",
-        "PORTAL_RETURN_URL": "",
-    },
+    defaults=DEFAULTS,
     import_strings=("PAYMENT_PROVIDER",),
 )
 

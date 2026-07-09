@@ -56,26 +56,36 @@ if _PY != (3, 12):
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / "docs"
 TRIAD = ("schema.json", "flows.json", "errors.json")
+# The fourth artifact (capability-config.md §2): config axes over
+# STAPEL_BILLING, emitted from conf.py DEFAULTS + the urls.py gate registry
+# + schema.json + the curated docs/capabilities.meta.json. Same emit/drift
+# discipline.
+ARTIFACTS = TRIAD + ("capabilities.json",)
 
 
 def _emit(out_dir: Path) -> None:
-    subprocess.run(
-        [sys.executable, "-m", "stapel_billing._codegen", "--out", str(out_dir)],
-        cwd=str(REPO),
-        check=True,
-        capture_output=True,
+    for module in ("stapel_billing._codegen", "stapel_billing._capabilities"):
+        subprocess.run(
+            [sys.executable, "-m", module, "--out", str(out_dir)],
+            cwd=str(REPO),
+            check=True,
+            capture_output=True,
+        )
+
+
+def test_contract_artifacts_committed():
+    for name in ARTIFACTS:
+        assert (DOCS / name).is_file(), f"missing docs/{name} — run `make contract`"
+    assert (DOCS / "capabilities.meta.json").is_file(), (
+        "missing docs/capabilities.meta.json — the curated layer is "
+        "hand-written and committed, not generated"
     )
 
 
-def test_contract_triad_committed():
-    for name in TRIAD:
-        assert (DOCS / name).is_file(), f"missing docs/{name} — run `make contract`"
-
-
 def test_contract_has_no_drift(tmp_path):
-    """Regenerate into a temp dir; committed triad must match byte-for-byte."""
+    """Regenerate into a temp dir; committed artifacts must match byte-for-byte."""
     _emit(tmp_path)
-    for name in TRIAD:
+    for name in ARTIFACTS:
         committed = (DOCS / name).read_bytes()
         regenerated = (tmp_path / name).read_bytes()
         assert committed == regenerated, (
@@ -88,7 +98,7 @@ def test_emission_is_deterministic(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     _emit(a)
     _emit(b)
-    for name in TRIAD:
+    for name in ARTIFACTS:
         assert (a / name).read_bytes() == (b / name).read_bytes()
 
 
@@ -176,3 +186,102 @@ def test_matches_monolith_billing_slice():
         assert json.dumps(mine["components"]["schemas"][c], sort_keys=True) == json.dumps(
             mono["components"]["schemas"][c], sort_keys=True
         ), f"component {c} differs from monolith slice"
+
+
+# --- capabilities.json content sanity (capability-config.md §2) ---------------
+
+
+def _capabilities() -> dict:
+    return json.loads((DOCS / "capabilities.json").read_text())
+
+
+def test_capabilities_axes_inventory():
+    """One axis: the payment-backend selector."""
+    doc = _capabilities()
+    assert {a["key"] for a in doc["axes"]} == {"PAYMENT_PROVIDER"}
+    axis = doc["axes"][0]
+    assert axis["kind"] == "enum"
+    assert axis["default"] == "stapel_billing.providers.stripe.StripeProvider"
+    assert axis["group"] == "billing.provider"
+
+
+def test_capabilities_every_axis_curated():
+    """Every axis carries non-empty curated business semantics."""
+    for axis in _capabilities()["axes"]:
+        assert axis["curated"]["summary"], axis["key"]
+        assert axis["curated"]["business_label"], axis["key"]
+
+
+def test_capabilities_provider_axis_gates_no_operations():
+    """PAYMENT_PROVIDER swaps the backend; it never unmounts endpoints."""
+    axis = next(a for a in _capabilities()["axes"] if a["key"] == "PAYMENT_PROVIDER")
+    assert axis["gates"]["operations"] == []
+    assert axis["gates"]["co_gates"] == []
+
+
+def test_capabilities_operations_total_matches_schema():
+    schema = json.loads((DOCS / "schema.json").read_text())
+    methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    total = sum(
+        1 for item in schema["paths"].values() for m in item if m in methods
+    )
+    assert _capabilities()["operations_total"] == total
+
+
+def test_capabilities_envelope():
+    doc = _capabilities()
+    import tomllib
+
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    assert doc["module"] == pyproject["project"]["name"]
+    assert doc["version"] == pyproject["project"]["version"]
+    assert doc["provides"]
+    assert doc["extension_points"]
+    assert doc["requires"]
+
+
+def test_capabilities_meta_out_of_sync_fails_loudly():
+    """A curated-layer gap must be an emission ERROR, never a silent skip."""
+    from stapel_tools.capabilities import axis_group_rules, build_capabilities
+
+    from stapel_billing.conf import DEFAULTS
+    from stapel_billing.urls import GATE_REGISTRY
+
+    schema = json.loads((DOCS / "schema.json").read_text())
+    meta = json.loads((DOCS / "capabilities.meta.json").read_text())
+
+    def _build(broken_meta):
+        return build_capabilities(
+            module="stapel-billing",
+            version="0.0.0",
+            defaults=DEFAULTS,
+            registry=GATE_REGISTRY,
+            schema=schema,
+            meta=broken_meta,
+            is_axis=lambda k: k == "PAYMENT_PROVIDER",
+            axis_group=axis_group_rules(
+                exact={"PAYMENT_PROVIDER": "billing.provider"}
+            ),
+            canonical_prefix="/billing/api",
+        )
+
+    # Baseline: intact meta builds.
+    assert _build(json.loads(json.dumps(meta)))["axes"]
+
+    # Missing axis entry → loud failure.
+    broken = json.loads(json.dumps(meta))
+    del broken["axes"]["PAYMENT_PROVIDER"]
+    with pytest.raises(SystemExit, match="PAYMENT_PROVIDER"):
+        _build(broken)
+
+    # Stale (unknown) axis entry → loud failure.
+    broken = json.loads(json.dumps(meta))
+    broken["axes"]["BILLING_NO_SUCH_AXIS"] = {"summary": "x", "business_label": "x"}
+    with pytest.raises(SystemExit, match="BILLING_NO_SUCH_AXIS"):
+        _build(broken)
+
+    # Empty business_label → loud failure.
+    broken = json.loads(json.dumps(meta))
+    broken["axes"]["PAYMENT_PROVIDER"]["business_label"] = ""
+    with pytest.raises(SystemExit, match="business_label"):
+        _build(broken)

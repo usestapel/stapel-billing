@@ -1,0 +1,49 @@
+{
+  "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_billing/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code.",
+  "provides": "Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.",
+  "requires": [
+    {
+      "module": "stapel-core",
+      "optional": false,
+      "reason": "comm bus (payment.completed / subscription.changed emits, user.deleted consumer), JWT authentication, GDPR provider registry, AppSettings config layer"
+    },
+    {
+      "module": "stapel-auth",
+      "optional": true,
+      "reason": "issues the authenticated user sessions the wallet/checkout/subscription endpoints require and the user.deleted event this module consumes; the model binding itself is the standard AUTH_USER_MODEL swap"
+    }
+  ],
+  "extension_points": [
+    {
+      "name": "CREDIT_PACKAGES",
+      "kind": "catalog_override",
+      "summary": "Replace the one-off credit package catalog from settings (list of dicts or CreditPackage instances) — re-read lazily on every access, no fork."
+    },
+    {
+      "name": "PLANS",
+      "kind": "catalog_override",
+      "summary": "Replace the subscription plan catalog from settings (list of dicts or PlanCatalogEntry instances) — re-read lazily on every access, no fork."
+    },
+    {
+      "name": "PAYMENT_PROVIDER",
+      "kind": "dotted_path",
+      "summary": "Swap the payment backend: implement the PaymentProvider ABC (checkout, portal, cancel, webhook verify) in the host project and point the setting at it."
+    },
+    {
+      "name": "AUTH_USER_MODEL",
+      "kind": "swappable_model",
+      "summary": "Standard Django user swap — wallet/subscription rows bind to settings.AUTH_USER_MODEL; the module never references a concrete user class."
+    },
+    {
+      "name": "serializer_seams",
+      "kind": "class_override",
+      "summary": "Every billing view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL."
+    }
+  ],
+  "axes": {
+    "PAYMENT_PROVIDER": {
+      "business_label": "Payment processor",
+      "summary": "Which payment backend handles checkout, subscriptions and webhooks. Stripe out of the box; any other processor plugs in as a host-project provider class."
+    }
+  }
+}
