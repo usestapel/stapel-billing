@@ -35,6 +35,24 @@ from pathlib import Path
 
 import pytest
 
+_PY = sys.version_info[:2]
+if _PY != (3, 12):
+    _GOT = f"{_PY[0]}.{_PY[1]}"
+    _PY312_MSG = (
+        "stapel-billing contract tests require Python 3.12 (the CI/monolith "
+        f"pin) — running {_GOT}. drf-spectacular renders component "
+        "descriptions (Optional[X] vs X | None) differently across Python "
+        "minor versions, so drift/identity checks emitted+compared under any "
+        "other minor produce false diffs."
+    )
+    if os.environ.get("CI"):
+        pytest.fail(_PY312_MSG + " Refusing to silently pass in CI.", pytrace=False)
+    else:
+        pytest.skip(
+            _PY312_MSG + " Skipping locally — rerun under a 3.12 interpreter.",
+            allow_module_level=True,
+        )
+
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / "docs"
 TRIAD = ("schema.json", "flows.json", "errors.json")
