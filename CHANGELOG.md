@@ -5,6 +5,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-09
+
+### Fixed — `subscription.changed.current_period_end` now carries the real period (no more structural `null`)
+
+The `subscription.changed` comm fact advertised `current_period_end`, but no
+webhook handler ever populated the model's `current_period_start` /
+`current_period_end` from the Stripe subscription object, so the field was
+**always emitted as `null`** — a wire value consumers (renewal reminders,
+access-expiry gates, proration) could not act on.
+
+- `handle_subscription_updated` and `handle_subscription_deleted` now populate
+  the period boundaries from the provider subscription object's unix
+  timestamps via the new `_apply_stripe_period` helper, so the emitted
+  `current_period_end` is the real renewal/expiry moment.
+- A missing period leaves the prior value intact rather than nulling it; the
+  field stays `null` **only** at the `checkout.session.completed` milestone
+  (whose session payload has no billing period yet — the immediately following
+  `customer.subscription.created` event fills it in). `null` now means
+  strictly "not yet known", never a fabricated zero timestamp — documented in
+  the emit schema (`schemas/emits/subscription.changed.json`) and the
+  `_announce_subscription` docstring.
+
+Contract form is unchanged (`current_period_end` was already optional and
+nullable) — this is a value-semantics fix, hence a patch bump.
+
 ### Added — per-module contract emission: `schema` + `flows` triad (contract-pipeline.md Wave 1)
 
 stapel-billing now emits its **own** API contract per-module, completing the

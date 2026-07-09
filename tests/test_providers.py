@@ -286,6 +286,112 @@ class TestWebhookMilestones:
         assert len(received) == 1
         assert received[0].payload["status"] == "cancelled"
 
+    def test_subscription_updated_emits_real_period_end(self, user):
+        """G11: current_period_end must carry the provider's real timestamp,
+        not a null/zero placeholder, once a subscription object supplies it."""
+        import datetime as _dt
+
+        import jsonschema
+
+        from stapel_core.comm import action_registry
+
+        Subscription.objects.create(
+            user=user, plan="pro", status="active", stripe_subscription_id="sub_up"
+        )
+        received = []
+        action_registry.subscribe(
+            "subscription.changed", lambda event: received.append(event)
+        )
+        # 2026-08-01T00:00:00Z / 2026-09-01T00:00:00Z as unix seconds.
+        start = int(_dt.datetime(2026, 8, 1, tzinfo=_dt.timezone.utc).timestamp())
+        end = int(_dt.datetime(2026, 9, 1, tzinfo=_dt.timezone.utc).timestamp())
+        services.handle_subscription_updated(
+            {
+                "data": {
+                    "object": {
+                        "id": "sub_up",
+                        "status": "active",
+                        "current_period_start": start,
+                        "current_period_end": end,
+                    }
+                }
+            }
+        )
+        assert len(received) == 1
+        payload = received[0].payload
+        jsonschema.validate(payload, _load_schema("subscription.changed"))
+        assert payload["current_period_end"] == "2026-09-01T00:00:00+00:00"
+        # Model persisted both boundaries from real data.
+        sub = Subscription.objects.get(stripe_subscription_id="sub_up")
+        assert sub.current_period_start == _dt.datetime(
+            2026, 8, 1, tzinfo=_dt.timezone.utc
+        )
+        assert sub.current_period_end == _dt.datetime(
+            2026, 9, 1, tzinfo=_dt.timezone.utc
+        )
+
+    def test_subscription_updated_without_period_keeps_none(self, user):
+        """A subscription object with no period leaves the field honestly
+        null rather than fabricating a zero timestamp."""
+        from stapel_core.comm import action_registry
+
+        Subscription.objects.create(
+            user=user, plan="pro", status="active", stripe_subscription_id="sub_np"
+        )
+        received = []
+        action_registry.subscribe(
+            "subscription.changed", lambda event: received.append(event)
+        )
+        services.handle_subscription_updated(
+            {"data": {"object": {"id": "sub_np", "status": "past_due"}}}
+        )
+        assert len(received) == 1
+        assert received[0].payload["current_period_end"] is None
+        assert received[0].payload["status"] == "past_due"
+        sub = Subscription.objects.get(stripe_subscription_id="sub_np")
+        assert sub.current_period_end is None
+
+    def test_subscription_updated_preserves_prior_period_when_absent(self, user):
+        """A later event without period data must not null out a period that
+        an earlier event already populated."""
+        import datetime as _dt
+
+        end = _dt.datetime(2026, 10, 1, tzinfo=_dt.timezone.utc)
+        Subscription.objects.create(
+            user=user,
+            plan="pro",
+            status="active",
+            stripe_subscription_id="sub_keep",
+            current_period_end=end,
+        )
+        services.handle_subscription_updated(
+            {"data": {"object": {"id": "sub_keep", "status": "active"}}}
+        )
+        sub = Subscription.objects.get(stripe_subscription_id="sub_keep")
+        assert sub.current_period_end == end
+
+    def test_subscription_deleted_emits_real_period_end(self, user):
+        """current_period_end from the deleted subscription object reaches the
+        wire so consumers know when access actually lapses."""
+        import datetime as _dt
+
+        from stapel_core.comm import action_registry
+
+        Subscription.objects.create(
+            user=user, plan="pro", status="active", stripe_subscription_id="sub_del"
+        )
+        received = []
+        action_registry.subscribe(
+            "subscription.changed", lambda event: received.append(event)
+        )
+        end = int(_dt.datetime(2026, 12, 1, tzinfo=_dt.timezone.utc).timestamp())
+        services.handle_subscription_deleted(
+            {"data": {"object": {"id": "sub_del", "current_period_end": end}}}
+        )
+        assert len(received) == 1
+        assert received[0].payload["status"] == "cancelled"
+        assert received[0].payload["current_period_end"] == "2026-12-01T00:00:00+00:00"
+
     def test_invoice_paid_emits_payment_completed(self, user):
         import jsonschema
 

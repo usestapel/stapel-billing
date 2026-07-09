@@ -8,7 +8,7 @@
     "user_id":             { "type": "string", "format": "uuid" },
     "plan":                { "type": "string" },
     "status":              { "type": "string" },
-    "current_period_end":  { "type": ["string", "null"], "format": "date-time" }
+    "current_period_end":  { "type": ["string", "null"], "format": "date-time", "description": "End of the current billing period (renewal/expiry moment), populated from the provider subscription object. null means not yet known (e.g. the checkout.session.completed milestone, before the customer.subscription.created event lands) — never a fabricated zero timestamp." }
   },
   "additionalProperties": true
 }

@@ -183,6 +183,40 @@ def verify_stripe_signature(payload: bytes, sig_header: str) -> dict:
 # ─── Milestones (comm actions + Django signals) ─────────────
 
 
+def _epoch_to_datetime(ts):
+    """Convert a Stripe unix timestamp to an aware UTC datetime, or None.
+
+    Stripe encodes period boundaries as integer unix seconds. Anything that
+    is not a real number (missing key, ``None``) yields ``None`` — the honest
+    "unknown" rather than a fabricated epoch-zero timestamp.
+    """
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None
+    from datetime import datetime, timezone as _tz
+
+    return datetime.fromtimestamp(ts, tz=_tz.utc)
+
+
+def _apply_stripe_period(sub: Subscription, obj: dict) -> list[str]:
+    """Populate ``current_period_{start,end}`` on *sub* from a Stripe
+    subscription object. Returns the names of the fields that actually
+    changed, for ``save(update_fields=...)``.
+
+    Only overwrites a field when the source carries a real timestamp — a
+    missing period leaves the prior value intact rather than nulling it.
+    """
+    changed: list[str] = []
+    start = _epoch_to_datetime(obj.get("current_period_start"))
+    if start is not None and start != sub.current_period_start:
+        sub.current_period_start = start
+        changed.append("current_period_start")
+    end = _epoch_to_datetime(obj.get("current_period_end"))
+    if end is not None and end != sub.current_period_end:
+        sub.current_period_end = end
+        changed.append("current_period_end")
+    return changed
+
+
 def _announce_payment(*, user, txn: Transaction, amount_cents: int, currency: str, **extra) -> None:
     """Emit payment.completed + send the payment_completed signal.
 
@@ -207,7 +241,17 @@ def _announce_payment(*, user, txn: Transaction, amount_cents: int, currency: st
 
 
 def _announce_subscription(sub: Subscription) -> None:
-    """Emit subscription.changed + send the subscription_changed signal."""
+    """Emit subscription.changed + send the subscription_changed signal.
+
+    ``current_period_end`` carries the real renewal/expiry moment whenever it
+    is known — the provider webhooks that hand us a subscription object
+    (``customer.subscription.created/updated/deleted``) populate it via
+    :func:`_apply_stripe_period`. It stays ``null`` only at the
+    ``checkout.session.completed`` milestone, whose session payload does not
+    yet carry a billing period; the immediately-following
+    ``customer.subscription.created`` event fills it in. ``null`` therefore
+    means "not yet known", never a fabricated zero timestamp.
+    """
     emit(
         "subscription.changed",
         {
@@ -362,7 +406,8 @@ def handle_subscription_updated(event: dict) -> None:
         "incomplete": SubscriptionStatus.INCOMPLETE,
     }
     sub.status = status_map.get(obj.get("status"), sub.status)
-    sub.save(update_fields=["status", "updated_at"])
+    fields = ["status", "updated_at", *_apply_stripe_period(sub, obj)]
+    sub.save(update_fields=fields)
     _announce_subscription(sub)
 
 
@@ -377,5 +422,6 @@ def handle_subscription_deleted(event: dict) -> None:
 
     sub.status = SubscriptionStatus.CANCELLED
     sub.cancelled_at = timezone.now()
-    sub.save(update_fields=["status", "cancelled_at", "updated_at"])
+    fields = ["status", "cancelled_at", "updated_at", *_apply_stripe_period(sub, obj)]
+    sub.save(update_fields=fields)
     _announce_subscription(sub)
