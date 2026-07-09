@@ -3,6 +3,12 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.9] — 2026-07-10
+
+### Fixed
+- Re-release of 0.4.8: its publish gate failed on CI missing stapel-tools
+  (contract-emission dependency); no code changes beyond the CI fix.
+
 ## [Unreleased]
 
 ## [0.4.8] - 2026-07-09
