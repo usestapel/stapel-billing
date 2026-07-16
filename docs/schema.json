@@ -624,8 +624,7 @@
           },
           "error": {
             "type": "string",
-            "description": "Human-readable message in English",
-            "example": "Requested resource not found"
+            "description": "Human-readable fallback/debug message — not reliably English,"
           },
           "params": {
             "type": "object",
@@ -634,6 +633,10 @@
             "example": {
               "retry_after": 30
             }
+          },
+          "error_language": {
+            "type": "string",
+            "description": "Active Django locale `error` was rendered in (e.g"
           }
         },
         "required": [

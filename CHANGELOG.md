@@ -3,6 +3,16 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.12] - 2026-07-17
+
+### Changed
+- `stapel-core` ceiling raised `>=0.10,<0.11` → `>=0.10,<0.12` (core 0.11
+  fleet re-pin: default bus, nav, config-checks, error params/language —
+  additive for modules).
+- `docs/schema.json` regenerated against core 0.11.2 — error object gained
+  `error_language` field and a reworded `error` description; no drift
+  otherwise.
+
 ## [0.4.10] - 2026-07-16
 
 ### Fixed — dependency pin
