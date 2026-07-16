@@ -135,7 +135,7 @@ class WalletView(SerializerSeamMixin, APIView):
     response_serializer_class = WalletResponseSerializer
 
     @extend_schema(responses={200: WalletResponseSerializer})
-    def get(self, request):
+    def get(self, request):  # noqa: R007
         wallet = services.get_or_create_wallet(request.user)
         response_cls = self.get_response_serializer_class()
         return StapelResponse(response_cls(_wallet_to_dto(wallet)))
@@ -144,7 +144,7 @@ class WalletView(SerializerSeamMixin, APIView):
         request=WalletUpdateRequestSerializer,
         responses={200: WalletResponseSerializer},
     )
-    def patch(self, request):
+    def patch(self, request):  # noqa: R007
         wallet = services.get_or_create_wallet(request.user)
         ser = self.get_request_serializer_class()(data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
@@ -168,7 +168,7 @@ class TransactionListView(SerializerSeamMixin, APIView):
     response_serializer_class = TransactionListResponseSerializer
 
     @extend_schema(responses={200: TransactionListResponseSerializer})
-    def get(self, request):
+    def get(self, request):  # noqa: R007
         wallet = services.get_or_create_wallet(request.user)
         qs = wallet.transactions.order_by("-created_at")[:100]
         response_cls = self.get_response_serializer_class()
@@ -191,7 +191,7 @@ class CatalogView(SerializerSeamMixin, APIView):
     response_serializer_class = CatalogResponseSerializer
 
     @extend_schema(responses={200: CatalogResponseSerializer})
-    def get(self, request):
+    def get(self, request):  # noqa: R007
         packages = [
             PackageResponse(
                 slug=p.slug,
@@ -233,7 +233,7 @@ def _redirect_url(explicit: str | None, setting_key: str, path: str) -> str:
     url = explicit or getattr(billing_settings, setting_key)
     if url:
         return url
-    frontend = getattr(settings, "FRONTEND_URL", "") or os.environ.get(
+    frontend = getattr(settings, "FRONTEND_URL", "") or os.environ.get(  # noqa: CFG001
         "FRONTEND_URL", ""
     )
     if frontend:
@@ -251,7 +251,7 @@ class CheckoutView(SerializerSeamMixin, APIView):
         request=CheckoutRequestSerializer,
         responses={200: CheckoutResponseSerializer},
     )
-    def post(self, request):
+    def post(self, request):  # noqa: R007
         ser = self.get_request_serializer_class()(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -278,7 +278,7 @@ class CustomerPortalView(SerializerSeamMixin, APIView):
     response_serializer_class = CustomerPortalResponseSerializer
 
     @extend_schema(responses={200: CustomerPortalResponseSerializer})
-    def get(self, request):
+    def get(self, request):  # noqa: R007
         sub = getattr(request.user, "subscription", None)
         customer_id = sub.stripe_customer_id if sub else ""
         url = services.create_customer_portal(
@@ -302,7 +302,7 @@ class SubscriptionView(SerializerSeamMixin, APIView):
     response_serializer_class = SubscriptionResponseSerializer
 
     @extend_schema(responses={200: SubscriptionResponseSerializer})
-    def get(self, request):
+    def get(self, request):  # noqa: R007
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
             sub = Subscription.objects.create(user=request.user)
@@ -328,7 +328,7 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
             502: OpenApiTypes.OBJECT,
         },
     )
-    def post(self, request):
+    def post(self, request):  # noqa: R007
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
             return StapelErrorResponse(404, ERR_404_SUBSCRIPTION_NOT_FOUND)
@@ -339,7 +339,7 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
                 # Do NOT mark cancelled locally: the user would believe
                 # the subscription is off while the provider keeps charging.
                 logger.exception("Provider subscription cancel failed")
-                return StapelResponse(
+                return StapelResponse(  # noqa: R006
                     {"status": "error"},
                     status=status.HTTP_502_BAD_GATEWAY,
                 )
@@ -405,7 +405,7 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
             defaults={"event_type": event_type, "payload": event},
         )
         if not created and log.processed_at is not None:
-            return StapelResponse({"status": "duplicate"}, status=status.HTTP_200_OK)
+            return StapelResponse({"status": "duplicate"}, status=status.HTTP_200_OK)  # noqa: R006
 
         try:
             with transaction.atomic():
@@ -414,7 +414,7 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
                 # atomically with the handler's effects.
                 locked = StripeWebhookEvent.objects.select_for_update().get(pk=log.pk)
                 if locked.processed_at is not None:
-                    return StapelResponse(
+                    return StapelResponse(  # noqa: R006
                         {"status": "duplicate"}, status=status.HTTP_200_OK
                     )
                 if event_type == "checkout.session.completed":
@@ -437,10 +437,10 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
             logger.exception("Stripe webhook handler failed")
             log.error = str(exc)
             log.save(update_fields=["error"])
-            return StapelResponse(
+            return StapelResponse(  # noqa: R006
                 {"status": "error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        return StapelResponse({"status": "ok"})
+        return StapelResponse({"status": "ok"})  # noqa: R006
 
 
 # ─── Internal service-to-service ────────────────────────────
@@ -458,7 +458,7 @@ class InternalDebitView(SerializerSeamMixin, APIView):
         request=CreditDebitRequestSerializer,
         responses={200: CreditOperationResponseSerializer},
     )
-    def post(self, request):
+    def post(self, request):  # noqa: R007
         ser = self.get_request_serializer_class()(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data

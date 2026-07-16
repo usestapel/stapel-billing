@@ -5,9 +5,9 @@
     "version": "0.0.0"
   },
   "paths": {
-    "/billing/api/checkout": {
+    "/billing/api/v1/checkout": {
       "post": {
-        "operationId": "billing_api_checkout_create",
+        "operationId": "billing_api_v1_checkout_create",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Checkout"
@@ -50,9 +50,9 @@
         }
       }
     },
-    "/billing/api/internal/debit": {
+    "/billing/api/v1/internal/debit": {
       "post": {
-        "operationId": "billing_api_internal_debit_create",
+        "operationId": "billing_api_v1_internal_debit_create",
         "description": "Charge a user's wallet from another service (transcription/AI etc.).\n\n**Permissions:** `OperandHolder`",
         "tags": [
           "Internal"
@@ -96,9 +96,9 @@
         }
       }
     },
-    "/billing/api/portal": {
+    "/billing/api/v1/portal": {
       "get": {
-        "operationId": "billing_api_portal_retrieve",
+        "operationId": "billing_api_v1_portal_retrieve",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Checkout"
@@ -122,9 +122,9 @@
         }
       }
     },
-    "/billing/api/products": {
+    "/billing/api/v1/products": {
       "get": {
-        "operationId": "billing_api_products_retrieve",
+        "operationId": "billing_api_v1_products_retrieve",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `AllowAny`",
         "tags": [
           "Catalog"
@@ -149,9 +149,9 @@
         }
       }
     },
-    "/billing/api/subscription": {
+    "/billing/api/v1/subscription": {
       "get": {
-        "operationId": "billing_api_subscription_retrieve",
+        "operationId": "billing_api_v1_subscription_retrieve",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Subscription"
@@ -175,9 +175,9 @@
         }
       }
     },
-    "/billing/api/subscription/cancel": {
+    "/billing/api/v1/subscription/cancel": {
       "post": {
-        "operationId": "billing_api_subscription_cancel_create",
+        "operationId": "billing_api_v1_subscription_cancel_create",
         "description": "Cancel the authenticated user's subscription. Cancels the subscription at the Stripe provider (when one exists) and marks it cancelled locally. Takes no request body.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Subscription"
@@ -222,9 +222,9 @@
         }
       }
     },
-    "/billing/api/wallet": {
+    "/billing/api/v1/wallet": {
       "get": {
-        "operationId": "billing_api_wallet_retrieve",
+        "operationId": "billing_api_v1_wallet_retrieve",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Wallet"
@@ -248,7 +248,7 @@
         }
       },
       "patch": {
-        "operationId": "billing_api_wallet_partial_update",
+        "operationId": "billing_api_v1_wallet_partial_update",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Wallet"
@@ -291,9 +291,9 @@
         }
       }
     },
-    "/billing/api/wallet/transactions": {
+    "/billing/api/v1/wallet/transactions": {
       "get": {
-        "operationId": "billing_api_wallet_transactions_retrieve",
+        "operationId": "billing_api_v1_wallet_transactions_retrieve",
         "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Wallet"
@@ -317,9 +317,9 @@
         }
       }
     },
-    "/billing/api/webhooks/stripe": {
+    "/billing/api/v1/webhooks/stripe": {
       "post": {
-        "operationId": "billing_api_webhooks_stripe_create",
+        "operationId": "billing_api_v1_webhooks_stripe_create",
         "description": "External Stripe webhook endpoint. The request body is a raw Stripe Event object (JSON) whose authenticity is verified against the `Stripe-Signature` header using the configured webhook secret. Events are processed idempotently. Not called by first-party clients.\n\n**Permissions:** `AllowAny`",
         "summary": "Stripe webhook receiver",
         "parameters": [

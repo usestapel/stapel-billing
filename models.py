@@ -5,7 +5,7 @@ Billing domain: Wallet (per-user credit balance), Transaction
 Charge / refund operations go through `wallet_service.debit()` /
 `.credit()` which write a Transaction row and update Wallet.balance
 inside a DB transaction.  Stripe webhooks land at
-`/billing/api/webhooks/stripe/` and are validated by signature.
+`/billing/api/v1/webhooks/stripe/` and are validated by signature.
 """
 
 import uuid

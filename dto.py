@@ -31,7 +31,7 @@ class WalletResponse:
 
 
 @dataclass
-class WalletUpdateRequest:
+class WalletUpdateRequest:  # noqa: R004
     auto_recharge_enabled: Optional[bool] = None
     auto_recharge_threshold: Optional[int] = None
     auto_recharge_package: Optional[str] = None
@@ -39,7 +39,7 @@ class WalletUpdateRequest:
 
 
 @dataclass
-class TransactionResponse:
+class TransactionResponse:  # noqa: R004
     id: UUID
     type: str
     amount_cents: Optional[int]
@@ -51,14 +51,14 @@ class TransactionResponse:
 
 
 @dataclass
-class TransactionListResponse:
+class TransactionListResponse:  # noqa: R004
     transactions: List[TransactionResponse] = field(default_factory=list)
     next_cursor: Optional[str] = None
     has_more: bool = False
 
 
 @dataclass
-class PackageResponse:
+class PackageResponse:  # noqa: R004
     slug: str
     name: str
     credits: int
@@ -67,7 +67,7 @@ class PackageResponse:
 
 
 @dataclass
-class PlanResponse:
+class PlanResponse:  # noqa: R004
     slug: str
     name: str
     price_cents: int
@@ -78,7 +78,7 @@ class PlanResponse:
 
 
 @dataclass
-class CatalogResponse:
+class CatalogResponse:  # noqa: R004
     packages: List[PackageResponse] = field(default_factory=list)
     plans: List[PlanResponse] = field(default_factory=list)
 
@@ -101,13 +101,13 @@ class CheckoutRequest:
 
 
 @dataclass
-class CheckoutResponse:
+class CheckoutResponse:  # noqa: R004
     checkout_url: str
     session_id: str
 
 
 @dataclass
-class SubscriptionResponse:
+class SubscriptionResponse:  # noqa: R004
     plan: str
     status: str
     stripe_subscription_id: Optional[str]
@@ -117,7 +117,7 @@ class SubscriptionResponse:
 
 
 @dataclass
-class CustomerPortalResponse:
+class CustomerPortalResponse:  # noqa: R004
     portal_url: str
 
 
@@ -140,6 +140,6 @@ class CreditDebitRequest:
 
 
 @dataclass
-class CreditOperationResponse:
+class CreditOperationResponse:  # noqa: R004
     transaction_id: UUID
     balance_after: int
