@@ -3,6 +3,13 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.15] - 2026-07-17
+
+Fix-up #2: 0.4.14's regen still baked the old version into
+`docs/capabilities.json` (`make contract` ran before the version bump
+landed). Re-ran with 0.4.15 already in `pyproject.toml`; verified match,
+suite green.
+
 ## [0.4.14] - 2026-07-17
 
 Fix-up: 0.4.13's CI/publish failed on contract drift — `docs/capabilities.json`
