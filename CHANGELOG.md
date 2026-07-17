@@ -3,6 +3,12 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.14] - 2026-07-17
+
+Fix-up: 0.4.13's CI/publish failed on contract drift — `docs/capabilities.json`
+embeds the package version and wasn't regenerated for the 0.4.13 bump.
+Regenerated via `make contract`; no other diff.
+
 ## [0.4.13] - 2026-07-17
 
 Fleet follow-up to stapel-core 0.12.0 (legacy shim sweep). No source
