@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.check_entitlement",
+  "description": "Payload for the billing.check_entitlement comm Function. Resolves the caller-supplied user's effective plan and checks one entitlement key against it. Returns {\"allowed\": bool, \"limit\": int|null, \"reason\": str|null}. quantity is the prospective total the caller wants (current + 1 for \"one more member\"); billing does not track usage itself.",
+  "type": "object",
+  "required": ["user_id", "key"],
+  "properties": {
+    "user_id":  { "type": "string", "format": "uuid" },
+    "key":      { "type": "string", "minLength": 1 },
+    "quantity": { "type": "integer", "minimum": 1, "default": 1 }
+  },
+  "additionalProperties": false
+}

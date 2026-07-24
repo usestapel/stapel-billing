@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.debit",
+  "description": "Payload for the billing.debit comm Function — service-to-service wallet debit (wrapper over stapel_billing.services.debit). idempotency_key is REQUIRED: comm delivery is at-least-once and a retry with the same key returns the original transaction instead of debiting twice. Returns {\"ok\": bool, \"balance\": int|null, \"reason\": str|null, \"transaction_id\"?: str}. type values mirror stapel_billing.models.TransactionType.",
+  "type": "object",
+  "required": ["user_id", "credits", "idempotency_key"],
+  "properties": {
+    "user_id":         { "type": "string", "format": "uuid" },
+    "credits":         { "type": "integer", "minimum": 1 },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "metadata":        { "type": "object" },
+    "description":     { "type": "string" },
+    "type": {
+      "type": "string",
+      "enum": [
+        "credit_purchase",
+        "transcription_charge",
+        "ai_charge",
+        "subscription_bonus",
+        "refund",
+        "adjustment"
+      ],
+      "default": "adjustment"
+    }
+  },
+  "additionalProperties": false
+}

@@ -3,6 +3,39 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] - 2026-07-24
+
+Entitlements seam (workspaces-org program §D1, Wave 1). All additive — no
+schema/DB changes (entitlements live in the frozen catalogue dataclass,
+not in models; `docs/` contract triad unchanged).
+
+### Added
+- `PlanCatalogEntry.entitlements: dict[str, int | bool]` (default `{}`) —
+  per-plan feature switches (`bool`) and ceilings (`int`). Default-plan
+  ladder: free `{workspaces.org: False, workspaces.members.max: 5,
+  workspaces.provision_user: False}`; pro 25 members / team 100 members
+  with org+provision `True`; enterprise org+provision `True` with no
+  member ceiling (an absent key is unrestricted).
+- New `entitlements.py` with comm Functions (registered in
+  `apps.ready()`, payload contracts in `schemas/functions/`):
+  - `billing.check_entitlement` `{user_id, key, quantity=1}` →
+    `{allowed, limit, reason}` — resolves the user's effective plan
+    (subscription in `active`/`trialing`/`past_due`; none or
+    `cancelled`/`incomplete` → the default `free` plan) and checks the
+    key. Keys not declared by the plan **allow** (unknown keys never
+    deny — conservative OSS default). `quantity` is the prospective
+    total (caller counts usage; billing doesn't).
+  - `billing.debit` `{user_id, credits, idempotency_key, metadata?,
+    description?, type?="adjustment"}` → `{ok, balance, reason,
+    transaction_id?}` — comm wrapper over `services.debit` (previously
+    internal-HTTP-only) with the same idempotency short-circuit;
+    `idempotency_key` required (comm is at-least-once), failures are
+    structural (`insufficient_credits` / `user_not_found`), never
+    exceptions.
+- Public API: `CHECK_ENTITLEMENT`, `DEBIT`, `check_entitlement` exported
+  lazily from the package root (the `billing.debit` provider is not
+  re-exported — the package-level `debit` stays `services.debit`).
+
 ## [0.4.15] - 2026-07-17
 
 Fix-up #2: 0.4.14's regen still baked the old version into

@@ -11,7 +11,9 @@ The lists below are *defaults*.  Host projects override them through the
         "PLANS": [
             {"slug": "free", "name": "Free", "price_cents": 0,
              "monthly_credits_included": 0, "storage_limit_bytes": 0,
-             "description": "..."},
+             "description": "...",
+             "entitlements": {"workspaces.org": False,
+                              "workspaces.members.max": 5}},
         ],
     }
 
@@ -22,7 +24,7 @@ lazy views that re-read the configuration on every access.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
 
@@ -37,6 +39,17 @@ class CreditPackage:
 
 @dataclass(frozen=True)
 class PlanCatalogEntry:
+    """One subscription plan in the catalogue.
+
+    ``entitlements`` maps feature keys to either a ``bool`` (feature
+    switch, e.g. ``"workspaces.org": False``) or an ``int`` (numeric
+    ceiling, e.g. ``"workspaces.members.max": 5``). Consumed by the
+    ``billing.check_entitlement`` comm Function (see ``entitlements.py``).
+    A key *absent* from the dict is unrestricted: unknown keys never
+    deny — the conservative OSS default, letting host modules introduce
+    new entitlement keys without every deployment re-declaring its plans.
+    """
+
     slug: str
     name: str
     price_cents: int
@@ -44,6 +57,7 @@ class PlanCatalogEntry:
     storage_limit_bytes: int
     description: str
     currency: str = "USD"
+    entitlements: dict[str, int | bool] = field(default_factory=dict)
 
 
 DEFAULT_CREDIT_PACKAGES = [
@@ -60,6 +74,11 @@ DEFAULT_PLANS = [
         monthly_credits_included=0,
         storage_limit_bytes=5 * 1024 * 1024 * 1024,
         description="5h upload per month, Fast ASR only, community support.",
+        entitlements={
+            "workspaces.org": False,
+            "workspaces.members.max": 5,
+            "workspaces.provision_user": False,
+        },
     ),
     PlanCatalogEntry(
         slug="pro",
@@ -68,6 +87,11 @@ DEFAULT_PLANS = [
         monthly_credits_included=300,
         storage_limit_bytes=100 * 1024 * 1024 * 1024,
         description="Unlimited upload, Accurate ASR, 300 credits/mo.",
+        entitlements={
+            "workspaces.org": True,
+            "workspaces.members.max": 25,
+            "workspaces.provision_user": True,
+        },
     ),
     PlanCatalogEntry(
         slug="team",
@@ -76,6 +100,11 @@ DEFAULT_PLANS = [
         monthly_credits_included=600,
         storage_limit_bytes=500 * 1024 * 1024 * 1024,
         description="Pro plus team roles, 600 credits/mo, SSO.",
+        entitlements={
+            "workspaces.org": True,
+            "workspaces.members.max": 100,
+            "workspaces.provision_user": True,
+        },
     ),
     PlanCatalogEntry(
         slug="enterprise",
@@ -84,6 +113,12 @@ DEFAULT_PLANS = [
         monthly_credits_included=0,
         storage_limit_bytes=10 * 1024 * 1024 * 1024 * 1024,
         description="Custom pricing.",
+        # No "workspaces.members.max": an absent key is unrestricted
+        # (see PlanCatalogEntry docstring) — enterprise seats are unlimited.
+        entitlements={
+            "workspaces.org": True,
+            "workspaces.provision_user": True,
+        },
     ),
 ]
 

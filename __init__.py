@@ -9,12 +9,23 @@ no Django code until an attribute is actually accessed):
     get_provider              — instantiate the configured PaymentProvider
     PaymentProvider           — base class for custom payment backends
     InsufficientCreditsError  — raised by ``debit`` on insufficient balance
+    CHECK_ENTITLEMENT         — name of the ``billing.check_entitlement``
+                                comm Function (call via stapel_core.comm.call)
+    DEBIT                     — name of the ``billing.debit`` comm Function
+    check_entitlement         — the ``billing.check_entitlement`` provider
+
+(The ``billing.debit`` provider itself is ``entitlements.debit`` — not
+re-exported here because the package-level ``debit`` name is the service
+function; callers use ``comm.call(DEBIT, ...)`` anyway.)
 """
 
 __all__ = [
+    "CHECK_ENTITLEMENT",
+    "DEBIT",
     "InsufficientCreditsError",
     "PaymentProvider",
     "billing_settings",
+    "check_entitlement",
     "credit",
     "debit",
     "get_provider",
@@ -28,6 +39,9 @@ _EXPORTS = {
     "get_provider": (".services", "get_provider"),
     "InsufficientCreditsError": (".services", "InsufficientCreditsError"),
     "PaymentProvider": (".providers.base", "PaymentProvider"),
+    "CHECK_ENTITLEMENT": (".entitlements", "CHECK_ENTITLEMENT"),
+    "DEBIT": (".entitlements", "DEBIT"),
+    "check_entitlement": (".entitlements", "check_entitlement"),
 }
 
 

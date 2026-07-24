@@ -14,11 +14,14 @@ def test_all_lists_the_public_api():
         "get_provider",
         "PaymentProvider",
         "InsufficientCreditsError",
+        "CHECK_ENTITLEMENT",
+        "DEBIT",
+        "check_entitlement",
     }
 
 
 def test_lazy_exports_resolve_to_canonical_objects():
-    from stapel_billing import services
+    from stapel_billing import entitlements, services
     from stapel_billing.conf import billing_settings
     from stapel_billing.providers.base import PaymentProvider
 
@@ -28,6 +31,9 @@ def test_lazy_exports_resolve_to_canonical_objects():
     assert stapel_billing.get_provider is services.get_provider
     assert stapel_billing.InsufficientCreditsError is services.InsufficientCreditsError
     assert stapel_billing.PaymentProvider is PaymentProvider
+    assert stapel_billing.CHECK_ENTITLEMENT == "billing.check_entitlement"
+    assert stapel_billing.DEBIT == "billing.debit"
+    assert stapel_billing.check_entitlement is entitlements.check_entitlement
 
 
 def test_dir_includes_public_api():
@@ -57,4 +63,4 @@ def test_package_import_pulls_no_django():
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "6"
+    assert proc.stdout.strip() == "9"

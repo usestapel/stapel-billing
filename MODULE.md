@@ -17,10 +17,11 @@ registries). Everything below is verifiable against the code in this repo.
 | Models (`models.py`) | `Wallet` (one per user, integer credit `balance`), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, JSON `metadata`), `Subscription` (one per user, Stripe-backed), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique) |
 | Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `debit` supports `idempotency_key`, raises `InsufficientCreditsError`), `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`) |
 | HTTP API (`urls.py`, `views.py`) | `wallet` (GET/PATCH), `wallet/transactions`, `products` (public catalog), `checkout`, `portal`, `subscription`, `subscription/cancel`, `webhooks/stripe`, `internal/debit` (service-to-service, `IsServiceRequest \| IsStaffUser`) |
-| Catalog (`catalog.py`) | `CreditPackage` / `PlanCatalogEntry` frozen dataclasses; `CREDIT_PACKAGES`, `PLANS`, `CREDIT_PACKAGES_BY_SLUG`, `PLANS_BY_SLUG` are lazy views that re-read `STAPEL_BILLING` on every access |
+| Catalog (`catalog.py`) | `CreditPackage` / `PlanCatalogEntry` frozen dataclasses (`PlanCatalogEntry.entitlements: dict[str, int \| bool]` — feature switches / ceilings per plan); `CREDIT_PACKAGES`, `PLANS`, `CREDIT_PACKAGES_BY_SLUG`, `PLANS_BY_SLUG` are lazy views that re-read `STAPEL_BILLING` on every access |
+| Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` (see "Events & functions" below); denial-reason constants `REASON_*` |
 | Providers (`providers/`) | `PaymentProvider` ABC (`providers/base.py`), `StripeProvider` default implementation (`providers/stripe.py`, lazy credentials, dev placeholder URLs when unconfigured) |
 | GDPR (`gdpr.py`, `apps.py`) | `BillingGDPRProvider` (section `"billing"`), registered with `stapel_core.gdpr.gdpr_registry` in `AppConfig.ready()`; export + delete (Stripe IDs cleared, wallet anonymised, ledger retained) |
-| Public API (`__init__.py`, PEP 562 lazy) | `__all__ = ["InsufficientCreditsError", "PaymentProvider", "billing_settings", "credit", "debit", "get_provider"]` |
+| Public API (`__init__.py`, PEP 562 lazy) | `__all__ = ["CHECK_ENTITLEMENT", "DEBIT", "InsufficientCreditsError", "PaymentProvider", "billing_settings", "check_entitlement", "credit", "debit", "get_provider"]` |
 
 Money is always in **minor units** (`price_cents`, `amount_cents` — integers); wallet
 credits are **integers, never fractional**.
@@ -108,7 +109,7 @@ URLconf instead of the stock route — HTTP method bodies stay untouched.
 Transport-agnostic via `stapel_core.comm` (in-process in a monolith, bus consumer in
 microservices — same code). Emits go through the transactional outbox inside the
 webhook's atomic block: an event leaves iff the DB transaction commits. JSON Schemas
-live in `schemas/emits/` and `schemas/consumes/`.
+live in `schemas/emits/`, `schemas/consumes/` and `schemas/functions/`.
 
 **Emits** (from `services.py`, keyed by `user_id`):
 
@@ -126,8 +127,17 @@ live in `schemas/emits/` and `schemas/consumes/`.
 (`schemas/consumes/user.deletion_initiated.json` is declared, but `actions.py` currently
 subscribes only to `user.deleted`.)
 
-**Functions provided:** none. The module registers no `stapel_core.comm` functions;
-the service-to-service surface is the HTTP endpoint `internal/debit` (pass
+**Functions provided** (`entitlements.py`, registered in `apps.ready()`; payload
+contracts in `schemas/functions/`):
+
+| Function | Payload | Returns |
+|---|---|---|
+| `billing.check_entitlement` | `user_id`, `key` (+ `quantity`=1 — the prospective total; billing tracks no usage) | `{allowed, limit, reason}` — checks `key` against the effective plan's `PlanCatalogEntry.entitlements`. `bool` value = feature switch, `int` = ceiling (`quantity <= value`), key absent from the plan = **allowed** (unknown keys never deny — the conservative OSS default). No/cancelled/incomplete subscription resolves to the default plan (`free`). |
+| `billing.debit` | `user_id`, `credits`, `idempotency_key` (required — comm is at-least-once; + optional `type`/`description`/`metadata`) | `{ok, balance, reason, transaction_id?}` — wrapper over `services.debit` with its idempotency contract; failures are structural (`ok=false` + `insufficient_credits` / `user_not_found`), never exceptions. |
+
+Callers that must degrade when billing is absent catch `FunctionNotRegistered` /
+`FunctionRouteNotConfigured` and treat it as "allowed" (see stapel-workspaces).
+The HTTP endpoint `internal/debit` remains for deployments routing over HTTP (pass
 `idempotency_key` — duplicates short-circuit to the original transaction).
 
 ### Django signals
