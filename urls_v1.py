@@ -4,6 +4,7 @@ from typing import NamedTuple
 
 from django.urls import path
 
+from .errors import BillingErrorKeysView
 from .views import (
     CatalogView,
     CheckoutView,
@@ -38,6 +39,9 @@ urlpatterns = [
 
     # Internal service-to-service debit
     path("internal/debit", InternalDebitView.as_view(), name="internal-debit"),
+
+    # Error-key registry for the stapel-translate collector (service/staff only).
+    path("error-keys/", BillingErrorKeysView.as_view(), name="error-keys"),
 ]
 
 

@@ -3,6 +3,21 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.1] — 2026-07-26
+
+### Added — `error-keys/` is finally mounted
+
+`BillingErrorKeysView` has existed since the port but no `urls*.py` ever mounted it — in
+*any* stapel library. stapel-translate's `error_collector` polls
+`/{prefix}/api/v1/error-keys/` on every service, so the whole endpoint class
+answered 404 from Django's URL resolver and the collector harvested nothing
+while reporting a plain `HTTP 404`. It is now mounted in `urls_v1.py` at
+`error-keys/` (v1 canon), service/staff-gated as the base view declares.
+
+Deliberately **not** in the contract triad: `ErrorKeysView` sets
+`schema = None` and `/error-keys` is on the flows allowlist, so `make
+contract` is a no-op diff — this is infrastructure, not product surface.
+
 ## [0.5.0] - 2026-07-24
 
 Entitlements seam (workspaces-org program §D1, Wave 1). All additive — no
@@ -83,8 +98,6 @@ changes needed. Full suite green against core 0.12.0.
 ### Fixed
 - Re-release of 0.4.8: its publish gate failed on CI missing stapel-tools
   (contract-emission dependency); no code changes beyond the CI fix.
-
-## [Unreleased]
 
 ## [0.4.11] — 2026-07-16
 
