@@ -43,7 +43,7 @@ package-dir = {"stapel_billing" = "."}
 packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.providers"]
 
 [tool.setuptools.package-data]
-stapel_billing = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
+stapel_billing = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py", "docs/capabilities.json", "docs/flows.json", "docs/errors.json", "CONFIG.MD"]
 
 [tool.ruff]
 target-version = "py311"
