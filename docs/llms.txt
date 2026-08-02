@@ -1,0 +1,102 @@
+# stapel-billing 0.5.1
+
+Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.
+
+Contract: axes 1 · extension points 5 · operations 10 · error codes 53.
+Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
+
+## Configuration axes — what a product switches on
+Settings keys; `default` is what you get by saying nothing. Turning an axis off unmounts the operations it gates.
+- PAYMENT_PROVIDER [enum, default "stapel_billing.providers.stripe.StripeProvider"] — Payment processor
+  Which payment backend handles checkout, subscriptions and webhooks. Stripe out of the box; any other processor plugs in as a host-project provider class.
+
+## Extension points — what a product replaces, fork-free
+- AUTH_USER_MODEL [swappable_model]
+  Standard Django user swap — wallet/subscription rows bind to settings.AUTH_USER_MODEL; the module never references a concrete user class.
+- CREDIT_PACKAGES [catalog_override]
+  Replace the one-off credit package catalog from settings (list of dicts or CreditPackage instances) — re-read lazily on every access, no fork.
+- PAYMENT_PROVIDER [dotted_path]
+  Swap the payment backend: implement the PaymentProvider ABC (checkout, portal, cancel, webhook verify) in the host project and point the setting at it.
+- PLANS [catalog_override]
+  Replace the subscription plan catalog from settings (list of dicts or PlanCatalogEntry instances) — re-read lazily on every access, no fork.
+- serializer_seams [class_override]
+  Every billing view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL.
+
+## Fits with — fleet dependencies
+- stapel-auth (optional) — issues the authenticated user sessions the wallet/checkout/subscription endpoints require and the user.deleted event this module consumes; the model binding itself is the standard AUTH_USER_MODEL swap
+- stapel-core (required) — comm bus (payment.completed / subscription.changed emits, user.deleted consumer), JWT authentication, GDPR provider registry, AppSettings config layer
+
+## HTTP operations (10) — call by operationId, never by a typed path
+Paths are relative to `/billing/api/v1/`.
+### Catalog
+- GET /products — billing_api_v1_products_retrieve
+### Checkout
+- POST /checkout — billing_api_v1_checkout_create
+- GET /portal — billing_api_v1_portal_retrieve
+### Internal
+- POST /internal/debit — billing_api_v1_internal_debit_create
+### Subscription
+- POST /subscription/cancel — billing_api_v1_subscription_cancel_create
+- GET /subscription — billing_api_v1_subscription_retrieve
+### Wallet
+- PATCH /wallet — billing_api_v1_wallet_partial_update
+- GET /wallet — billing_api_v1_wallet_retrieve
+- GET /wallet/transactions — billing_api_v1_wallet_transactions_retrieve
+### Webhooks
+- POST /webhooks/stripe — billing_api_v1_webhooks_stripe_create
+
+## Error codes (53) — the StapelError envelope
+Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
+- error.400.amount_invalid [400] fix_input
+- error.400.bad_request [400] fix_input
+- error.400.captcha_invalid [400] retry
+- error.400.captcha_required [400] retry
+- error.400.expected_list [400] fix_input
+- error.400.field.blank [400] fix_input {field}
+- error.400.field.does_not_exist [400] fix_input {field}
+- error.400.field.invalid [400] fix_input {field}
+- error.400.field.invalid_choice [400] fix_input {field}
+- error.400.field.max_length [400] fix_input {field,max_length}
+- error.400.field.max_value [400] fix_input {field,max_value}
+- error.400.field.min_length [400] fix_input {field,min_length}
+- error.400.field.min_value [400] fix_input {field,min_value}
+- error.400.field.null [400] fix_input {field}
+- error.400.field.required [400] fix_input {field}
+- error.400.field.unique [400] fix_input {field}
+- error.400.invalid_ad_id [400] fix_input
+- error.400.invalid_package [400] fix_input
+- error.400.invalid_plan [400] fix_input
+- error.400.invalid_stripe_signature [400] contact_support
+- error.400.invalid_webhook_payload [400] contact_support
+- error.400.redirect_url_not_configured [400] contact_support
+- error.400.validation_error [400] fix_input
+- error.400.verification_failed [400] verify
+- error.400.verification_invalid_factor [400] verify
+- error.401.unauthorized [401] reauthenticate
+- error.402.insufficient_credits [402] fix_input
+- error.402.payment_required [402] retry
+- error.403.forbidden [403] retry
+- error.403.forbidden_billing [403] contact_support
+- error.403.network_blocked [403] contact_support
+- error.403.verification_enrollment_required [403] verify
+- error.403.verification_required [403] verify
+- error.404.ad_not_found [404] retry
+- error.404.not_found [404] retry
+- error.404.subscription_not_found [404] fix_input
+- error.404.transaction_not_found [404] fix_input
+- error.404.verification_challenge_not_found [404] verify
+- error.404.wallet_not_found [404] fix_input
+- error.405.method_not_allowed [405] retry
+- error.406.not_acceptable [406] retry
+- error.408.request_timeout [408] retry
+- error.409.conflict [409] fix_input
+- error.409.duplicate_webhook_event [409] retry
+- error.410.gone [410] retry
+- error.413.payload_too_large [413] retry
+- error.415.unsupported_media_type [415] retry
+- error.422.unprocessable_entity [422] wait_and_retry
+- error.423.locked [423] wait_and_retry
+- error.423.verification_locked [423] wait_and_retry
+- error.429.rate_limit [429] wait_and_retry {retry_after_minutes}
+- error.429.too_many_requests [429] wait_and_retry
+- error.500.internal [500] contact_support

@@ -58,7 +58,10 @@ TRIAD = ("schema.json", "flows.json", "errors.json")
 # STAPEL_BILLING, emitted from conf.py DEFAULTS + the urls.py gate registry
 # + schema.json + the curated docs/capabilities.meta.json. Same emit/drift
 # discipline.
-ARTIFACTS = TRIAD + ("capabilities.json",)
+#
+# The fifth artifact (stapel_tools.llms_txt): the module's own surface slice
+# for an agent's context, rendered from docs/capabilities.json (+ the triad).
+ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
 
 
 def _emit(out_dir: Path) -> None:
@@ -69,6 +72,12 @@ def _emit(out_dir: Path) -> None:
             check=True,
             capture_output=True,
         )
+    subprocess.run(
+        [sys.executable, "-m", "stapel_tools.llms_txt", ".", "--out", str(out_dir)],
+        cwd=str(REPO),
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_contract_artifacts_committed():

@@ -6,6 +6,7 @@
 [![downloads](https://static.pepy.tech/badge/stapel-billing/month)](https://pepy.tech/project/stapel-billing)
 [![python](https://img.shields.io/pypi/pyversions/stapel-billing?logo=python&logoColor=white)](https://pypi.org/project/stapel-billing/)
 [![license](https://img.shields.io/github/license/usestapel/stapel-billing)](https://github.com/usestapel/stapel-billing/blob/main/LICENSE)
+[![llms.txt](https://img.shields.io/badge/llms.txt-blue)](https://github.com/usestapel/stapel-billing/blob/main/docs/llms.txt)
 
 > Billing — Stripe subscriptions, credit wallets, transaction history
 
