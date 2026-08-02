@@ -3,6 +3,19 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.2] — 2026-08-02
+
+### Packaging / contract
+
+- `docs/llms.txt` — the fifth contract artifact — is now emitted, drift-gated
+  by `make contract`/`contract-check`, and badged in the README. `docs/capabilities.json`
+  has no `surface` entries yet, so the generated llms.txt's Usage surface
+  section is empty (pre-existing gap, not introduced here).
+- `docs/llms.txt` is now listed in `package-data` so it ships in the wheel.
+- `package-data` also now carries `docs/capabilities.json`, `docs/flows.json`,
+  `docs/errors.json` and `CONFIG.MD`.
+- Badge canon + Python 3.14 classifier added.
+
 ## [0.5.1] — 2026-07-26
 
 ### Added — `error-keys/` is finally mounted
