@@ -1,8 +1,11 @@
 # stapel-billing
 
-[![CI](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/usestapel/stapel-billing/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-billing)
-[![PyPI](https://img.shields.io/pypi/v/stapel-billing.svg)](https://pypi.org/project/stapel-billing/)
+[![CI](https://img.shields.io/github/actions/workflow/status/usestapel/stapel-billing/ci.yml?branch=main&logo=github&label=CI)](https://github.com/usestapel/stapel-billing/actions/workflows/ci.yml?query=branch%3Amain)
+[![coverage](https://img.shields.io/codecov/c/github/usestapel/stapel-billing?branch=main&logo=codecov&label=coverage)](https://app.codecov.io/gh/usestapel/stapel-billing)
+[![pypi](https://img.shields.io/pypi/v/stapel-billing?logo=pypi&logoColor=white&label=pypi)](https://pypi.org/project/stapel-billing/)
+[![downloads](https://static.pepy.tech/badge/stapel-billing/month)](https://pepy.tech/project/stapel-billing)
+[![python](https://img.shields.io/pypi/pyversions/stapel-billing?logo=python&logoColor=white)](https://pypi.org/project/stapel-billing/)
+[![license](https://img.shields.io/github/license/usestapel/stapel-billing)](https://github.com/usestapel/stapel-billing/blob/main/LICENSE)
 
 > Billing — Stripe subscriptions, credit wallets, transaction history
 
