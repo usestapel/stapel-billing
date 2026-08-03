@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_billing/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code.",
+  "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_billing/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code. `surface_roots` + `surface` are the usage layer (stapel_tools.surface): the symbols a product must CALL instead of writing its own ledger write, its own signature check or its own Stripe client. The roots select the symbols; every selected symbol MUST carry an intent line here or emission fails naming it.",
   "provides": "Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.",
   "requires": [
     {
@@ -44,6 +44,110 @@
     "PAYMENT_PROVIDER": {
       "business_label": "Payment processor",
       "summary": "Which payment backend handles checkout, subscriptions and webhooks. Stripe out of the box; any other processor plugs in as a host-project provider class."
+    }
+  },
+  "surface_roots": [
+    {
+      "select": "functions",
+      "path": "services.py"
+    },
+    {
+      "select": "functions",
+      "path": "catalog.py"
+    }
+  ],
+  "surface": {
+    "get_or_create_wallet": {
+      "kind": "factory",
+      "intent": "The one way to reach a user's Wallet — created on first touch, so no caller has to decide what \"a user who never paid\" means. Read balances through it instead of querying or creating Wallet rows yourself; a hand-made row is harmless, a hand-set balance is a ledger its transactions no longer explain.",
+      "instead_of": [
+        "stapel_billing.models.Wallet.objects.get_or_create"
+      ]
+    },
+    "credit": {
+      "kind": "factory",
+      "intent": "Add credits to a wallet AND write the immutable ledger row that explains them — one transaction, under the wallet's row lock. This is the only sanctioned way credits come into existence: a product that creates its own Transaction, or bumps Wallet.balance, breaks the balance_after invariant that every audit, refund and GDPR export reads back.",
+      "instead_of": [
+        "stapel_billing.models.Transaction.objects.create",
+        "stapel_billing.models.Wallet.balance"
+      ]
+    },
+    "debit": {
+      "kind": "factory",
+      "intent": "Spend credits, refusing with InsufficientCreditsError rather than letting a balance go negative — the charging primitive behind every metered feature. Pass idempotency_key from anything delivered at-least-once (comm, webhooks, retried jobs) and a duplicate call returns the original transaction instead of charging twice; a hand-written ledger write has neither the lock nor that guarantee.",
+      "instead_of": [
+        "stapel_billing.models.Transaction.objects.create",
+        "stapel_billing.models.Wallet.balance"
+      ]
+    },
+    "get_provider": {
+      "kind": "factory",
+      "intent": "Resolve the configured PaymentProvider (STAPEL_BILLING[\"PAYMENT_PROVIDER\"], Stripe by default) — the entry point for a billing flow this module does not already serve. Reach for it instead of importing the Stripe SDK or instantiating StripeProvider: a deployment that swapped the processor, and a test that configured none, both have to arrive through here.",
+      "instead_of": [
+        "stapel_billing.providers.stripe.StripeProvider",
+        "stripe.api_key"
+      ]
+    },
+    "create_checkout_session": {
+      "kind": "factory",
+      "intent": "Open a paid checkout for a catalogue package or plan and get back (checkout_url, session_id), provider-agnostically. Use it rather than building a session at the processor: this is what stamps the user_id/package/plan metadata that the webhook handlers reconcile against later, and a session assembled by hand comes back from the provider carrying nothing to grant credits on.",
+      "instead_of": [
+        "stripe.checkout.Session.create"
+      ]
+    },
+    "create_customer_portal": {
+      "kind": "factory",
+      "intent": "URL of the processor's self-service billing portal for a customer id — the sanctioned destination for \"manage my card, invoices and cancellation\". Reach for it instead of calling the provider's portal API directly, and instead of rebuilding those screens in a product.",
+      "instead_of": [
+        "stripe.billing_portal.Session.create"
+      ]
+    },
+    "cancel_provider_subscription": {
+      "kind": "gate_function",
+      "intent": "Cancel the subscription on the processor's side, raising when the remote call fails — deliberately the FIRST half of a cancellation. Call it before marking anything cancelled locally: a local cancellation the processor never heard about tells the user billing stopped while their card keeps being charged.",
+      "instead_of": [
+        "stripe.Subscription.modify"
+      ]
+    },
+    "verify_stripe_signature": {
+      "kind": "gate_function",
+      "intent": "The authenticity gate for an inbound provider callback: verifies the signature through the configured provider and returns the parsed event, raising on anything unsigned or on an unconfigured processor. Every endpoint that accepts webhooks must pass through it — a hand-rolled HMAC comparison is how an anonymous POST turns into a free credit grant.",
+      "instead_of": [
+        "stripe.Webhook.construct_event",
+        "hmac.compare_digest"
+      ]
+    },
+    "handle_checkout_completed": {
+      "kind": "gate_function",
+      "intent": "The exact reconciliation this module performs when checkout.session.completed fires: award the package's credits, or open/refresh the Subscription and grant the plan's first monthly bundle, each with its payment.completed / subscription.changed announcement. Read it before writing a parallel handler for the same event, and never call it outside StripeWebhookView's StripeWebhookEvent claim + row lock — at-least-once delivery double-grants otherwise."
+    },
+    "handle_invoice_paid": {
+      "kind": "gate_function",
+      "intent": "The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and de-duplicates per stripe_invoice_id. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings."
+    },
+    "handle_subscription_updated": {
+      "kind": "gate_function",
+      "intent": "The status reconciliation on customer.subscription.updated: maps the processor's lifecycle (active / trialing / past_due / canceled / incomplete) onto SubscriptionStatus, refreshes the billing period and announces the change. That mapping is the module's contract — anything deciding what \"past_due\" means locally must read it here rather than invent a second answer."
+    },
+    "handle_subscription_deleted": {
+      "kind": "gate_function",
+      "intent": "The terminal cancellation on customer.subscription.deleted: marks the local Subscription cancelled with its timestamp and announces it. Read it before letting a product decide on its own what a deleted provider subscription means locally; call it only under the webhook claim protocol."
+    },
+    "get_credit_packages": {
+      "kind": "factory",
+      "intent": "The resolved credit-package catalogue — host overrides applied, dicts coerced to CreditPackage. Read packages through this (or the lazy CREDIT_PACKAGES / CREDIT_PACKAGES_BY_SLUG views) instead of reaching into the settings dict: a deployment that sells its own packages has already replaced them here, while DEFAULT_CREDIT_PACKAGES is only what an unconfigured project falls back to.",
+      "instead_of": [
+        "django.conf.settings.STAPEL_BILLING[\"CREDIT_PACKAGES\"]",
+        "stapel_billing.catalog.DEFAULT_CREDIT_PACKAGES"
+      ]
+    },
+    "get_plans": {
+      "kind": "factory",
+      "intent": "The resolved subscription-plan catalogue, each entry carrying the entitlements map the billing.check_entitlement Function answers from. Read plans through this rather than from settings or DEFAULT_PLANS, or a product will price its pages and gate its features against a catalogue this deployment does not actually sell.",
+      "instead_of": [
+        "django.conf.settings.STAPEL_BILLING[\"PLANS\"]",
+        "stapel_billing.catalog.DEFAULT_PLANS"
+      ]
     }
   }
 }
