@@ -1,8 +1,8 @@
 """Localized error catalog (``translations/errors.ru.json``) + provenance gate.
 
-i18n-shipping.md §5 / волна 2. stapel-billing applies the *reference*
+i18n-shipping.md §5 / wave 2. stapel-billing applies the *reference*
 ``stapel_core.i18n`` catalog contour to the ``errors`` domain — piloted in
-stapel-auth (волна 1) — 1:1: the en canon lives in ``errors.py``
+stapel-auth (wave 1) — 1:1: the en canon lives in ``errors.py``
 (``register_service_errors``), ru ships as a flat
 ``translations/errors.ru.json`` catalog with a ``translations/.state.json``
 provenance sidecar, and :func:`check_translation_catalogs` gates coverage,
