@@ -3,7 +3,7 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.6.0] — 2026-08-09
+## [0.6.1] — 2026-08-09
 
 ### Added — Spanish ships as a language of the library, not as a host override
 
