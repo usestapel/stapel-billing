@@ -1,0 +1,14 @@
+{
+  "error.400.redirect_url_not_configured": {
+    "hash": "14933e9b44ea7152",
+    "text": "No se ha proporcionado la URL de redirección y no hay ninguna alternativa configurada."
+  },
+  "error.403.network_blocked": {
+    "hash": "73418e2ec86c7544",
+    "text": "No se permiten solicitudes desde esta red."
+  },
+  "error.403.verification_enrollment_required": {
+    "hash": "726adb4e63e9ae80",
+    "text": "Es necesario registrar un factor de verificación."
+  }
+}
