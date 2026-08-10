@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.6.2] — 2026-08-10
+
+### Fixed — this module translates only the keys it owns
+
+`translations/errors.{ru,es}.json` each carried 41 verbatim copies of the
+cross-cutting keys stapel-core owns. None was an intentional reword: before
+stapel-core 0.22.0 the coverage gate took its canon from the whole in-process
+registry, so going green *required* copying them. Core ships those catalogs
+itself now and the loader merges them, so the copies were a second, drifting
+shadow of texts this module does not answer for — and `test_catalog_gate_green`
+went red on them, which is what blocked every tag in this repository.
+
+ru and es go 53 → 12 keys: the ones this module actually owns. Two
+machine-translation entries in the test module (network/verification) were
+core-owned and went with them; coverage is now scoped through `owned_keys` /
+`owner_of_dir`.
+
+The reference does not move: `docs/errors.{en,ru,es}.md` regenerated after the
+deletion are **byte-identical** to the ones regenerated before it, because
+stapel-core 0.23.1 resolves a key this module does not own from its owner's
+catalog (`module_catalog`). Without that fix the prune would have downgraded 41
+Russian and Spanish rows to `_(en)_` English fallbacks with nothing saying so;
+`test_error_reference_matches_a_fresh_regeneration` now keeps the committed
+reference and a fresh regeneration byte-equal.
+
+The `stapel-core` pin moves to `>=0.23.1`: with an older core these pruned
+catalogs resolve to English at runtime.
+
+
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.6.1"
+version = "0.6.2"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "stapel-core>=0.10,<1.0",
+    "stapel-core>=0.23.1,<1.0",
 ]
 
 [project.urls]

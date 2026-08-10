@@ -70,20 +70,12 @@ _FIXTURES = Path(
 _MACHINE_RU = {
     "error.400.redirect_url_not_configured":
         "redirect_url не передан в запросе, а запасной URL не настроен.",
-    "error.403.network_blocked":
-        "Запросы из этой сети не разрешены.",
-    "error.403.verification_enrollment_required":
-        "Требуется регистрация фактора подтверждения.",
 }
 
 _MACHINE_ES = {
     "error.400.redirect_url_not_configured":
         "No se ha proporcionado la URL de redirección y no hay ninguna "
         "alternativa configurada.",
-    "error.403.network_blocked":
-        "No se permiten solicitudes desde esta red.",
-    "error.403.verification_enrollment_required":
-        "Es necesario registrar un factor de verificación.",
 }
 
 #: language -> machine-translation table, consulted for the keys the
@@ -165,8 +157,21 @@ def test_catalog_gate_green():
     assert errors == 0
 
 
-def test_every_language_covers_every_canonical_key():
-    source = source_texts("errors")
+def test_every_language_covers_every_key_this_module_owns():
+    """Coverage is scoped to OWNERSHIP (stapel-core 0.22.0).
+
+    Core ships its own catalogs now and the loader merges the owner's, so a
+    module that also translated core's keys was maintaining a second, drifting
+    copy of them — the gate calls that ``foreign`` and fails on it. What this
+    module still answers for is every key it owns, in every target language.
+    """
+    from stapel_core.i18n import owned_keys, owner_of_dir, source_owners
+
+    source = owned_keys(
+        source_texts("errors"),
+        source_owners("errors"),
+        owner_of_dir(TRANSLATIONS),
+    )
     for lang in TARGET_LANGUAGES:
         catalog = load_catalog_file(TRANSLATIONS / f"errors.{lang}.json")
         missing = [k for k in source if k not in catalog]
@@ -186,6 +191,26 @@ def test_translations_preserve_placeholders():
             if key in source:
                 assert set(params_of(text)) == set(params_of(source[key])), \
                     f"{lang}: {key}"
+
+
+def test_error_reference_matches_a_fresh_regeneration(tmp_path):
+    """The committed reference is what the generator produces TODAY.
+
+    ``test_error_docs_exist_for_every_language`` reads the committed file, so a
+    reference that had stopped being reproducible stayed green: dropping the
+    core-owned duplicates blanked those rows to ``_(en)_`` on the next
+    regeneration, and nothing said so until somebody regenerated. stapel-core
+    0.23.1 taught the reader to resolve a key this module does not own from its
+    owner's catalog; this compares the bytes instead of trusting the file.
+    """
+    for lang in LANGUAGES:
+        call_command("generate_error_docs", "--lang", lang, "--out", str(tmp_path),
+                     "--translations", str(TRANSLATIONS), stdout=io.StringIO())
+        assert (tmp_path / f"errors.{lang}.md").read_bytes() == \
+            (DOCS / f"errors.{lang}.md").read_bytes(), (
+                f"docs/errors.{lang}.md is stale — run "
+                f"STAPEL_REGEN_ERROR_I18N=1 pytest tests/test_error_i18n.py::test_regen"
+            )
 
 
 def test_error_docs_exist_for_every_language():
