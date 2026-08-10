@@ -1,5 +1,8 @@
 # Changelog
 
+All notable changes to stapel-billing are documented here.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns
@@ -27,10 +30,6 @@ reference and a fresh regeneration byte-equal.
 
 The `stapel-core` pin moves to `>=0.23.1`: with an older core these pruned
 catalogs resolve to English at runtime.
-
-
-All notable changes to stapel-billing are documented here.
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.6.1] — 2026-08-09
 
