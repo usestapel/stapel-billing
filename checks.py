@@ -17,7 +17,19 @@ def check_plan_entitlement_keys(app_configs, **kwargs):
     from .entitlements import declared_keys
 
     if allow_unknown_entitlement_keys():
-        return []
+        # The hatch silences the typo hunt below, so it must speak for
+        # itself — its redirect sibling has said so on every boot since
+        # BILL-02 (W102), while this one, which decides who gets paid
+        # features, used to return quietly. A hatch turned on "for a week"
+        # is found by `manage.py check`, not by an audit a year later.
+        return [checks.Warning(
+            "STAPEL_BILLING['ALLOW_UNKNOWN_ENTITLEMENT_KEYS'] is on: an "
+            "entitlement key outside this deployment's vocabulary is "
+            "ALLOWED instead of denied, so a typo or a stale caller reads "
+            "as an unrestricted feature and no plan check stands between a "
+            "user and a paid capability.",
+            id="stapel_billing.W101",
+        )]
     known = declared_keys()
     errors = []
     for plan in PLANS:

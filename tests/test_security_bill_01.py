@@ -67,6 +67,17 @@ class TestEntitlementKeyCheck:
         }
         assert "stapel_billing.E101" not in _run(django_checks.Tags.compatibility)
 
+    def test_escape_hatch_is_reported_as_the_paywall_hole_it_is(self, settings):
+        # Silencing the error is not the same as saying nothing: the
+        # redirect hatch names itself on every boot (W102), and the one
+        # that decides who gets paid features must too.
+        settings.STAPEL_BILLING = {"ALLOW_UNKNOWN_ENTITLEMENT_KEYS": True}
+        assert "stapel_billing.W101" in _run(django_checks.Tags.compatibility)
+
+    def test_a_deployment_that_did_not_open_it_is_not_warned(self, settings):
+        settings.STAPEL_BILLING = {}
+        assert "stapel_billing.W101" not in _run(django_checks.Tags.compatibility)
+
 
 class TestRedirectAllowlistCheck:
     def test_configured_frontend_needs_no_warning(self, settings):

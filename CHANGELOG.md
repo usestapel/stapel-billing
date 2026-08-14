@@ -85,6 +85,14 @@ reconciliation entirely, because `bool("")` is `False`.
   variable, move it into `settings.STAPEL_BILLING["PAYMENT_PROVIDER"]`** (or a flat
   Django setting of the same name) — the environment is ignored for this key.
 
+### Security — BILL-05: the entitlement hatch reports itself
+
+`ALLOW_UNKNOWN_ENTITLEMENT_KEYS` silenced the `E101` typo hunt and then said nothing
+at all, so a deployment that opened the paywall hatch "for a week" got no signal from
+`manage.py check`. It now emits `stapel_billing.W101` on every boot, symmetric with
+the `W102` the redirect hatch has always emitted. No behaviour change beyond the
+warning.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns
