@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "provides": "Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
