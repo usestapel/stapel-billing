@@ -1,4 +1,4 @@
-"""StripeProvider: placeholder paths (unconfigured) and SDK delegation."""
+"""StripeProvider: SDK delegation, refusals, and the opt-in dev placeholders."""
 
 import sys
 import types
@@ -68,9 +68,13 @@ def fake_stripe(monkeypatch, settings):
 
 
 class TestPlaceholderPaths:
-    """Stripe unconfigured: dev placeholders instead of remote calls."""
+    """Stripe unconfigured *and* dev placeholders explicitly opted into.
 
-    def test_package_checkout_placeholder(self, stripe_disabled):
+    Without ``ALLOW_UNCONFIGURED_PAYMENT_PROVIDER`` every one of these paths
+    refuses instead (BILL-06, tests/test_security_bill_06.py).
+    """
+
+    def test_package_checkout_placeholder(self, stripe_placeholders_allowed):
         url, session_id = StripeProvider().create_checkout_session(
             user=_FakeUser(),
             package="starter",
@@ -81,7 +85,7 @@ class TestPlaceholderPaths:
         assert url == "https://example.invalid/stripe-not-configured/package/starter"
         assert session_id == "cs_dev_starter"
 
-    def test_plan_checkout_placeholder(self, stripe_disabled):
+    def test_plan_checkout_placeholder(self, stripe_placeholders_allowed):
         url, session_id = StripeProvider().create_checkout_session(
             user=_FakeUser(),
             package=None,
@@ -92,13 +96,13 @@ class TestPlaceholderPaths:
         assert url == "https://example.invalid/stripe-not-configured/plan/pro"
         assert session_id == "cs_dev_pro"
 
-    def test_portal_placeholder(self, stripe_disabled):
+    def test_portal_placeholder(self, stripe_placeholders_allowed):
         url = StripeProvider().create_portal_session(
             customer_id="cus_1", return_url="https://r"
         )
         assert url == "https://example.invalid/stripe-portal-not-configured"
 
-    def test_cancel_is_noop(self, stripe_disabled):
+    def test_cancel_is_noop(self, stripe_placeholders_allowed):
         assert StripeProvider().cancel_subscription("sub_1") is None
 
     def test_verify_webhook_raises_when_unconfigured(self, stripe_disabled):

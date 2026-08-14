@@ -70,12 +70,18 @@ _FIXTURES = Path(
 _MACHINE_RU = {
     "error.400.redirect_url_not_configured":
         "redirect_url не передан в запросе, а запасной URL не настроен.",
+    "error.400.redirect_url_not_allowed":
+        "Origin этого URL перенаправления не входит в список разрешённых "
+        "для данной установки.",
 }
 
 _MACHINE_ES = {
     "error.400.redirect_url_not_configured":
         "No se ha proporcionado la URL de redirección y no hay ninguna "
         "alternativa configurada.",
+    "error.400.redirect_url_not_allowed":
+        "El origen de esta URL de redirección no está en la lista de "
+        "permitidos de esta instalación.",
 }
 
 #: language -> machine-translation table, consulted for the keys the

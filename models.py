@@ -126,9 +126,66 @@ class Subscription(models.Model):
             models.Index(fields=["stripe_customer_id"]),
             models.Index(fields=["stripe_subscription_id"]),
         ]
+        # Provider identifiers route incoming webhooks to exactly one
+        # local subscription. Two rows sharing one id make that routing
+        # ambiguous — the lookups below are `.first()`, so the loser of a
+        # duplicate silently stops receiving lifecycle updates while the
+        # customer keeps paying. Partial: NULL/"" mean "no provider object
+        # yet" and many rows legitimately sit in that state.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["stripe_customer_id"],
+                condition=~models.Q(stripe_customer_id=None)
+                & ~models.Q(stripe_customer_id=""),
+                name="billing_subscription_unique_stripe_customer",
+            ),
+            models.UniqueConstraint(
+                fields=["stripe_subscription_id"],
+                condition=~models.Q(stripe_subscription_id=None)
+                & ~models.Q(stripe_subscription_id=""),
+                name="billing_subscription_unique_stripe_subscription",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user_id}: {self.plan} ({self.status})"
+
+
+@access.ops
+class ProviderGrant(models.Model):
+    """One provider object, one grant — enforced by the database.
+
+    ``StripeWebhookEvent`` deduplicates *events*; this row deduplicates the
+    *business object* an event talks about. The provider may describe one
+    paid invoice or one completed checkout session in several distinct
+    events, and two of those can land concurrently: a
+    read-then-credit guard sees no prior grant in either worker and both
+    credit the wallet. Inserting the claim under the unique constraint in
+    the same transaction as the credit makes the second one lose.
+    """
+
+    #: Grant scopes. The value is the kind of provider object claimed, not
+    #: the event that carried it.
+    SCOPE_CHECKOUT_SESSION = "checkout_session"
+    SCOPE_INVOICE = "invoice"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    provider = models.CharField(max_length=32, default="stripe")
+    scope = models.CharField(max_length=32)
+    external_id = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "billing_provider_grant"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "scope", "external_id"],
+                name="billing_provider_grant_unique_object",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.provider}:{self.scope}:{self.external_id}"
 
 
 @access.ops

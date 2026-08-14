@@ -55,7 +55,11 @@ class TestProviderSelection:
         settings.STAPEL_BILLING = {"PAYMENT_PROVIDER": DUMMY_PATH}
         resp = authed_client.post(
             "/billing/api/checkout",
-            {"package": "starter", "success_url": "https://x", "cancel_url": "https://y"},
+            {
+                "package": "starter",
+                "success_url": "https://front.example/ok",
+                "cancel_url": "https://front.example/no",
+            },
             format="json",
         )
         assert resp.status_code == 200
@@ -121,14 +125,22 @@ class TestCatalogOverride:
         }
         resp = authed_client.post(
             "/billing/api/checkout",
-            {"package": "mini", "success_url": "https://x", "cancel_url": "https://y"},
+            {
+                "package": "mini",
+                "success_url": "https://front.example/ok",
+                "cancel_url": "https://front.example/no",
+            },
             format="json",
         )
         assert resp.status_code == 200
         # The old default slugs are gone from validation too.
         resp = authed_client.post(
             "/billing/api/checkout",
-            {"package": "starter", "success_url": "https://x", "cancel_url": "https://y"},
+            {
+                "package": "starter",
+                "success_url": "https://front.example/ok",
+                "cancel_url": "https://front.example/no",
+            },
             format="json",
         )
         assert resp.status_code == 400
@@ -196,6 +208,18 @@ def _load_schema(name: str) -> dict:
 @pytest.mark.django_db(transaction=False)
 class TestWebhookMilestones:
     def _checkout_event(self, user, **metadata):
+        """A settled session, shaped the way Stripe actually sends one.
+
+        The handler reconciles mode/payment_status/currency/amount against
+        the catalog entry the metadata names, so a session that omitted
+        those fields would only ever exercise the refusal path.
+        """
+        if metadata.get("package"):
+            entry = catalog.CREDIT_PACKAGES_BY_SLUG[metadata["package"]]
+            mode = "payment"
+        else:
+            entry = catalog.PLANS_BY_SLUG[metadata["plan"]]
+            mode = "subscription"
         return {
             "id": "evt_1",
             "type": "checkout.session.completed",
@@ -204,6 +228,11 @@ class TestWebhookMilestones:
                     "id": "cs_1",
                     "customer": "cus_1",
                     "subscription": "sub_1",
+                    "mode": mode,
+                    "payment_status": "paid",
+                    "currency": entry.currency.lower(),
+                    "amount_total": entry.price_cents,
+                    "client_reference_id": str(user.id),
                     "metadata": {"user_id": str(user.id), **metadata},
                 }
             },

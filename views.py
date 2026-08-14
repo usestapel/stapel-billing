@@ -1,9 +1,40 @@
-"""DRF views for the billing service."""
+"""DRF views for the billing service.
+
+Guest (anonymous session) stance
+--------------------------------
+With ``AUTH_ANONYMOUS`` on, a guest session is ``is_authenticated``, so a bare
+``IsAuthenticated`` says nothing about whether guests belong on a view
+(``stapel_core.adoption`` E001/W002). This module's answer follows from what
+the endpoints do:
+
+    **money is account business.** A wallet, a ledger, a subscription and a
+    Stripe Checkout are all attached to a payer, and a guest session is a
+    throwaway identity — it can be minted again with one unauthenticated
+    request.
+
+So every wallet/checkout/portal/subscription view denies guests. Two of them
+were doing real damage before: ``WalletView`` minted a ``Wallet`` row per
+anonymous session, and ``CheckoutView`` let a guest open a *real* Stripe
+Checkout whose ``client_reference_id`` names an identity that will be gone by
+the time the webhook arrives — a paid session nobody can be credited for.
+
+Two views stay open, deliberately:
+
+* ``CatalogView`` is the public price list — a pricing page is drawn before
+  anyone logs in, and it exposes no user data.
+* ``StripeWebhookView`` is not a user surface at all: it is signature-gated
+  (``verify_webhook`` raises when unconfigured), and Stripe does not
+  authenticate.
+
+``InternalDebitView`` is service-to-service (``IsServiceRequest | IsStaffUser``)
+and never reachable by a session of any kind.
+
+The gate is added in :meth:`GuestDeniedMixin.get_permissions` rather than by
+rewriting each view's ``permission_classes`` — see that class for why.
+"""
 
 import logging
-import os
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -14,14 +45,18 @@ from rest_framework.views import APIView
 from stapel_core.django.api.errors import (
     StapelErrorResponse,
     StapelResponse,
-    StapelValidationError,
 )
-from stapel_core.django.api.permissions import IsServiceRequest, IsStaffUser
+from stapel_core.django.api.permissions import (
+    ANONYMOUS_ALLOWED,
+    ANONYMOUS_DENIED,
+    IsNotAnonymousUser,
+    IsServiceRequest,
+    IsStaffUser,
+)
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
-from . import services
+from . import redirects, services
 from .catalog import CREDIT_PACKAGES, PLANS
-from .conf import billing_settings
 from .dto import (
     CatalogResponse,
     CheckoutResponse,
@@ -37,12 +72,12 @@ from .dto import (
 from .errors import (
     ERR_400_INVALID_STRIPE_SIGNATURE,
     ERR_400_INVALID_WEBHOOK_PAYLOAD,
-    ERR_400_REDIRECT_URL_NOT_CONFIGURED,
     ERR_402_INSUFFICIENT_CREDITS,
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
 )
 from .models import StripeWebhookEvent, Subscription, Wallet
+from .providers.base import ProviderNotConfiguredError
 from .serializers import (
     CatalogResponseSerializer,
     CheckoutRequestSerializer,
@@ -57,6 +92,19 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _provider_unavailable(operation: str):
+    """Answer for a payment provider that cannot serve the request.
+
+    502, never a 200 with a fabricated payload: the client must not be told a
+    payment is under way when no payment system was reached. Same answer the
+    subscription cancel has always given when the provider call failed.
+    """
+    logger.error("Payment provider cannot serve %s", operation)
+    return StapelResponse(  # noqa: R006
+        {"status": "error"}, status=status.HTTP_502_BAD_GATEWAY
+    )
 
 
 # ─── Serializer seams ────────────────────────────────────────
@@ -79,6 +127,29 @@ class SerializerSeamMixin:
 
     def get_response_serializer_class(self):
         return self.response_serializer_class
+
+
+class GuestDeniedMixin:
+    """Deny an anonymous (guest) session — see the module docstring.
+
+    The gate is appended in :meth:`get_permissions` instead of being written
+    into ``permission_classes`` because that attribute is not only a gate
+    here: ``PermissionAwareAutoSchema`` renders its class names into every
+    operation's OpenAPI description, and ``docs/schema.json`` is gated
+    byte-for-byte against the monolith aggregate's billing slice, which is
+    regenerated in another repository. Enforcement must not wait for that, so
+    it lands in the permission layer either way — DRF calls
+    ``get_permissions()`` for every request — and ``stapel_anonymous_access``
+    keeps the stance readable from the class header, which is exactly the
+    case ``ANONYMOUS_DENIED`` names ("the gate lives elsewhere than
+    ``permission_classes``"). Moving the class into the attribute is a
+    one-line follow-up once the aggregate is regenerated.
+    """
+
+    stapel_anonymous_access = ANONYMOUS_DENIED
+
+    def get_permissions(self):
+        return [*super().get_permissions(), IsNotAnonymousUser()]
 
 
 # ─── Mappers ─────────────────────────────────────────────────
@@ -129,7 +200,7 @@ def _sub_to_dto(s: Subscription) -> SubscriptionResponse:
 
 
 @extend_schema(tags=["Wallet"])
-class WalletView(SerializerSeamMixin, APIView):
+class WalletView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     request_serializer_class = WalletUpdateRequestSerializer
     response_serializer_class = WalletResponseSerializer
@@ -163,7 +234,7 @@ class WalletView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Wallet"])
-class TransactionListView(SerializerSeamMixin, APIView):
+class TransactionListView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = TransactionListResponseSerializer
 
@@ -187,6 +258,8 @@ class TransactionListView(SerializerSeamMixin, APIView):
 
 @extend_schema(tags=["Catalog"])
 class CatalogView(SerializerSeamMixin, APIView):
+    # The public price list: a pricing page is drawn before anyone logs in.
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     permission_classes = [AllowAny]
     response_serializer_class = CatalogResponseSerializer
 
@@ -223,26 +296,13 @@ class CatalogView(SerializerSeamMixin, APIView):
 # ─── Checkout / portal ──────────────────────────────────────
 
 
-def _redirect_url(explicit: str | None, setting_key: str, path: str) -> str:
-    """Resolve a Stripe redirect target — never a placeholder domain.
-
-    Order: request value → ``STAPEL_BILLING[setting_key]`` → derived from
-    the flat ``FRONTEND_URL`` setting/env. With none of them configured
-    the request is rejected.
-    """
-    url = explicit or getattr(billing_settings, setting_key)
-    if url:
-        return url
-    frontend = getattr(settings, "FRONTEND_URL", "") or os.environ.get(  # noqa: CFG001
-        "FRONTEND_URL", ""
-    )
-    if frontend:
-        return frontend.rstrip("/") + path
-    raise StapelValidationError(ERR_400_REDIRECT_URL_NOT_CONFIGURED)
+#: Resolve + allowlist a redirect target. Lives in ``redirects.py`` so the
+#: rule is one implementation rather than one per endpoint.
+_redirect_url = redirects.resolve
 
 
 @extend_schema(tags=["Checkout"])
-class CheckoutView(SerializerSeamMixin, APIView):
+class CheckoutView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     request_serializer_class = CheckoutRequestSerializer
     response_serializer_class = CheckoutResponseSerializer
@@ -255,17 +315,20 @@ class CheckoutView(SerializerSeamMixin, APIView):
         ser = self.get_request_serializer_class()(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        url, session_id = services.create_checkout_session(
-            user=request.user,
-            package=getattr(data, "package", None),
-            plan=getattr(data, "plan", None),
-            success_url=_redirect_url(
-                data.success_url, "CHECKOUT_SUCCESS_URL", "/billing/success"
-            ),
-            cancel_url=_redirect_url(
-                data.cancel_url, "CHECKOUT_CANCEL_URL", "/billing/cancel"
-            ),
-        )
+        try:
+            url, session_id = services.create_checkout_session(
+                user=request.user,
+                package=getattr(data, "package", None),
+                plan=getattr(data, "plan", None),
+                success_url=_redirect_url(
+                    data.success_url, "CHECKOUT_SUCCESS_URL", "/billing/success"
+                ),
+                cancel_url=_redirect_url(
+                    data.cancel_url, "CHECKOUT_CANCEL_URL", "/billing/cancel"
+                ),
+            )
+        except ProviderNotConfiguredError:
+            return _provider_unavailable("checkout")
         response_cls = self.get_response_serializer_class()
         return StapelResponse(
             response_cls(CheckoutResponse(checkout_url=url, session_id=session_id))
@@ -273,7 +336,7 @@ class CheckoutView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Checkout"])
-class CustomerPortalView(SerializerSeamMixin, APIView):
+class CustomerPortalView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = CustomerPortalResponseSerializer
 
@@ -281,14 +344,17 @@ class CustomerPortalView(SerializerSeamMixin, APIView):
     def get(self, request):  # noqa: R007
         sub = getattr(request.user, "subscription", None)
         customer_id = sub.stripe_customer_id if sub else ""
-        url = services.create_customer_portal(
-            customer_id=customer_id,
-            return_url=_redirect_url(
-                request.query_params.get("return_url"),
-                "PORTAL_RETURN_URL",
-                "/billing",
-            ),
-        )
+        try:
+            url = services.create_customer_portal(
+                customer_id=customer_id,
+                return_url=_redirect_url(
+                    request.query_params.get("return_url"),
+                    "PORTAL_RETURN_URL",
+                    "/billing",
+                ),
+            )
+        except ProviderNotConfiguredError:
+            return _provider_unavailable("the customer portal")
         response_cls = self.get_response_serializer_class()
         return StapelResponse(response_cls(CustomerPortalResponse(portal_url=url)))
 
@@ -297,7 +363,7 @@ class CustomerPortalView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Subscription"])
-class SubscriptionView(SerializerSeamMixin, APIView):
+class SubscriptionView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = SubscriptionResponseSerializer
 
@@ -311,7 +377,7 @@ class SubscriptionView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Subscription"])
-class SubscriptionCancelView(SerializerSeamMixin, APIView):
+class SubscriptionCancelView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = SubscriptionResponseSerializer
 
@@ -338,6 +404,8 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
             except Exception:
                 # Do NOT mark cancelled locally: the user would believe
                 # the subscription is off while the provider keeps charging.
+                # An unconfigured provider raises here too (it used to return
+                # quietly, which produced exactly that lie).
                 logger.exception("Provider subscription cancel failed")
                 return StapelResponse(  # noqa: R006
                     {"status": "error"},
@@ -380,6 +448,8 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
     },
 )
 class StripeWebhookView(SerializerSeamMixin, APIView):
+    # Not a user surface: Stripe does not authenticate, the signature does.
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     permission_classes = [AllowAny]
 
     def post(self, request):

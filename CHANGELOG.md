@@ -3,6 +3,136 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security — BILL-01 / BILL-02 (audit 2026-08-11)
+
+Grants and entitlement answers no longer fail open.
+
+`billing.check_entitlement` denies a key outside the deployment's vocabulary
+(`reason="unknown_key"`) instead of answering "no ceiling configured, go ahead";
+the vocabulary is the shipped plan ladder plus `STAPEL_BILLING["ENTITLEMENT_KEYS"]`,
+and system check `stapel_billing.E101` refuses the boot when a configured plan
+mentions a key nobody declared, so a typo in a paywall is found at deploy.
+`ALLOW_UNKNOWN_ENTITLEMENT_KEYS` restores the permissive behaviour for hosts that
+need time to declare their keys.
+
+Request-supplied `success_url` / `cancel_url` / `return_url` are checked against an
+origin allowlist (`redirects.py`, new `REDIRECT_ALLOWED_ORIGINS`, refusal key
+`error.400.redirect_url_not_allowed`) — the payment provider renders that link, so an
+unchecked one made checkout an authenticated open redirect. The configured fallbacks
+and `FRONTEND_URL` are allowlisted implicitly, so a single-frontend deployment needs
+no new configuration; `ALLOW_UNVALIDATED_REDIRECT_URLS` (reported by check
+`stapel_billing.W102`) is the escape hatch.
+
+`checkout.session.completed` is reconciled against the catalog entry its metadata
+names — mode, settled payment status, currency, amount net of coupon, and buyer
+(`client_reference_id` vs `metadata.user_id`) — before any credit or plan is granted
+(`STRICT_CHECKOUT_RECONCILIATION`). `invoice.paid` refuses an invoice whose status is
+not `paid`.
+
+New `ProviderGrant` model (`billing_provider_grant`, unique on
+provider/scope/external_id) claims the *business object* a webhook describes;
+`StripeWebhookEvent` only ever claimed the *event*. Stripe describes one paid invoice
+in several distinct events, so the previous read-then-credit check over ledger
+metadata let two concurrent deliveries both pay out. Migration `0002` also makes
+`Subscription.stripe_customer_id` / `stripe_subscription_id` unique when set (webhook
+routing was ambiguous between duplicates) and backfills claims from existing ledger
+rows so a redelivery of an already-granted invoice/session stays a no-op.
+
+### Security — BILL-03: an unknown plan slug no longer means "unlimited"
+
+**Upgrade note — a deployment can be affected by this without changing anything.**
+`billing.check_entitlement` used to answer `allowed=True, limit=None` for every key
+when the user's plan slug was absent from `STAPEL_BILLING["PLANS"]`: no entitlement
+map resolved, and "no ceiling configured" read as "go ahead". Two ordinary
+configuration states triggered it — a renamed or retired plan still carried by live
+`Subscription` rows (those subscribers went unlimited while their subscription stayed
+ACTIVE), and a host ladder without a `"free"` entry, which is what *every* user
+without a subscription row resolves to (`Subscription.plan`'s model default).
+
+That answer is now `allowed=False, limit=None, reason="unknown_plan"`, symmetric with
+BILL-01's `unknown_key`. New system check `stapel_billing.E102` refuses the boot when
+the default plan slug is not in `PLANS`, so the ladder problem is found at deploy
+rather than by everyone being denied at runtime.
+
+* **If your `PLANS` does not contain the slug `"free"`, add it** (or migrate the
+  model default in your own migration) — otherwise the boot check fails.
+* **If live subscriptions carry slugs you have retired**, restore the slug in `PLANS`
+  or migrate those rows.
+* `STAPEL_BILLING["ALLOW_UNKNOWN_PLAN_SLUGS"] = True` restores the old permissive
+  answer (and silences `E102`) while you do it.
+
+### Security — BILL-04: switches from the environment are coerced, `PAYMENT_PROVIDER` is not read from it
+
+**Upgrade note — read this if you set any billing switch as an environment variable.**
+`AppSettings` has no per-key type, so an environment variable arrives as raw text and
+every switch was consumed as a bare truth value. `bool("false")` is `True`: setting
+`ALLOW_UNKNOWN_ENTITLEMENT_KEYS=false` or `ALLOW_UNVALIDATED_REDIRECT_URLS=false`
+*enabled* the hatch it was meant to disable. The mirror image hit the gate that
+defaults to on — an empty `STRICT_CHECKOUT_RECONCILIATION=` disabled checkout
+reconciliation entirely, because `bool("")` is `False`.
+
+* `ALLOW_UNVALIDATED_REDIRECT_URLS`, `ALLOW_UNKNOWN_ENTITLEMENT_KEYS` and
+  `ALLOW_UNKNOWN_PLAN_SLUGS` are now on only for `1` / `true` / `yes` / `on`
+  (case- and space-insensitive). **If you relied on any other non-empty string to
+  keep a hatch open, it is now closed** — spell it `true`.
+* `STRICT_CHECKOUT_RECONCILIATION` is off only for an explicit `0` / `false` / `no` /
+  `off`; anything else, including an empty value, keeps the reconciliation on.
+* `PAYMENT_PROVIDER` is now `no_env`: it selects the class that handles money, and a
+  same-named environment variable in a shared pod or compose file must not swap it.
+  **If you configured the provider through a bare `PAYMENT_PROVIDER` environment
+  variable, move it into `settings.STAPEL_BILLING["PAYMENT_PROVIDER"]`** (or a flat
+  Django setting of the same name) — the environment is ignored for this key.
+
+### Security — BILL-05: the entitlement hatch reports itself
+
+`ALLOW_UNKNOWN_ENTITLEMENT_KEYS` silenced the `E101` typo hunt and then said nothing
+at all, so a deployment that opened the paywall hatch "for a week" got no signal from
+`manage.py check`. It now emits `stapel_billing.W101` on every boot, symmetric with
+the `W102` the redirect hatch has always emitted. No behaviour change beyond the
+warning.
+
+### Security — BILL-06: an unconfigured payment provider refuses instead of fabricating
+
+**Upgrade note — this changes what a deployment without Stripe credentials does.**
+With an empty `STRIPE_SECRET_KEY` (or no `stripe` SDK) the provider answered every call
+with a dev placeholder and told nobody: `POST /billing/api/checkout` returned **200**
+with a fabricated `cs_dev_*` session id, `GET /billing/api/portal` returned a link to
+nowhere, and `POST /billing/api/subscription/cancel` returned quietly — so the view
+stamped `cancelled_at` and reported a cancellation that no payment system had heard of.
+
+* An unconfigured provider now raises `ProviderNotConfiguredError`; the checkout and
+  portal endpoints answer **502**, and the cancel endpoint answers 502 *without*
+  marking the subscription cancelled locally.
+* New system check `stapel_billing.E104` fails the boot when the effective
+  `PAYMENT_PROVIDER` reports it has no credentials; `stapel_billing.E103` covers a
+  `PAYMENT_PROVIDER` that does not resolve to a `PaymentProvider` subclass.
+* **A dev/staging environment that relied on the placeholders must set
+  `STAPEL_BILLING["ALLOW_UNCONFIGURED_PAYMENT_PROVIDER"] = True`** — the hatch keeps
+  the old behaviour, logs a warning on every use and is reported by check
+  `stapel_billing.W104`.
+* `PaymentProvider` gained `is_configured()` (default `True`, so third-party providers
+  are unaffected); `StripeProvider` overrides it. `cancel_subscription` is now
+  documented as *must raise* when unconfigured, instead of *must be a no-op*.
+
+### Security — BILL-07: money endpoints deny anonymous (guest) sessions
+
+**Upgrade note for deployments running with `AUTH_ANONYMOUS`.** A guest session is
+`is_authenticated`, so the bare `IsAuthenticated` on every billing view admitted it.
+`GET /billing/api/wallet` minted a `Wallet` row per throwaway session and
+`POST /billing/api/checkout` opened a real Stripe Checkout whose
+`client_reference_id` names an identity that can be discarded and re-minted with one
+unauthenticated request — a payment nobody can be credited for.
+
+The wallet, transactions, checkout, portal, subscription and subscription-cancel
+views now refuse an anonymous session with **403** (`GuestDeniedMixin`, declared as
+`stapel_anonymous_access = ANONYMOUS_DENIED`). Ordinary users are unaffected.
+`GET /billing/api/products` (the public price list) and the Stripe webhook stay open
+and now say so explicitly (`ANONYMOUS_ALLOWED`). **If a guest-facing flow in your
+frontend called any money endpoint, it must convert the session to a real account
+first** — there is no opt-out setting: a guest wallet has no owner to bill.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns

@@ -43,12 +43,115 @@ DEFAULTS = {
     "CHECKOUT_SUCCESS_URL": "",
     "CHECKOUT_CANCEL_URL": "",
     "PORTAL_RETURN_URL": "",
+    # Exact origins ("https://app.example.com") a REQUEST-supplied redirect
+    # target may point at, on top of the origins of the three fallbacks
+    # above and of FRONTEND_URL. See redirects.py.
+    "REDIRECT_ALLOWED_ORIGINS": [],
+    # Escape hatch: forward request-supplied redirect URLs to the provider
+    # unchecked. That is an authenticated open-redirect surface — a host
+    # only turns it on to buy time while it declares its origins.
+    "ALLOW_UNVALIDATED_REDIRECT_URLS": False,
+    # Feature keys the deployment recognises, on top of the ones the
+    # built-in plan ladder declares. An entitlement key outside this
+    # vocabulary is denied at runtime and rejected by a system check when
+    # a configured plan mentions it — a typo must not hand out a feature.
+    "ENTITLEMENT_KEYS": [],
+    # Escape hatch: restore the pre-hardening behaviour where an
+    # unrecognised entitlement key was ALLOWED.
+    "ALLOW_UNKNOWN_ENTITLEMENT_KEYS": False,
+    # Escape hatch: restore the pre-hardening behaviour where a plan slug the
+    # catalogue does not contain (a retired/renamed plan still on a live
+    # Subscription row, or a default plan outside the host's own ladder)
+    # carried NO entitlements — which read as "no ceiling configured" and made
+    # every paid feature unrestricted for that user. See entitlements.py.
+    "ALLOW_UNKNOWN_PLAN_SLUGS": False,
+    # Escape hatch: let an UNCONFIGURED payment provider answer with dev
+    # placeholders (a fake checkout URL and session id, a fake portal link, a
+    # cancel that cancels nothing) instead of refusing. Only ever right on a
+    # developer's machine: everywhere else it makes the service report
+    # payments that no payment system has heard of. Boot check E104 refuses a
+    # deployment whose provider has no credentials; W104 reports this hatch.
+    "ALLOW_UNCONFIGURED_PAYMENT_PROVIDER": False,
+    # Reconcile the provider's checkout object (mode, payment status,
+    # currency, amount, owner) against the catalog before granting credits
+    # or a plan. Off means the provider's metadata is taken on faith.
+    "STRICT_CHECKOUT_RECONCILIATION": True,
 }
 
 billing_settings = AppSettings(
     "STAPEL_BILLING",
     defaults=DEFAULTS,
     import_strings=("PAYMENT_PROVIDER",),
+    # PAYMENT_PROVIDER decides which class handles money — checkout,
+    # subscriptions, webhook verification. The name is generic enough that a
+    # same-named env var in a shared pod or compose file could swap it
+    # silently, so it resolves from the namespace dict, a flat Django setting
+    # or the default only (the gateway and workspaces apply the same rule to
+    # their own seams).
+    no_env=("PAYMENT_PROVIDER",),
 )
 
-__all__ = ["billing_settings"]
+#: Values an environment variable may spell "yes" with. AppSettings resolves
+#: env vars as raw strings (it has no per-key type) and the switches below are
+#: consumed as bare truth values, so ``bool("false")`` is True — an operator
+#: who set ``ALLOW_UNKNOWN_ENTITLEMENT_KEYS=false`` to turn the hatch OFF used
+#: to turn it ON, and re-arm the BILL-02 open redirect the same way. Anything
+#: not in this set is False.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+#: The mirror image, for switches whose *safe* value is True: only an explicit
+#: "no" turns them off. An unrecognised spelling keeps the gate closed rather
+#: than degrading to "off", which is how a deployment ends up believing it has
+#: a gate it does not have.
+_FALSY = {"0", "false", "no", "off"}
+
+
+def _opened(key: str) -> bool:
+    """A default-off switch: on only when something explicitly says so."""
+    value = getattr(billing_settings, key)
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return bool(value)
+
+
+def _closed_unless_denied(key: str) -> bool:
+    """A default-on gate: off only when something explicitly says so."""
+    value = getattr(billing_settings, key)
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSY
+    return bool(value)
+
+
+def allow_unvalidated_redirect_urls() -> bool:
+    """``ALLOW_UNVALIDATED_REDIRECT_URLS`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNVALIDATED_REDIRECT_URLS")
+
+
+def allow_unknown_entitlement_keys() -> bool:
+    """``ALLOW_UNKNOWN_ENTITLEMENT_KEYS`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNKNOWN_ENTITLEMENT_KEYS")
+
+
+def allow_unknown_plan_slugs() -> bool:
+    """``ALLOW_UNKNOWN_PLAN_SLUGS`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNKNOWN_PLAN_SLUGS")
+
+
+def allow_unconfigured_payment_provider() -> bool:
+    """``ALLOW_UNCONFIGURED_PAYMENT_PROVIDER`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNCONFIGURED_PAYMENT_PROVIDER")
+
+
+def strict_checkout_reconciliation() -> bool:
+    """``STRICT_CHECKOUT_RECONCILIATION`` as a bool (see :data:`_FALSY`)."""
+    return _closed_unless_denied("STRICT_CHECKOUT_RECONCILIATION")
+
+
+__all__ = [
+    "billing_settings",
+    "allow_unconfigured_payment_provider",
+    "allow_unknown_entitlement_keys",
+    "allow_unknown_plan_slugs",
+    "allow_unvalidated_redirect_urls",
+    "strict_checkout_reconciliation",
+]

@@ -4,6 +4,7 @@
   "error.400.invalid_plan": "Недопустимый план подписки",
   "error.400.invalid_stripe_signature": "Недействительная подпись вебхука Stripe",
   "error.400.invalid_webhook_payload": "Недопустимые данные вебхука Stripe",
+  "error.400.redirect_url_not_allowed": "Origin этого URL перенаправления не входит в список разрешённых для данной установки.",
   "error.400.redirect_url_not_configured": "redirect_url не передан в запросе, а запасной URL не настроен.",
   "error.402.insufficient_credits": "Недостаточно кредитов",
   "error.403.forbidden_billing": "Доступ запрещён: нельзя управлять этим платёжным аккаунтом",

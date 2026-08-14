@@ -19,11 +19,33 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 
+class ProviderNotConfiguredError(RuntimeError):
+    """The payment backend has no credentials, so it can serve nothing.
+
+    Raised instead of returning a fabricated session/URL: a 200 carrying a
+    made-up ``session_id`` tells the caller a payment is under way when no
+    payment system was ever reached. Views translate it into a 502 —
+    "the upstream cannot serve this" — never into a success.
+    """
+
+
 class PaymentProvider(ABC):
     """Base class for payment backends (Stripe by default)."""
 
     #: Short human-readable provider name ("stripe", "paddle", ...).
     name: str = ""
+
+    def is_configured(self) -> bool:
+        """Whether this provider can actually reach its payment system.
+
+        Default ``True``: a third-party provider knows its own credentials
+        and nothing here can introspect them, so the honest default is to
+        believe it. Providers that can be *half* installed — the Stripe one
+        ships with an empty key — override this, and
+        ``checks.check_payment_provider_configured`` turns the answer into a
+        deploy-time refusal instead of a runtime surprise.
+        """
+        return True
 
     @abstractmethod
     def create_checkout_session(
@@ -48,9 +70,11 @@ class PaymentProvider(ABC):
     def cancel_subscription(self, subscription_id: str) -> None:
         """Cancel the provider-side subscription (at period end).
 
-        Must be a no-op when the provider is not configured; must raise on
-        a failed remote call so callers do not mark the subscription
-        cancelled locally while the provider keeps charging.
+        Must raise on a failed remote call — and on an unconfigured
+        provider (:class:`ProviderNotConfiguredError`) — so callers do not
+        mark the subscription cancelled locally while the provider keeps
+        charging. Returning quietly is what makes a user believe they are
+        no longer being billed.
         """
 
     @abstractmethod

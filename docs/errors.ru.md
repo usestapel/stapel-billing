@@ -1,6 +1,6 @@
 # Errors — Русский
 
-`53` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.ru.json`.
+`54` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.ru.json`.
 
 | Код | Статус | Параметры | Действие | Текст |
 |---|---|---|---|---|
@@ -25,6 +25,7 @@
 | `error.400.invalid_plan` | 400 | — | `fix_input` | Недопустимый план подписки |
 | `error.400.invalid_stripe_signature` | 400 | — | `contact_support` | Недействительная подпись вебхука Stripe |
 | `error.400.invalid_webhook_payload` | 400 | — | `contact_support` | Недопустимые данные вебхука Stripe |
+| `error.400.redirect_url_not_allowed` | 400 | — | `contact_support` | Origin этого URL перенаправления не входит в список разрешённых для данной установки. |
 | `error.400.redirect_url_not_configured` | 400 | — | `contact_support` | redirect_url не передан в запросе, а запасной URL не настроен. |
 | `error.400.validation_error` | 400 | — | `fix_input` | Ошибка валидации |
 | `error.400.verification_failed` | 400 | — | `verify` | Проверка не пройдена |

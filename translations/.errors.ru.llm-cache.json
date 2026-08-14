@@ -1,4 +1,8 @@
 {
+  "error.400.redirect_url_not_allowed": {
+    "hash": "df93ae22f5f1a64e",
+    "text": "Origin этого URL перенаправления не входит в список разрешённых для данной установки."
+  },
   "error.400.redirect_url_not_configured": {
     "hash": "14933e9b44ea7152",
     "text": "redirect_url не передан в запросе, а запасной URL не настроен."

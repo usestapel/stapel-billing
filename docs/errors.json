@@ -173,6 +173,13 @@
     "en": "Invalid Stripe webhook payload"
   },
   {
+    "code": "error.400.redirect_url_not_allowed",
+    "status": 400,
+    "params": [],
+    "remediation": "contact_support",
+    "en": "Redirect URL origin is not allowlisted for this deployment"
+  },
+  {
     "code": "error.400.redirect_url_not_configured",
     "status": 400,
     "params": [],

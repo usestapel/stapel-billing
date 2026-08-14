@@ -4,6 +4,7 @@
   "error.400.invalid_plan": "Plan de suscripción no válido",
   "error.400.invalid_stripe_signature": "Firma de webhook de Stripe no válida",
   "error.400.invalid_webhook_payload": "Contenido de webhook de Stripe no válido",
+  "error.400.redirect_url_not_allowed": "El origen de esta URL de redirección no está en la lista de permitidos de esta instalación.",
   "error.400.redirect_url_not_configured": "No se ha proporcionado la URL de redirección y no hay ninguna alternativa configurada.",
   "error.402.insufficient_credits": "Créditos insuficientes",
   "error.403.forbidden_billing": "Prohibido: no puedes gestionar esta cuenta de facturación",

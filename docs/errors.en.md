@@ -1,6 +1,6 @@
 # Errors — English
 
-`53` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.en.json`.
+`54` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.en.json`.
 
 | Code | Status | Params | Remediation | Text |
 |---|---|---|---|---|
@@ -25,6 +25,7 @@
 | `error.400.invalid_plan` | 400 | — | `fix_input` | Invalid subscription plan |
 | `error.400.invalid_stripe_signature` | 400 | — | `contact_support` | Invalid Stripe webhook signature |
 | `error.400.invalid_webhook_payload` | 400 | — | `contact_support` | Invalid Stripe webhook payload |
+| `error.400.redirect_url_not_allowed` | 400 | — | `contact_support` | Redirect URL origin is not allowlisted for this deployment |
 | `error.400.redirect_url_not_configured` | 400 | — | `contact_support` | Redirect URL not provided and no fallback configured |
 | `error.400.validation_error` | 400 | — | `fix_input` | Validation error |
 | `error.400.verification_failed` | 400 | — | `verify` | Verification failed |
