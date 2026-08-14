@@ -60,3 +60,20 @@ def stripe_disabled(settings, monkeypatch):
     settings.STRIPE_SECRET_KEY = ""
     settings.STRIPE_WEBHOOK_SECRET = ""
     return settings
+
+
+@pytest.fixture
+def stripe_placeholders_allowed(stripe_disabled, settings):
+    """Unconfigured Stripe *plus* the explicit opt-in to dev placeholders.
+
+    Since BILL-06 an unconfigured provider refuses instead of fabricating a
+    checkout session, a portal link or a cancel nobody performed. The tests
+    that are about the placeholder path itself therefore have to ask for it
+    the way a developer's machine does — with
+    ``ALLOW_UNCONFIGURED_PAYMENT_PROVIDER``.
+    """
+    settings.STAPEL_BILLING = {
+        **getattr(settings, "STAPEL_BILLING", {}),
+        "ALLOW_UNCONFIGURED_PAYMENT_PROVIDER": True,
+    }
+    return settings

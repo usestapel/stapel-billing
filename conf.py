@@ -65,6 +65,13 @@ DEFAULTS = {
     # carried NO entitlements — which read as "no ceiling configured" and made
     # every paid feature unrestricted for that user. See entitlements.py.
     "ALLOW_UNKNOWN_PLAN_SLUGS": False,
+    # Escape hatch: let an UNCONFIGURED payment provider answer with dev
+    # placeholders (a fake checkout URL and session id, a fake portal link, a
+    # cancel that cancels nothing) instead of refusing. Only ever right on a
+    # developer's machine: everywhere else it makes the service report
+    # payments that no payment system has heard of. Boot check E104 refuses a
+    # deployment whose provider has no credentials; W104 reports this hatch.
+    "ALLOW_UNCONFIGURED_PAYMENT_PROVIDER": False,
     # Reconcile the provider's checkout object (mode, payment status,
     # currency, amount, owner) against the catalog before granting credits
     # or a plan. Off means the provider's metadata is taken on faith.
@@ -130,6 +137,11 @@ def allow_unknown_plan_slugs() -> bool:
     return _opened("ALLOW_UNKNOWN_PLAN_SLUGS")
 
 
+def allow_unconfigured_payment_provider() -> bool:
+    """``ALLOW_UNCONFIGURED_PAYMENT_PROVIDER`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNCONFIGURED_PAYMENT_PROVIDER")
+
+
 def strict_checkout_reconciliation() -> bool:
     """``STRICT_CHECKOUT_RECONCILIATION`` as a bool (see :data:`_FALSY`)."""
     return _closed_unless_denied("STRICT_CHECKOUT_RECONCILIATION")
@@ -137,6 +149,7 @@ def strict_checkout_reconciliation() -> bool:
 
 __all__ = [
     "billing_settings",
+    "allow_unconfigured_payment_provider",
     "allow_unknown_entitlement_keys",
     "allow_unknown_plan_slugs",
     "allow_unvalidated_redirect_urls",

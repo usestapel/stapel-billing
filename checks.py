@@ -77,6 +77,62 @@ def check_default_plan_slug(app_configs, **kwargs):
     )]
 
 
+@checks.register(checks.Tags.compatibility)
+def check_payment_provider_configured(app_configs, **kwargs):
+    """E: the payment seam must resolve *and* hold credentials.
+
+    An unconfigured provider used to answer with dev placeholders — a 200
+    carrying a fabricated checkout session, a portal link to nowhere, a
+    cancel that cancelled nothing. It refuses now, which is right at runtime
+    but late: the honest moment to learn that this deployment cannot take
+    money is the deploy.
+    """
+    from .conf import allow_unconfigured_payment_provider, billing_settings
+    from .providers.base import PaymentProvider
+
+    try:
+        cls = billing_settings.PAYMENT_PROVIDER
+    except Exception as exc:
+        return [checks.Error(
+            f"STAPEL_BILLING['PAYMENT_PROVIDER'] could not be imported: {exc}",
+            id="stapel_billing.E103",
+        )]
+    if not (isinstance(cls, type) and issubclass(cls, PaymentProvider)):
+        return [checks.Error(
+            "STAPEL_BILLING['PAYMENT_PROVIDER'] must be a PaymentProvider "
+            f"subclass, got {cls!r}.",
+            id="stapel_billing.E103",
+        )]
+    if allow_unconfigured_payment_provider():
+        return [checks.Warning(
+            "STAPEL_BILLING['ALLOW_UNCONFIGURED_PAYMENT_PROVIDER'] is on: an "
+            "unconfigured payment provider answers with dev placeholders, so "
+            "checkout returns a fabricated session id, the portal link goes "
+            "nowhere and a cancelled subscription is only cancelled locally. "
+            "Never right outside a developer's machine.",
+            id="stapel_billing.W104",
+        )]
+    try:
+        configured = cls().is_configured()
+    except Exception as exc:
+        return [checks.Error(
+            f"STAPEL_BILLING['PAYMENT_PROVIDER'] {cls.__name__} could not "
+            f"report whether it is configured: {exc}",
+            id="stapel_billing.E104",
+        )]
+    if configured:
+        return []
+    return [checks.Error(
+        f"The payment provider {cls.__name__} is not configured (the default "
+        "Stripe provider needs STAPEL_BILLING['STRIPE_SECRET_KEY'] and the "
+        "stripe SDK), so every checkout, portal and cancel request fails. "
+        "Configure it, or set "
+        "STAPEL_BILLING['ALLOW_UNCONFIGURED_PAYMENT_PROVIDER'] to accept dev "
+        "placeholders instead.",
+        id="stapel_billing.E104",
+    )]
+
+
 @checks.register(checks.Tags.security)
 def check_redirect_allowlist(app_configs, **kwargs):
     """W: the open-redirect guard is only as good as the origins it knows."""

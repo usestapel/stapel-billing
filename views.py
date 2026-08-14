@@ -38,6 +38,7 @@ from .errors import (
     ERR_404_WALLET_NOT_FOUND,
 )
 from .models import StripeWebhookEvent, Subscription, Wallet
+from .providers.base import ProviderNotConfiguredError
 from .serializers import (
     CatalogResponseSerializer,
     CheckoutRequestSerializer,
@@ -52,6 +53,19 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _provider_unavailable(operation: str):
+    """Answer for a payment provider that cannot serve the request.
+
+    502, never a 200 with a fabricated payload: the client must not be told a
+    payment is under way when no payment system was reached. Same answer the
+    subscription cancel has always given when the provider call failed.
+    """
+    logger.error("Payment provider cannot serve %s", operation)
+    return StapelResponse(  # noqa: R006
+        {"status": "error"}, status=status.HTTP_502_BAD_GATEWAY
+    )
 
 
 # ─── Serializer seams ────────────────────────────────────────
@@ -237,17 +251,20 @@ class CheckoutView(SerializerSeamMixin, APIView):
         ser = self.get_request_serializer_class()(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        url, session_id = services.create_checkout_session(
-            user=request.user,
-            package=getattr(data, "package", None),
-            plan=getattr(data, "plan", None),
-            success_url=_redirect_url(
-                data.success_url, "CHECKOUT_SUCCESS_URL", "/billing/success"
-            ),
-            cancel_url=_redirect_url(
-                data.cancel_url, "CHECKOUT_CANCEL_URL", "/billing/cancel"
-            ),
-        )
+        try:
+            url, session_id = services.create_checkout_session(
+                user=request.user,
+                package=getattr(data, "package", None),
+                plan=getattr(data, "plan", None),
+                success_url=_redirect_url(
+                    data.success_url, "CHECKOUT_SUCCESS_URL", "/billing/success"
+                ),
+                cancel_url=_redirect_url(
+                    data.cancel_url, "CHECKOUT_CANCEL_URL", "/billing/cancel"
+                ),
+            )
+        except ProviderNotConfiguredError:
+            return _provider_unavailable("checkout")
         response_cls = self.get_response_serializer_class()
         return StapelResponse(
             response_cls(CheckoutResponse(checkout_url=url, session_id=session_id))
@@ -263,14 +280,17 @@ class CustomerPortalView(SerializerSeamMixin, APIView):
     def get(self, request):  # noqa: R007
         sub = getattr(request.user, "subscription", None)
         customer_id = sub.stripe_customer_id if sub else ""
-        url = services.create_customer_portal(
-            customer_id=customer_id,
-            return_url=_redirect_url(
-                request.query_params.get("return_url"),
-                "PORTAL_RETURN_URL",
-                "/billing",
-            ),
-        )
+        try:
+            url = services.create_customer_portal(
+                customer_id=customer_id,
+                return_url=_redirect_url(
+                    request.query_params.get("return_url"),
+                    "PORTAL_RETURN_URL",
+                    "/billing",
+                ),
+            )
+        except ProviderNotConfiguredError:
+            return _provider_unavailable("the customer portal")
         response_cls = self.get_response_serializer_class()
         return StapelResponse(response_cls(CustomerPortalResponse(portal_url=url)))
 
@@ -320,6 +340,8 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
             except Exception:
                 # Do NOT mark cancelled locally: the user would believe
                 # the subscription is off while the provider keeps charging.
+                # An unconfigured provider raises here too (it used to return
+                # quietly, which produced exactly that lie).
                 logger.exception("Provider subscription cancel failed")
                 return StapelResponse(  # noqa: R006
                     {"status": "error"},

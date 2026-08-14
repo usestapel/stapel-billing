@@ -134,7 +134,7 @@ class TestCheckoutValidation:
         assert resp.status_code == 400
 
     def test_plan_checkout_placeholder_when_stripe_disabled(
-        self, authed_client, stripe_disabled
+        self, authed_client, stripe_placeholders_allowed
     ):
         resp = authed_client.post(
             "/billing/api/checkout", {"plan": "pro"}, format="json"
@@ -149,7 +149,9 @@ class TestCustomerPortalEndpoint:
     def test_requires_auth(self, api_client):
         assert api_client.get("/billing/api/portal").status_code in (401, 403)
 
-    def test_portal_without_subscription(self, authed_client, stripe_disabled):
+    def test_portal_without_subscription(
+        self, authed_client, stripe_placeholders_allowed
+    ):
         resp = authed_client.get("/billing/api/portal")
         assert resp.status_code == 200
         assert resp.json()["portal_url"] == (
@@ -157,14 +159,16 @@ class TestCustomerPortalEndpoint:
         )
 
     def test_portal_with_subscription_but_unconfigured_stripe(
-        self, authed_client, user, stripe_disabled, settings
+        self, authed_client, user, stripe_placeholders_allowed, settings
     ):
         Subscription.objects.create(user=user, stripe_customer_id="cus_77")
         # A request-supplied return URL has to name an origin the deployment
         # declared (redirects.py); this test is about the placeholder portal
-        # URL an unconfigured Stripe returns.
+        # URL an unconfigured Stripe returns when the deployment opted into
+        # placeholders (BILL-06).
         settings.STAPEL_BILLING = {
-            "REDIRECT_ALLOWED_ORIGINS": ["https://back.example"]
+            "REDIRECT_ALLOWED_ORIGINS": ["https://back.example"],
+            "ALLOW_UNCONFIGURED_PAYMENT_PROVIDER": True,
         }
         resp = authed_client.get(
             "/billing/api/portal", {"return_url": "https://back.example"}
@@ -215,9 +219,12 @@ class TestSubscriptionCancelEndpoint:
         assert sub.cancelled_at is not None
 
     def test_cancel_with_provider_no_op_when_unconfigured(
-        self, authed_client, user, stripe_disabled
+        self, authed_client, user, stripe_placeholders_allowed
     ):
-        # Default StripeProvider without keys: remote cancel is a no-op.
+        # Default StripeProvider without keys, with dev placeholders opted
+        # into: the remote cancel is a no-op. Without that opt-in the cancel
+        # refuses instead (BILL-06) — a local "cancelled" while the provider
+        # keeps charging is the one answer a cancel must never give.
         sub = Subscription.objects.create(
             user=user, plan="pro", stripe_subscription_id="sub_z"
         )

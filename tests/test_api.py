@@ -76,7 +76,7 @@ class TestCatalog:
 @pytest.mark.django_db
 class TestCheckout:
     def test_checkout_placeholder_when_stripe_disabled(
-        self, authed_client, user, stripe_disabled
+        self, authed_client, user, stripe_placeholders_allowed
     ):
         # The redirect targets ride on the deployment's own frontend origin:
         # request-supplied ones are allowlisted (redirects.py), and this test

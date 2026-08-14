@@ -93,6 +93,29 @@ at all, so a deployment that opened the paywall hatch "for a week" got no signal
 the `W102` the redirect hatch has always emitted. No behaviour change beyond the
 warning.
 
+### Security — BILL-06: an unconfigured payment provider refuses instead of fabricating
+
+**Upgrade note — this changes what a deployment without Stripe credentials does.**
+With an empty `STRIPE_SECRET_KEY` (or no `stripe` SDK) the provider answered every call
+with a dev placeholder and told nobody: `POST /billing/api/checkout` returned **200**
+with a fabricated `cs_dev_*` session id, `GET /billing/api/portal` returned a link to
+nowhere, and `POST /billing/api/subscription/cancel` returned quietly — so the view
+stamped `cancelled_at` and reported a cancellation that no payment system had heard of.
+
+* An unconfigured provider now raises `ProviderNotConfiguredError`; the checkout and
+  portal endpoints answer **502**, and the cancel endpoint answers 502 *without*
+  marking the subscription cancelled locally.
+* New system check `stapel_billing.E104` fails the boot when the effective
+  `PAYMENT_PROVIDER` reports it has no credentials; `stapel_billing.E103` covers a
+  `PAYMENT_PROVIDER` that does not resolve to a `PaymentProvider` subclass.
+* **A dev/staging environment that relied on the placeholders must set
+  `STAPEL_BILLING["ALLOW_UNCONFIGURED_PAYMENT_PROVIDER"] = True`** — the hatch keeps
+  the old behaviour, logs a warning on every use and is reported by check
+  `stapel_billing.W104`.
+* `PaymentProvider` gained `is_configured()` (default `True`, so third-party providers
+  are unaffected); `StripeProvider` overrides it. `cancel_subscription` is now
+  documented as *must raise* when unconfigured, instead of *must be a no-op*.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns

@@ -19,7 +19,7 @@ registries). Everything below is verifiable against the code in this repo.
 | HTTP API (`urls.py`, `views.py`) | `wallet` (GET/PATCH), `wallet/transactions`, `products` (public catalog), `checkout`, `portal`, `subscription`, `subscription/cancel`, `webhooks/stripe`, `internal/debit` (service-to-service, `IsServiceRequest \| IsStaffUser`) |
 | Catalog (`catalog.py`) | `CreditPackage` / `PlanCatalogEntry` frozen dataclasses (`PlanCatalogEntry.entitlements: dict[str, int \| bool]` — feature switches / ceilings per plan); `CREDIT_PACKAGES`, `PLANS`, `CREDIT_PACKAGES_BY_SLUG`, `PLANS_BY_SLUG` are lazy views that re-read `STAPEL_BILLING` on every access |
 | Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` (see "Events & functions" below); denial-reason constants `REASON_*` |
-| Providers (`providers/`) | `PaymentProvider` ABC (`providers/base.py`), `StripeProvider` default implementation (`providers/stripe.py`, lazy credentials, dev placeholder URLs when unconfigured) |
+| Providers (`providers/`) | `PaymentProvider` ABC (`providers/base.py`), `StripeProvider` default implementation (`providers/stripe.py`, lazy credentials; refuses with `ProviderNotConfiguredError` when unconfigured, dev placeholder URLs only under `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER`) |
 | GDPR (`gdpr.py`, `apps.py`) | `BillingGDPRProvider` (section `"billing"`), registered with `stapel_core.gdpr.gdpr_registry` in `AppConfig.ready()`; export + delete (Stripe IDs cleared, wallet anonymised, ledger retained) |
 | Public API (`__init__.py`, PEP 562 lazy) | `__all__ = ["CHECK_ENTITLEMENT", "DEBIT", "InsufficientCreditsError", "PaymentProvider", "billing_settings", "check_entitlement", "credit", "debit", "get_provider"]` |
 
@@ -51,7 +51,7 @@ Two rules the boolean keys and `PAYMENT_PROVIDER` add to that order:
 | Key | Default | What it customizes |
 |---|---|---|
 | `PAYMENT_PROVIDER` | `"stapel_billing.providers.stripe.StripeProvider"` | The payment backend. In `import_strings` — resolved via `import_string`, must be a `PaymentProvider` subclass (enforced by `get_provider()`). |
-| `STRIPE_SECRET_KEY` | `""` | Stripe API key for the default provider (read lazily per call). |
+| `STRIPE_SECRET_KEY` | `""` | Stripe API key for the default provider (read lazily per call). Empty means the provider is **unconfigured**: checkout/portal/cancel refuse (502) and boot check `stapel_billing.E104` fails. |
 | `STRIPE_WEBHOOK_SECRET` | `""` | Stripe webhook signature secret (read lazily per call). |
 | `CREDIT_PACKAGES` | `catalog.DEFAULT_CREDIT_PACKAGES` (starter/standard/bulk) | One-off credit package catalog. List of dicts or `CreditPackage` instances. |
 | `PLANS` | `catalog.DEFAULT_PLANS` (free/pro/team/enterprise) | Subscription plan catalog. List of dicts or `PlanCatalogEntry` instances. |
@@ -63,6 +63,7 @@ Two rules the boolean keys and `PAYMENT_PROVIDER` add to that order:
 | `ENTITLEMENT_KEYS` | `[]` | Feature keys this deployment recognises, on top of the ones the shipped plan ladder declares. A key outside the vocabulary is denied by `billing.check_entitlement` (`reason="unknown_key"`), and a configured plan that mentions one fails the boot check `stapel_billing.E101`. |
 | `ALLOW_UNKNOWN_ENTITLEMENT_KEYS` | `False` | Escape hatch: let an unrecognised entitlement key be allowed again (and silence `E101`). System check `stapel_billing.W101` names it on every boot, the way `W102` names the redirect hatch. |
 | `ALLOW_UNKNOWN_PLAN_SLUGS` | `False` | Escape hatch: let a plan slug that is **not** in `PLANS` (a renamed/retired plan still on a live subscription, or a default plan outside the host's ladder) be treated as "no ceilings" again instead of `reason="unknown_plan"` (and silence `E102`). |
+| `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER` | `False` | Escape hatch for a developer's machine: let an unconfigured provider answer with dev placeholders (fake checkout session, portal link to nowhere, cancel that cancels nothing) instead of refusing. Silences `E104`, reported by `W104`. |
 | `STRICT_CHECKOUT_RECONCILIATION` | `True` | Reconcile the provider's checkout session (mode, payment status, currency, amount vs. the catalog price, buyer) before granting credits or a plan. Off means the session's metadata is taken on faith. |
 
 ### Payment providers (dotted-path swap)
