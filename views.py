@@ -1,9 +1,7 @@
 """DRF views for the billing service."""
 
 import logging
-import os
 
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -14,14 +12,12 @@ from rest_framework.views import APIView
 from stapel_core.django.api.errors import (
     StapelErrorResponse,
     StapelResponse,
-    StapelValidationError,
 )
 from stapel_core.django.api.permissions import IsServiceRequest, IsStaffUser
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
-from . import services
+from . import redirects, services
 from .catalog import CREDIT_PACKAGES, PLANS
-from .conf import billing_settings
 from .dto import (
     CatalogResponse,
     CheckoutResponse,
@@ -37,7 +33,6 @@ from .dto import (
 from .errors import (
     ERR_400_INVALID_STRIPE_SIGNATURE,
     ERR_400_INVALID_WEBHOOK_PAYLOAD,
-    ERR_400_REDIRECT_URL_NOT_CONFIGURED,
     ERR_402_INSUFFICIENT_CREDITS,
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
@@ -223,22 +218,9 @@ class CatalogView(SerializerSeamMixin, APIView):
 # ─── Checkout / portal ──────────────────────────────────────
 
 
-def _redirect_url(explicit: str | None, setting_key: str, path: str) -> str:
-    """Resolve a Stripe redirect target — never a placeholder domain.
-
-    Order: request value → ``STAPEL_BILLING[setting_key]`` → derived from
-    the flat ``FRONTEND_URL`` setting/env. With none of them configured
-    the request is rejected.
-    """
-    url = explicit or getattr(billing_settings, setting_key)
-    if url:
-        return url
-    frontend = getattr(settings, "FRONTEND_URL", "") or os.environ.get(  # noqa: CFG001
-        "FRONTEND_URL", ""
-    )
-    if frontend:
-        return frontend.rstrip("/") + path
-    raise StapelValidationError(ERR_400_REDIRECT_URL_NOT_CONFIGURED)
+#: Resolve + allowlist a redirect target. Lives in ``redirects.py`` so the
+#: rule is one implementation rather than one per endpoint.
+_redirect_url = redirects.resolve
 
 
 @extend_schema(tags=["Checkout"])

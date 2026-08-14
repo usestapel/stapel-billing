@@ -1,4 +1,8 @@
 {
+  "error.400.redirect_url_not_allowed": {
+    "hash": "df93ae22f5f1a64e",
+    "text": "El origen de esta URL de redirección no está en la lista de permitidos de esta instalación."
+  },
   "error.400.redirect_url_not_configured": {
     "hash": "14933e9b44ea7152",
     "text": "No se ha proporcionado la URL de redirección y no hay ninguna alternativa configurada."

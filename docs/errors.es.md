@@ -1,6 +1,6 @@
 # Errors — Español
 
-`53` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.es.json`.
+`54` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.es.json`.
 
 | Código | Estado | Parámetros | Acción | Texto |
 |---|---|---|---|---|
@@ -25,6 +25,7 @@
 | `error.400.invalid_plan` | 400 | — | `fix_input` | Plan de suscripción no válido |
 | `error.400.invalid_stripe_signature` | 400 | — | `contact_support` | Firma de webhook de Stripe no válida |
 | `error.400.invalid_webhook_payload` | 400 | — | `contact_support` | Contenido de webhook de Stripe no válido |
+| `error.400.redirect_url_not_allowed` | 400 | — | `contact_support` | El origen de esta URL de redirección no está en la lista de permitidos de esta instalación. |
 | `error.400.redirect_url_not_configured` | 400 | — | `contact_support` | No se ha proporcionado la URL de redirección y no hay ninguna alternativa configurada. |
 | `error.400.validation_error` | 400 | — | `fix_input` | Error de validación |
 | `error.400.verification_failed` | 400 | — | `verify` | La verificación ha fallado |

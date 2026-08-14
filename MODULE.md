@@ -14,8 +14,8 @@ registries). Everything below is verifiable against the code in this repo.
 
 | Area | Contents |
 |---|---|
-| Models (`models.py`) | `Wallet` (one per user, integer credit `balance`), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, JSON `metadata`), `Subscription` (one per user, Stripe-backed), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique) |
-| Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `debit` supports `idempotency_key`, raises `InsufficientCreditsError`), `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`) |
+| Models (`models.py`) | `Wallet` (one per user, integer credit `balance`), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, JSON `metadata`), `Subscription` (one per user, Stripe-backed; provider customer/subscription ids unique when set), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique), `ProviderGrant` (one grant per provider *object* — `(provider, scope, external_id)` unique) |
+| Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `debit` supports `idempotency_key`, raises `InsufficientCreditsError`), `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, `claim_provider_object()` (one grant per provider object), webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`) |
 | HTTP API (`urls.py`, `views.py`) | `wallet` (GET/PATCH), `wallet/transactions`, `products` (public catalog), `checkout`, `portal`, `subscription`, `subscription/cancel`, `webhooks/stripe`, `internal/debit` (service-to-service, `IsServiceRequest \| IsStaffUser`) |
 | Catalog (`catalog.py`) | `CreditPackage` / `PlanCatalogEntry` frozen dataclasses (`PlanCatalogEntry.entitlements: dict[str, int \| bool]` — feature switches / ceilings per plan); `CREDIT_PACKAGES`, `PLANS`, `CREDIT_PACKAGES_BY_SLUG`, `PLANS_BY_SLUG` are lazy views that re-read `STAPEL_BILLING` on every access |
 | Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` (see "Events & functions" below); denial-reason constants `REASON_*` |
@@ -45,6 +45,11 @@ same name → environment variable → default. All keys are read **lazily at ca
 | `CHECKOUT_SUCCESS_URL` | `""` | Fallback Stripe Checkout success redirect when the request carries none. Empty → derived from the flat `FRONTEND_URL` setting/env (`{FRONTEND_URL}/billing/success`); with neither configured the request fails with `error.400.redirect_url_not_configured`. |
 | `CHECKOUT_CANCEL_URL` | `""` | Same resolution for the cancel redirect (`{FRONTEND_URL}/billing/cancel`). |
 | `PORTAL_RETURN_URL` | `""` | Same resolution for the customer-portal return URL (`{FRONTEND_URL}/billing`). |
+| `REDIRECT_ALLOWED_ORIGINS` | `[]` | Exact origins (`"https://app.example.com"`) a **request-supplied** `success_url` / `cancel_url` / `return_url` may point at, on top of the origins of the three fallbacks above and of `FRONTEND_URL`. Anything else is refused with `error.400.redirect_url_not_allowed` (`redirects.py`) — the provider renders the link, so an unchecked one turns checkout into a phishing hop. |
+| `ALLOW_UNVALIDATED_REDIRECT_URLS` | `False` | Escape hatch: forward request-supplied redirect URLs unchecked. That is an authenticated open redirect; system check `stapel_billing.W102` says so on every boot. |
+| `ENTITLEMENT_KEYS` | `[]` | Feature keys this deployment recognises, on top of the ones the shipped plan ladder declares. A key outside the vocabulary is denied by `billing.check_entitlement` (`reason="unknown_key"`), and a configured plan that mentions one fails the boot check `stapel_billing.E101`. |
+| `ALLOW_UNKNOWN_ENTITLEMENT_KEYS` | `False` | Escape hatch: let an unrecognised entitlement key be allowed again (and silence `E101`). |
+| `STRICT_CHECKOUT_RECONCILIATION` | `True` | Reconcile the provider's checkout session (mode, payment status, currency, amount vs. the catalog price, buyer) before granting credits or a plan. Off means the session's metadata is taken on faith. |
 
 ### Payment providers (dotted-path swap)
 
@@ -79,8 +84,8 @@ import — see `StripeProvider.api_key` / `.webhook_secret` properties for the p
 
 None. This module defines no swappable models of its own; it binds to the host user
 model via `settings.AUTH_USER_MODEL` (standard Django swap — that is the only model
-seam). `Wallet`, `Transaction`, `Subscription`, `StripeWebhookEvent` have fixed
-`db_table` names (`billing_*`). Extend user-visible billing data in an app-layer model
+seam). `Wallet`, `Transaction`, `Subscription`, `StripeWebhookEvent`, `ProviderGrant` have
+fixed `db_table` names (`billing_*`). Extend user-visible billing data in an app-layer model
 with a FK/OneToOne to the user or to these tables — do not fork to add fields.
 
 ### Serializer seams (`views.py`)
@@ -132,7 +137,7 @@ contracts in `schemas/functions/`):
 
 | Function | Payload | Returns |
 |---|---|---|
-| `billing.check_entitlement` | `user_id`, `key` (+ `quantity`=1 — the prospective total; billing tracks no usage) | `{allowed, limit, reason}` — checks `key` against the effective plan's `PlanCatalogEntry.entitlements`. `bool` value = feature switch, `int` = ceiling (`quantity <= value`), key absent from the plan = **allowed** (unknown keys never deny — the conservative OSS default). No/cancelled/incomplete subscription resolves to the default plan (`free`). |
+| `billing.check_entitlement` | `user_id`, `key` (+ `quantity`=1 — the prospective total; billing tracks no usage) | `{allowed, limit, reason}` — checks `key` against the effective plan's `PlanCatalogEntry.entitlements`. `bool` value = feature switch, `int` = ceiling (`quantity <= value`), key absent from *this plan* but part of the deployment's vocabulary = **allowed, no limit** (how the upper plans say "unlimited"), key outside the vocabulary = **denied** with `reason="unknown_key"` (see `ENTITLEMENT_KEYS`). No/cancelled/incomplete subscription resolves to the default plan (`free`). |
 | `billing.debit` | `user_id`, `credits`, `idempotency_key` (required — comm is at-least-once; + optional `type`/`description`/`metadata`) | `{ok, balance, reason, transaction_id?}` — wrapper over `services.debit` with its idempotency contract; failures are structural (`ok=false` + `insufficient_credits` / `user_not_found`), never exceptions. |
 
 Callers that must degrade when billing is absent catch `FunctionNotRegistered` /
@@ -156,13 +161,17 @@ event: `StripeWebhookEvent.get_or_create(stripe_event_id=...)` → already-proce
 events (with `processed_at` set) return `{"status": "duplicate"}`; a row **without**
 `processed_at` is a previous failed attempt and is reprocessed on the provider's retry.
 The handler runs under `select_for_update()` on the event row, and the `processed_at`
-mark commits atomically with the handler's effects (credit grants, emits). Renewal
-grants are additionally idempotent per invoice (`metadata__stripe_invoice_id` check in
-`handle_invoice_paid`).
+mark commits atomically with the handler's effects (credit grants, emits). That claim covers one *event*; the business object an
+event describes is claimed separately by `services.claim_provider_object()` under the
+`ProviderGrant` unique constraint, because Stripe describes one paid invoice (or one
+completed session) in several distinct events that can be delivered concurrently.
+Checkout grants are additionally reconciled against the catalog entry the session's
+metadata names — mode, payment status, currency, amount (net of coupon) and buyer —
+before any credit is written (`STRICT_CHECKOUT_RECONCILIATION`).
 
 ### Admin categories (`stapel_core.access`, admin-suite AS-5)
 
-`StripeWebhookEvent` is decorated `@access.ops` (read-only journal — add/change/delete
+`StripeWebhookEvent` and `ProviderGrant` are decorated `@access.ops` (read-only journal — add/change/delete
 forbidden for everyone including superuser at the admin layer; view requires HIGH
 clearance) and its `ModelAdmin` subclasses `stapel_core.django.admin.base.
 StapelModelAdmin`. It is an idempotency/delivery log for inbound Stripe webhooks
@@ -249,6 +258,15 @@ then commit `docs/{schema,flows,errors}.json`.
   endpoint without the `StripeWebhookEvent` claim + `select_for_update` protocol, and
   never accept webhook payloads without `verify_webhook`. At-least-once delivery will
   double-grant credits otherwise.
+- **Don't guard a grant by reading the ledger.** "Has this invoice been credited?"
+  answered with a `filter(...).exists()` over `Transaction.metadata` is a
+  read-then-write: two deliveries that both read before either writes both pay out.
+  Claim the object with `services.claim_provider_object()` inside the granting
+  transaction and let the unique constraint pick the winner.
+- **Don't grant on provider metadata alone.** Metadata says what we asked for; the
+  session's `mode`, `payment_status`, `currency` and `amount_total` say what actually
+  happened. Reconcile them against the catalog entry before crediting — an unpaid or
+  underpaid session completes too.
 - **Don't import other `stapel-*` modules.** Cross-module effects go through comm
   events (`payment.completed`, `subscription.changed`), core signals, or HTTP. This
   module imports only `stapel_core`.

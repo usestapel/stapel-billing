@@ -2,7 +2,7 @@
 
 Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 14 · extension points 5 · operations 10 · error codes 53.
+Contract: axes 1 · surface 15 · extension points 5 · operations 10 · error codes 54.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -16,10 +16,13 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - cancel_provider_subscription — stapel_billing.services.cancel_provider_subscription
   instead of: stripe.Subscription.modify
   Cancel the subscription on the processor's side, raising when the remote call fails — deliberately the FIRST half of a cancellation. Call it before marking anything cancelled locally: a local cancellation the processor never heard about tells the user billing stopped while their card keeps being charged.
+- claim_provider_object — stapel_billing.services.claim_provider_object
+  instead of: stapel_billing.models.Transaction.objects.filter(metadata__stripe_invoice_id=...).exists
+  Claim one provider object (a checkout session, an invoice) for a grant, returning False when someone already claimed it — the database-enforced answer to "has this been paid out yet?". Call it inside the transaction that grants, so claim and credit commit together; a read-then-credit check over ledger metadata cannot see a concurrent delivery of a DIFFERENT event describing the same invoice, and both of them pay.
 - handle_checkout_completed — stapel_billing.services.handle_checkout_completed
   The exact reconciliation this module performs when checkout.session.completed fires: award the package's credits, or open/refresh the Subscription and grant the plan's first monthly bundle, each with its payment.completed / subscription.changed announcement. Read it before writing a parallel handler for the same event, and never call it outside StripeWebhookView's StripeWebhookEvent claim + row lock — at-least-once delivery double-grants otherwise.
 - handle_invoice_paid — stapel_billing.services.handle_invoice_paid
-  The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and de-duplicates per stripe_invoice_id. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings.
+  The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and claims the invoice through claim_provider_object, so the several distinct events Stripe sends for one paid invoice credit it exactly once. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings.
 - handle_subscription_deleted — stapel_billing.services.handle_subscription_deleted
   The terminal cancellation on customer.subscription.deleted: marks the local Subscription cancelled with its timestamp and announces it. Read it before letting a product decide on its own what a deleted provider subscription means locally; call it only under the webhook claim protocol.
 - handle_subscription_updated — stapel_billing.services.handle_subscription_updated
@@ -88,7 +91,7 @@ Paths are relative to `/billing/api/v1/`.
 ### Webhooks
 - POST /webhooks/stripe — billing_api_v1_webhooks_stripe_create
 
-## Error codes (53) — the StapelError envelope
+## Error codes (54) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.amount_invalid [400] fix_input
 - error.400.bad_request [400] fix_input
@@ -111,6 +114,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.invalid_plan [400] fix_input
 - error.400.invalid_stripe_signature [400] contact_support
 - error.400.invalid_webhook_payload [400] contact_support
+- error.400.redirect_url_not_allowed [400] contact_support
 - error.400.redirect_url_not_configured [400] contact_support
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify

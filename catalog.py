@@ -45,9 +45,13 @@ class PlanCatalogEntry:
     switch, e.g. ``"workspaces.org": False``) or an ``int`` (numeric
     ceiling, e.g. ``"workspaces.members.max": 5``). Consumed by the
     ``billing.check_entitlement`` comm Function (see ``entitlements.py``).
-    A key *absent* from the dict is unrestricted: unknown keys never
-    deny — the conservative OSS default, letting host modules introduce
-    new entitlement keys without every deployment re-declaring its plans.
+
+    A key *absent* from this plan is unrestricted, which is how the upper
+    plans express "unlimited". A key absent from the deployment's whole
+    vocabulary (``stapel_billing.entitlements.declared_keys``) is a
+    different thing and is denied — a host that introduces its own feature
+    keys lists them in ``STAPEL_BILLING["ENTITLEMENT_KEYS"]``, so that a
+    typo cannot read as "no ceiling configured, go ahead".
     """
 
     slug: str

@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from stapel_billing.catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from stapel_billing.conf import billing_settings
 from stapel_billing.errors import (
     ERR_400_INVALID_STRIPE_SIGNATURE,
@@ -67,16 +68,34 @@ def _post(client, event, signature="good"):
     )
 
 
-def _checkout_event(user, event_id="evt_pkg_1", **metadata):
+def _checkout_event(user, event_id="evt_pkg_1", session_id="cs_1", **metadata):
+    """A checkout.session.completed shaped the way Stripe actually sends one.
+
+    The session-level fields (mode, payment_status, currency, amount_total)
+    are exactly what the grant is reconciled against, so a helper that left
+    them out would only ever exercise the refusal path.
+    """
+    if metadata.get("package"):
+        entry = CREDIT_PACKAGES_BY_SLUG[metadata["package"]]
+        settled = {"mode": "payment", "amount_total": entry.price_cents}
+    elif metadata.get("plan"):
+        entry = PLANS_BY_SLUG[metadata["plan"]]
+        settled = {"mode": "subscription", "amount_total": entry.price_cents}
+    else:
+        entry, settled = None, {"mode": "payment", "amount_total": 0}
     return {
         "id": event_id,
         "type": "checkout.session.completed",
         "data": {
             "object": {
-                "id": "cs_1",
+                "id": session_id,
                 "customer": "cus_1",
                 "subscription": "sub_1",
+                "payment_status": "paid",
+                "currency": (entry.currency if entry else "USD").lower(),
+                "client_reference_id": str(user.id),
                 "metadata": {"user_id": str(user.id), **metadata},
+                **settled,
             }
         },
     }

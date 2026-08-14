@@ -78,9 +78,16 @@ class TestCheckout:
     def test_checkout_placeholder_when_stripe_disabled(
         self, authed_client, user, stripe_disabled
     ):
+        # The redirect targets ride on the deployment's own frontend origin:
+        # request-supplied ones are allowlisted (redirects.py), and this test
+        # is about the placeholder checkout URL, not about that gate.
         resp = authed_client.post(
             "/billing/api/checkout",
-            {"package": "starter", "success_url": "https://x", "cancel_url": "https://y"},
+            {
+                "package": "starter",
+                "success_url": "https://front.example/ok",
+                "cancel_url": "https://front.example/no",
+            },
             format="json",
         )
         assert resp.status_code == 200

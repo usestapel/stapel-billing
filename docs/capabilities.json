@@ -76,6 +76,15 @@
       ]
     },
     {
+      "name": "claim_provider_object",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.claim_provider_object",
+      "intent": "Claim one provider object (a checkout session, an invoice) for a grant, returning False when someone already claimed it — the database-enforced answer to \"has this been paid out yet?\". Call it inside the transaction that grants, so claim and credit commit together; a read-then-credit check over ledger metadata cannot see a concurrent delivery of a DIFFERENT event describing the same invoice, and both of them pay.",
+      "instead_of": [
+        "stapel_billing.models.Transaction.objects.filter(metadata__stripe_invoice_id=...).exists"
+      ]
+    },
+    {
       "name": "create_checkout_session",
       "kind": "factory",
       "path": "stapel_billing.services.create_checkout_session",
@@ -142,7 +151,7 @@
       "name": "handle_invoice_paid",
       "kind": "gate_function",
       "path": "stapel_billing.services.handle_invoice_paid",
-      "intent": "The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and de-duplicates per stripe_invoice_id. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings."
+      "intent": "The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and claims the invoice through claim_provider_object, so the several distinct events Stripe sends for one paid invoice credit it exactly once. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings."
     },
     {
       "name": "handle_subscription_deleted",

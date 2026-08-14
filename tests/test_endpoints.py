@@ -157,9 +157,15 @@ class TestCustomerPortalEndpoint:
         )
 
     def test_portal_with_subscription_but_unconfigured_stripe(
-        self, authed_client, user, stripe_disabled
+        self, authed_client, user, stripe_disabled, settings
     ):
         Subscription.objects.create(user=user, stripe_customer_id="cus_77")
+        # A request-supplied return URL has to name an origin the deployment
+        # declared (redirects.py); this test is about the placeholder portal
+        # URL an unconfigured Stripe returns.
+        settings.STAPEL_BILLING = {
+            "REDIRECT_ALLOWED_ORIGINS": ["https://back.example"]
+        }
         resp = authed_client.get(
             "/billing/api/portal", {"return_url": "https://back.example"}
         )
@@ -353,6 +359,9 @@ class TestRedirectUrlResolution:
         settings.STAPEL_BILLING = {
             "PAYMENT_PROVIDER": RECORDING_PATH,
             "CHECKOUT_SUCCESS_URL": "https://app.example/ok",
+            # Request-supplied targets win over the fallbacks, but only from
+            # an origin the deployment declared (redirects.py).
+            "REDIRECT_ALLOWED_ORIGINS": ["https://req.example"],
         }
         resp = authed_client.post(
             "/billing/api/checkout",

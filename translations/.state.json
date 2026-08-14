@@ -20,6 +20,10 @@
       "hash": "7cdcc346290c0f03",
       "origin": "seed:stapel-builtin"
     },
+    "error.400.redirect_url_not_allowed": {
+      "hash": "df93ae22f5f1a64e",
+      "origin": "llm"
+    },
     "error.400.redirect_url_not_configured": {
       "hash": "14933e9b44ea7152",
       "origin": "llm"
@@ -69,6 +73,10 @@
     "error.400.invalid_webhook_payload": {
       "hash": "7cdcc346290c0f03",
       "origin": "seed:stapel-builtin"
+    },
+    "error.400.redirect_url_not_allowed": {
+      "hash": "df93ae22f5f1a64e",
+      "origin": "llm"
     },
     "error.400.redirect_url_not_configured": {
       "hash": "14933e9b44ea7152",

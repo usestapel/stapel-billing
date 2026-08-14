@@ -89,8 +89,20 @@ class TestCheckEntitlement:
         result = _check(user.pk, "workspaces.members.max")
         assert result == {"allowed": True, "limit": 5, "reason": None}
 
-    def test_unknown_key_is_allowed(self, user):
-        # Unknown key never denies — the conservative OSS default.
+    def test_key_outside_the_vocabulary_is_denied(self, user):
+        # A feature name nobody declared is a typo or a stale caller, and a
+        # typo must not read as "no limit configured, go ahead" (BILL-01).
+        result = _check(user.pk, "totally.unknown.key")
+        assert result == {"allowed": False, "limit": None, "reason": "unknown_key"}
+
+    def test_host_declared_key_is_recognised(self, user, settings):
+        settings.STAPEL_BILLING = {"ENTITLEMENT_KEYS": ["recordings.minutes.max"]}
+        # Declared but absent from the free plan → unrestricted, not denied.
+        result = _check(user.pk, "recordings.minutes.max", quantity=10_000)
+        assert result == {"allowed": True, "limit": None, "reason": None}
+
+    def test_escape_hatch_restores_the_permissive_default(self, user, settings):
+        settings.STAPEL_BILLING = {"ALLOW_UNKNOWN_ENTITLEMENT_KEYS": True}
         result = _check(user.pk, "totally.unknown.key")
         assert result == {"allowed": True, "limit": None, "reason": None}
 
@@ -149,7 +161,7 @@ class TestCheckEntitlement:
 
     def test_plan_slug_missing_from_catalog_allows_everything(self, user):
         # Host reconfigured PLANS and a subscriber is left on a ghost slug:
-        # no entitlements resolve, every key is unknown → allowed.
+        # no entitlements resolve, so every DECLARED key is unrestricted.
         Subscription.objects.create(
             user=user, plan="legacy", status=SubscriptionStatus.ACTIVE
         )
@@ -171,7 +183,8 @@ class TestCheckEntitlement:
         }
         result = _check(user.pk, "workspaces.org")
         assert result == {"allowed": True, "limit": None, "reason": None}
-        # members.max is no longer declared → unknown → allowed.
+        # members.max is still part of the vocabulary (the shipped ladder
+        # declares it); this host's single plan just sets no ceiling.
         assert _check(user.pk, "workspaces.members.max", quantity=99)["allowed"] is True
 
     def test_payload_schema_enforced_through_comm_call(self, user):

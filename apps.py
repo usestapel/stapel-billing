@@ -20,3 +20,6 @@ class BillingConfig(AppConfig):
         # billing.debit). register() is idempotent — ready() may run twice.
         from . import entitlements
         entitlements.register()
+
+        # Configuration that must fail the deploy, not the customer.
+        from . import checks  # noqa: F401

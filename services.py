@@ -11,13 +11,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from stapel_core.comm import emit
 from stapel_core.signals import payment_completed, subscription_changed
 
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from .models import (
+    ProviderGrant,
     Subscription,
     SubscriptionStatus,
     Transaction,
@@ -267,6 +268,90 @@ def _announce_subscription(sub: Subscription) -> None:
     subscription_changed.send(sender=Subscription, subscription=sub)
 
 
+# ─── Grant guards ──────────────────────────────────────────
+
+
+#: Checkout payment states in which the money is actually settled. Stripe
+#: also completes a session whose asynchronous payment method has not
+#: cleared (``unpaid``) — granting on that is granting on a promise.
+_SETTLED_PAYMENT_STATUSES = frozenset({"paid", "no_payment_required"})
+
+
+def claim_provider_object(*, scope: str, external_id, provider: str = "stripe") -> bool:
+    """Claim one provider object for a grant. False = someone got there first.
+
+    Runs in its own savepoint so the loser of the race can return quietly
+    instead of poisoning the caller's transaction with a failed insert.
+    Callers must invoke this inside the transaction that performs the
+    grant, so the claim and the credit commit or roll back together.
+    """
+    if not external_id:
+        # No stable identity to deduplicate on. Refusing is the safe half
+        # of the choice: a repeat delivery would otherwise credit again.
+        logger.error("provider grant claim without an external id (scope=%s)", scope)
+        return False
+    try:
+        with transaction.atomic():
+            ProviderGrant.objects.create(
+                provider=provider, scope=scope, external_id=str(external_id)
+            )
+    except IntegrityError:
+        logger.info("provider object %s:%s already granted", scope, external_id)
+        return False
+    return True
+
+
+def _reconcile_checkout_session(
+    obj: dict,
+    *,
+    expected_mode: str,
+    expected_currency: str,
+    expected_amount_cents: int | None,
+) -> str | None:
+    """Reason the session contradicts what we sold, or None when it matches.
+
+    The grant is driven by ``metadata`` we set at session creation, so the
+    only defence against a session that says something else is to compare
+    it with the server-side catalog entry the metadata names. A missing
+    field counts as a mismatch: "the provider did not say" must not read
+    as "yes".
+
+    ``expected_amount_cents`` is ``None`` for subscription mode — the first
+    invoice of a subscription legitimately differs from the sticker price
+    (trial, proration), and the recurring amount is governed by the
+    provider's own price object plus the renewal invoices.
+    """
+    from .conf import billing_settings
+
+    if not billing_settings.STRICT_CHECKOUT_RECONCILIATION:
+        return None
+    mode = obj.get("mode")
+    if mode != expected_mode:
+        return f"mode {mode!r} != expected {expected_mode!r}"
+    payment_status = obj.get("payment_status")
+    if payment_status not in _SETTLED_PAYMENT_STATUSES:
+        return f"payment_status {payment_status!r} is not settled"
+    currency = (obj.get("currency") or "").lower()
+    if currency != expected_currency.lower():
+        return f"currency {currency!r} != expected {expected_currency.lower()!r}"
+    if expected_amount_cents is None:
+        return None
+    charged = obj.get("amount_total")
+    if not isinstance(charged, int) or isinstance(charged, bool):
+        return f"amount_total {charged!r} is not an integer"
+    # A coupon lowers amount_total legitimately; the discount Stripe
+    # reports is what makes the sum comparable to the catalog price again.
+    discount = (obj.get("total_details") or {}).get("amount_discount") or 0
+    if not isinstance(discount, int) or isinstance(discount, bool):
+        return f"total_details.amount_discount {discount!r} is not an integer"
+    if charged + discount != expected_amount_cents:
+        return (
+            f"amount_total {charged} + discount {discount} != catalog price "
+            f"{expected_amount_cents}"
+        )
+    return None
+
+
 # ─── Webhook handlers ──────────────────────────────────────
 
 
@@ -277,6 +362,7 @@ def handle_checkout_completed(event: dict) -> None:
     user_id = metadata.get("user_id")
     package_slug = metadata.get("package")
     plan_slug = metadata.get("plan")
+    session_id = obj.get("id")
     if not user_id:
         logger.warning("checkout.session.completed without user_id")
         return
@@ -286,8 +372,39 @@ def handle_checkout_completed(event: dict) -> None:
     if not user:
         logger.warning("checkout.session.completed: user %s not found", user_id)
         return
+    # Ownership: the session names its buyer twice, and the two must agree
+    # before either one is used to pick a wallet.
+    reference = obj.get("client_reference_id")
+    if reference and str(reference) != str(user_id):
+        logger.error(
+            "checkout session %s: client_reference_id %s contradicts "
+            "metadata user_id %s — refusing to grant",
+            session_id,
+            reference,
+            user_id,
+        )
+        return
     if package_slug and package_slug in CREDIT_PACKAGES_BY_SLUG:
         pkg = CREDIT_PACKAGES_BY_SLUG[package_slug]
+        mismatch = _reconcile_checkout_session(
+            obj,
+            expected_mode="payment",
+            expected_currency=pkg.currency,
+            expected_amount_cents=pkg.price_cents,
+        )
+        if mismatch:
+            logger.error(
+                "checkout session %s does not match package %r (%s) — "
+                "refusing to grant credits",
+                session_id,
+                pkg.slug,
+                mismatch,
+            )
+            return
+        if not claim_provider_object(
+            scope=ProviderGrant.SCOPE_CHECKOUT_SESSION, external_id=session_id
+        ):
+            return
         txn = credit(
             user=user,
             credits=pkg.credits,
@@ -308,6 +425,25 @@ def handle_checkout_completed(event: dict) -> None:
         )
     if plan_slug and plan_slug in PLANS_BY_SLUG:
         plan_entry = PLANS_BY_SLUG[plan_slug]
+        mismatch = _reconcile_checkout_session(
+            obj,
+            expected_mode="subscription",
+            expected_currency=plan_entry.currency,
+            expected_amount_cents=None,
+        )
+        if mismatch:
+            logger.error(
+                "checkout session %s does not match plan %r (%s) — "
+                "refusing to grant the plan",
+                session_id,
+                plan_slug,
+                mismatch,
+            )
+            return
+        if not claim_provider_object(
+            scope=ProviderGrant.SCOPE_CHECKOUT_SESSION, external_id=session_id
+        ):
+            return
         sub, _ = Subscription.objects.update_or_create(
             user=user,
             defaults={
@@ -352,6 +488,18 @@ def handle_invoice_paid(event: dict) -> None:
     # already handled by checkout.session.completed.
     if obj.get("billing_reason") == "subscription_create":
         return
+    # The credits come from our catalog, but the reason to hand them over is
+    # that this invoice was actually settled. An invoice object that carries
+    # a status says so itself; anything else (open, draft, uncollectible,
+    # void) is a renewal that has not been paid for.
+    status = obj.get("status")
+    if status is not None and status != "paid":
+        logger.warning(
+            "invoice %s is %r, not paid — refusing the renewal grant",
+            invoice_id,
+            status,
+        )
+        return
     sub = Subscription.objects.filter(stripe_subscription_id=subscription_id).first()
     if not sub or sub.plan not in PLANS_BY_SLUG:
         return
@@ -360,13 +508,13 @@ def handle_invoice_paid(event: dict) -> None:
     if not monthly:
         return
     # Idempotency per invoice: at-least-once webhook delivery must not
-    # double-grant a renewal.
-    already = Transaction.objects.filter(
-        wallet__user=sub.user,
-        type=TransactionType.SUBSCRIPTION_BONUS,
-        metadata__stripe_invoice_id=invoice_id,
-    ).exists()
-    if already:
+    # double-grant a renewal. Stripe describes one paid invoice with two
+    # event types (invoice.paid and invoice.payment_succeeded), so distinct
+    # event ids clear the per-event lock and race each other here; the
+    # unique claim is what actually serialises them.
+    if not claim_provider_object(
+        scope=ProviderGrant.SCOPE_INVOICE, external_id=invoice_id
+    ):
         return
     txn = credit(
         user=sub.user,

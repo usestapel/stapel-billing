@@ -43,6 +43,26 @@ DEFAULTS = {
     "CHECKOUT_SUCCESS_URL": "",
     "CHECKOUT_CANCEL_URL": "",
     "PORTAL_RETURN_URL": "",
+    # Exact origins ("https://app.example.com") a REQUEST-supplied redirect
+    # target may point at, on top of the origins of the three fallbacks
+    # above and of FRONTEND_URL. See redirects.py.
+    "REDIRECT_ALLOWED_ORIGINS": [],
+    # Escape hatch: forward request-supplied redirect URLs to the provider
+    # unchecked. That is an authenticated open-redirect surface — a host
+    # only turns it on to buy time while it declares its origins.
+    "ALLOW_UNVALIDATED_REDIRECT_URLS": False,
+    # Feature keys the deployment recognises, on top of the ones the
+    # built-in plan ladder declares. An entitlement key outside this
+    # vocabulary is denied at runtime and rejected by a system check when
+    # a configured plan mentions it — a typo must not hand out a feature.
+    "ENTITLEMENT_KEYS": [],
+    # Escape hatch: restore the pre-hardening behaviour where an
+    # unrecognised entitlement key was ALLOWED.
+    "ALLOW_UNKNOWN_ENTITLEMENT_KEYS": False,
+    # Reconcile the provider's checkout object (mode, payment status,
+    # currency, amount, owner) against the catalog before granting credits
+    # or a plan. Off means the provider's metadata is taken on faith.
+    "STRICT_CHECKOUT_RECONCILIATION": True,
 }
 
 billing_settings = AppSettings(

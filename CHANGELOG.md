@@ -3,6 +3,43 @@
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security — BILL-01 / BILL-02 (audit 2026-08-11)
+
+Grants and entitlement answers no longer fail open.
+
+`billing.check_entitlement` denies a key outside the deployment's vocabulary
+(`reason="unknown_key"`) instead of answering "no ceiling configured, go ahead";
+the vocabulary is the shipped plan ladder plus `STAPEL_BILLING["ENTITLEMENT_KEYS"]`,
+and system check `stapel_billing.E101` refuses the boot when a configured plan
+mentions a key nobody declared, so a typo in a paywall is found at deploy.
+`ALLOW_UNKNOWN_ENTITLEMENT_KEYS` restores the permissive behaviour for hosts that
+need time to declare their keys.
+
+Request-supplied `success_url` / `cancel_url` / `return_url` are checked against an
+origin allowlist (`redirects.py`, new `REDIRECT_ALLOWED_ORIGINS`, refusal key
+`error.400.redirect_url_not_allowed`) — the payment provider renders that link, so an
+unchecked one made checkout an authenticated open redirect. The configured fallbacks
+and `FRONTEND_URL` are allowlisted implicitly, so a single-frontend deployment needs
+no new configuration; `ALLOW_UNVALIDATED_REDIRECT_URLS` (reported by check
+`stapel_billing.W102`) is the escape hatch.
+
+`checkout.session.completed` is reconciled against the catalog entry its metadata
+names — mode, settled payment status, currency, amount net of coupon, and buyer
+(`client_reference_id` vs `metadata.user_id`) — before any credit or plan is granted
+(`STRICT_CHECKOUT_RECONCILIATION`). `invoice.paid` refuses an invoice whose status is
+not `paid`.
+
+New `ProviderGrant` model (`billing_provider_grant`, unique on
+provider/scope/external_id) claims the *business object* a webhook describes;
+`StripeWebhookEvent` only ever claimed the *event*. Stripe describes one paid invoice
+in several distinct events, so the previous read-then-credit check over ledger
+metadata let two concurrent deliveries both pay out. Migration `0002` also makes
+`Subscription.stripe_customer_id` / `stripe_subscription_id` unique when set (webhook
+routing was ambiguous between duplicates) and backfills claims from existing ledger
+rows so a redelivery of an already-granted invoice/session stays a no-op.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns

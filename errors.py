@@ -11,6 +11,7 @@ ERR_400_INVALID_PLAN = "error.400.invalid_plan"
 ERR_400_AMOUNT_INVALID = "error.400.amount_invalid"
 ERR_400_INVALID_STRIPE_SIGNATURE = "error.400.invalid_stripe_signature"
 ERR_400_REDIRECT_URL_NOT_CONFIGURED = "error.400.redirect_url_not_configured"
+ERR_400_REDIRECT_URL_NOT_ALLOWED = "error.400.redirect_url_not_allowed"
 ERR_400_INVALID_WEBHOOK_PAYLOAD = "error.400.invalid_webhook_payload"
 ERR_403_FORBIDDEN_BILLING = "error.403.forbidden_billing"
 ERR_409_DUPLICATE_WEBHOOK = "error.409.duplicate_webhook_event"
@@ -26,6 +27,9 @@ BILLING_ERRORS = {
     ERR_400_INVALID_STRIPE_SIGNATURE: "Invalid Stripe webhook signature",
     ERR_400_REDIRECT_URL_NOT_CONFIGURED: (
         "Redirect URL not provided and no fallback configured"
+    ),
+    ERR_400_REDIRECT_URL_NOT_ALLOWED: (
+        "Redirect URL origin is not allowlisted for this deployment"
     ),
     ERR_400_INVALID_WEBHOOK_PAYLOAD: "Invalid Stripe webhook payload",
     ERR_403_FORBIDDEN_BILLING: "Forbidden: cannot manage this billing account",
@@ -60,6 +64,11 @@ BILLING_ERRORS = {
 #   * 400 redirect_url_not_configured → contact_support, NOT fix_input. This is
 #     an operator/deployment misconfiguration (no checkout redirect URL and no
 #     FRONTEND_URL fallback), not user input.
+#   * 400 redirect_url_not_allowed → contact_support, NOT fix_input. The caller
+#     is a first-party client sending its own return URL; a legitimate one that
+#     is refused means the deployment has not declared that origin. There is no
+#     end-user field to correct, and inviting the client to "try another URL"
+#     is exactly the probing the allowlist exists to stop.
 #   * 403 forbidden_billing → contact_support, NOT the heuristic's retry-for-403.
 #     A genuine authorization boundary ("cannot manage this billing account");
 #     retrying loops and re-auth won't grant access — the user asks an admin.
@@ -77,6 +86,7 @@ BILLING_REMEDIATION = {
     ERR_400_AMOUNT_INVALID: "fix_input",
     ERR_400_INVALID_STRIPE_SIGNATURE: "contact_support",
     ERR_400_REDIRECT_URL_NOT_CONFIGURED: "contact_support",
+    ERR_400_REDIRECT_URL_NOT_ALLOWED: "contact_support",
     ERR_400_INVALID_WEBHOOK_PAYLOAD: "contact_support",
     ERR_403_FORBIDDEN_BILLING: "contact_support",
     ERR_409_DUPLICATE_WEBHOOK: "retry",

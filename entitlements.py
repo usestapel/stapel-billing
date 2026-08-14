@@ -35,11 +35,18 @@ Callers that must degrade when billing is not installed catch
   (``"free"``), exactly what ``SubscriptionView`` materialises for a user
   without a subscription.
 * A plan slug missing from the catalogue (host reconfigured ``PLANS``)
-  contributes no entitlements — every key is then unknown.
-* Unknown key (not declared in the plan's ``entitlements``) →
-  ``allowed=True, limit=None``. Unknown keys never deny: the conservative
-  OSS default, so host modules can introduce new entitlement keys without
-  every deployment re-declaring its plans.
+  contributes no entitlements — every declared key is then unrestricted.
+* A key the deployment's *vocabulary* does not contain (see
+  :func:`declared_keys`) → ``allowed=False, reason="unknown_key"``. A
+  feature name is a security decision: a typo, a stale caller or a renamed
+  key must not read as "no limit configured, go ahead". The system check
+  ``stapel_billing.E101`` refuses to boot when a configured plan mentions
+  such a key, so the deny path is a runtime backstop rather than the way
+  operators discover the problem.
+* A key that IS in the vocabulary but absent from *this plan's*
+  ``entitlements`` → ``allowed=True, limit=None``: the documented
+  "unrestricted" idiom the top plans rely on (enterprise omits
+  ``workspaces.members.max`` to mean unlimited seats).
 * ``bool`` value → feature switch: ``allowed = value`` (``quantity`` is
   ignored), ``limit=None``, ``reason="not_in_plan"`` when denied.
 * ``int`` value → ceiling: ``allowed = quantity <= value``,
@@ -74,6 +81,7 @@ REASON_NOT_IN_PLAN = "not_in_plan"
 REASON_LIMIT_EXCEEDED = "limit_exceeded"
 REASON_INSUFFICIENT_CREDITS = "insufficient_credits"
 REASON_USER_NOT_FOUND = "user_not_found"
+REASON_UNKNOWN_KEY = "unknown_key"
 
 # Single source of truth for the payload contracts: the committed schema
 # files (registered by the schemas/ autoloader too; passing them at
@@ -124,22 +132,52 @@ def _effective_plan_entry(user_id: str):
     return PLANS_BY_SLUG.get(slug)
 
 
+def declared_keys() -> frozenset[str]:
+    """Entitlement keys this deployment recognises.
+
+    The vocabulary is configuration, deliberately NOT "whatever the active
+    plans happen to mention": a typo lives inside a plan, so deriving the
+    vocabulary from the plans would bless it. It is the union of the keys
+    the shipped plan ladder declares (the library's own features) and
+    ``STAPEL_BILLING["ENTITLEMENT_KEYS"]`` (everything the host adds).
+    """
+    from .catalog import DEFAULT_PLANS
+    from .conf import billing_settings
+
+    keys: set[str] = set()
+    for plan in DEFAULT_PLANS:
+        keys.update(plan.entitlements or {})
+    keys.update(billing_settings.ENTITLEMENT_KEYS or [])
+    return frozenset(keys)
+
+
 def check_entitlement(payload: dict) -> dict:
     """Provider for ``billing.check_entitlement``.
 
     Payload: ``{"user_id": str, "key": str, "quantity": int = 1}``
     Returns: ``{"allowed": bool, "limit": int | None, "reason": str | None}``
     """
+    from .conf import billing_settings
+
     quantity = payload.get("quantity", 1)
+    key = payload["key"]
+    if key not in declared_keys() and not billing_settings.ALLOW_UNKNOWN_ENTITLEMENT_KEYS:
+        logger.warning(
+            "billing.check_entitlement: %r is not a declared entitlement key "
+            "— denying. Add it to STAPEL_BILLING['ENTITLEMENT_KEYS'] if it "
+            "is real.",
+            key,
+        )
+        return {"allowed": False, "limit": None, "reason": REASON_UNKNOWN_KEY}
     entry = _effective_plan_entry(payload["user_id"])
     entitlements = entry.entitlements if entry is not None else {}
 
-    if payload["key"] not in entitlements:
-        # Unknown key never denies — conservative OSS default (see module
-        # docstring).
+    if key not in entitlements:
+        # Declared, but this plan sets no ceiling for it: unrestricted (see
+        # module docstring — enterprise's unlimited seats ride on this).
         return {"allowed": True, "limit": None, "reason": None}
 
-    value = entitlements[payload["key"]]
+    value = entitlements[key]
     if isinstance(value, bool):  # bool first: bool is a subclass of int
         return {
             "allowed": value,
