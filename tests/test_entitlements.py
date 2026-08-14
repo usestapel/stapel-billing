@@ -159,9 +159,23 @@ class TestCheckEntitlement:
         result = _check(user.pk, "workspaces.members.max", quantity=10_000)
         assert result == {"allowed": True, "limit": None, "reason": None}
 
-    def test_plan_slug_missing_from_catalog_allows_everything(self, user):
-        # Host reconfigured PLANS and a subscriber is left on a ghost slug:
-        # no entitlements resolve, so every DECLARED key is unrestricted.
+    def test_plan_slug_missing_from_catalog_denies(self, user):
+        # Host reconfigured PLANS and a subscriber is left on a ghost slug.
+        # No entitlements resolve — which used to read as "no ceiling
+        # configured, go ahead" and made the subscriber unlimited (BILL-03).
+        Subscription.objects.create(
+            user=user, plan="legacy", status=SubscriptionStatus.ACTIVE
+        )
+        assert _check(user.pk, "workspaces.org") == {
+            "allowed": False,
+            "limit": None,
+            "reason": "unknown_plan",
+        }
+
+    def test_plan_slug_missing_from_catalog_allows_under_the_hatch(
+        self, user, settings
+    ):
+        settings.STAPEL_BILLING = {"ALLOW_UNKNOWN_PLAN_SLUGS": True}
         Subscription.objects.create(
             user=user, plan="legacy", status=SubscriptionStatus.ACTIVE
         )

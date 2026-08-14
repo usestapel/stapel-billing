@@ -40,6 +40,29 @@ metadata let two concurrent deliveries both pay out. Migration `0002` also makes
 routing was ambiguous between duplicates) and backfills claims from existing ledger
 rows so a redelivery of an already-granted invoice/session stays a no-op.
 
+### Security — BILL-03: an unknown plan slug no longer means "unlimited"
+
+**Upgrade note — a deployment can be affected by this without changing anything.**
+`billing.check_entitlement` used to answer `allowed=True, limit=None` for every key
+when the user's plan slug was absent from `STAPEL_BILLING["PLANS"]`: no entitlement
+map resolved, and "no ceiling configured" read as "go ahead". Two ordinary
+configuration states triggered it — a renamed or retired plan still carried by live
+`Subscription` rows (those subscribers went unlimited while their subscription stayed
+ACTIVE), and a host ladder without a `"free"` entry, which is what *every* user
+without a subscription row resolves to (`Subscription.plan`'s model default).
+
+That answer is now `allowed=False, limit=None, reason="unknown_plan"`, symmetric with
+BILL-01's `unknown_key`. New system check `stapel_billing.E102` refuses the boot when
+the default plan slug is not in `PLANS`, so the ladder problem is found at deploy
+rather than by everyone being denied at runtime.
+
+* **If your `PLANS` does not contain the slug `"free"`, add it** (or migrate the
+  model default in your own migration) — otherwise the boot check fails.
+* **If live subscriptions carry slugs you have retired**, restore the slug in `PLANS`
+  or migrate those rows.
+* `STAPEL_BILLING["ALLOW_UNKNOWN_PLAN_SLUGS"] = True` restores the old permissive
+  answer (and silences `E102`) while you do it.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns

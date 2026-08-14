@@ -36,6 +36,35 @@ def check_plan_entitlement_keys(app_configs, **kwargs):
     return errors
 
 
+@checks.register(checks.Tags.compatibility)
+def check_default_plan_slug(app_configs, **kwargs):
+    """E: the plan every user falls back to must exist in the catalogue.
+
+    ``Subscription.plan``'s field default is what a user without a
+    subscription row — most users of a fresh deployment — is billed and
+    gated as. A host whose ladder is starter/growth/scale never has a
+    ``"free"`` entry, so that fallback resolves to nothing at all; the
+    entitlement answer for it is now a deny, which is safe but denies
+    *everyone*. This check makes that a deploy-time refusal instead.
+    """
+    from .catalog import PLANS_BY_SLUG
+    from .conf import billing_settings
+    from .models import Subscription
+
+    if billing_settings.ALLOW_UNKNOWN_PLAN_SLUGS:
+        return []
+    slug = Subscription._meta.get_field("plan").get_default()
+    if slug in PLANS_BY_SLUG:
+        return []
+    return [checks.Error(
+        f"The default subscription plan {slug!r} is not in "
+        "STAPEL_BILLING['PLANS'], so every user without a subscription row "
+        "resolves to a plan this deployment cannot describe. Add the slug to "
+        "the plan catalogue (or change the model default in a host migration).",
+        id="stapel_billing.E102",
+    )]
+
+
 @checks.register(checks.Tags.security)
 def check_redirect_allowlist(app_configs, **kwargs):
     """W: the open-redirect guard is only as good as the origins it knows."""

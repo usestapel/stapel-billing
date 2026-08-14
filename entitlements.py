@@ -34,8 +34,18 @@ Callers that must degrade when billing is not installed catch
   to the catalogue's default plan — the ``Subscription.plan`` model default
   (``"free"``), exactly what ``SubscriptionView`` materialises for a user
   without a subscription.
-* A plan slug missing from the catalogue (host reconfigured ``PLANS``)
-  contributes no entitlements — every declared key is then unrestricted.
+* A plan slug missing from the catalogue (host reconfigured ``PLANS``, or a
+  default plan outside the host's own ladder) → ``allowed=False,
+  reason="unknown_plan"``. The plan is what decides the answer; when it
+  cannot be resolved there is nothing to decide with, and the pre-hardening
+  reading ("no entitlements, therefore no ceiling, therefore go ahead") made
+  a routine config edit — retiring or renaming a plan — hand every affected
+  subscriber unlimited everything while their subscription stayed ACTIVE.
+  The system check ``stapel_billing.E102`` refuses to boot when the *default*
+  plan slug is missing (the case that hits every user without a subscription
+  row), so the deny path is a runtime backstop rather than the way operators
+  discover the problem. ``ALLOW_UNKNOWN_PLAN_SLUGS`` restores the old
+  behaviour.
 * A key the deployment's *vocabulary* does not contain (see
   :func:`declared_keys`) → ``allowed=False, reason="unknown_key"``. A
   feature name is a security decision: a typo, a stale caller or a renamed
@@ -82,6 +92,7 @@ REASON_LIMIT_EXCEEDED = "limit_exceeded"
 REASON_INSUFFICIENT_CREDITS = "insufficient_credits"
 REASON_USER_NOT_FOUND = "user_not_found"
 REASON_UNKNOWN_KEY = "unknown_key"
+REASON_UNKNOWN_PLAN = "unknown_plan"
 
 # Single source of truth for the payload contracts: the committed schema
 # files (registered by the schemas/ autoloader too; passing them at
@@ -170,6 +181,20 @@ def check_entitlement(payload: dict) -> dict:
         )
         return {"allowed": False, "limit": None, "reason": REASON_UNKNOWN_KEY}
     entry = _effective_plan_entry(payload["user_id"])
+    if entry is None and not billing_settings.ALLOW_UNKNOWN_PLAN_SLUGS:
+        # No plan, no answer. "The catalogue does not describe this user's
+        # plan" is not a licence: read as "no ceiling configured" it turns a
+        # renamed/retired plan — or a default plan outside the host's ladder,
+        # which is every user without a Subscription row — into unlimited
+        # everything.
+        logger.warning(
+            "billing.check_entitlement: user %s resolves to a plan slug that "
+            "STAPEL_BILLING['PLANS'] does not contain — denying %r. Keep the "
+            "slug in the catalogue (or migrate the subscriptions off it).",
+            payload["user_id"],
+            key,
+        )
+        return {"allowed": False, "limit": None, "reason": REASON_UNKNOWN_PLAN}
     entitlements = entry.entitlements if entry is not None else {}
 
     if key not in entitlements:

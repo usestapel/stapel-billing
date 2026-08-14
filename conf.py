@@ -59,6 +59,12 @@ DEFAULTS = {
     # Escape hatch: restore the pre-hardening behaviour where an
     # unrecognised entitlement key was ALLOWED.
     "ALLOW_UNKNOWN_ENTITLEMENT_KEYS": False,
+    # Escape hatch: restore the pre-hardening behaviour where a plan slug the
+    # catalogue does not contain (a retired/renamed plan still on a live
+    # Subscription row, or a default plan outside the host's own ladder)
+    # carried NO entitlements — which read as "no ceiling configured" and made
+    # every paid feature unrestricted for that user. See entitlements.py.
+    "ALLOW_UNKNOWN_PLAN_SLUGS": False,
     # Reconcile the provider's checkout object (mode, payment status,
     # currency, amount, owner) against the catalog before granting credits
     # or a plan. Off means the provider's metadata is taken on faith.

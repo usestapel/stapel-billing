@@ -49,6 +49,7 @@ same name → environment variable → default. All keys are read **lazily at ca
 | `ALLOW_UNVALIDATED_REDIRECT_URLS` | `False` | Escape hatch: forward request-supplied redirect URLs unchecked. That is an authenticated open redirect; system check `stapel_billing.W102` says so on every boot. |
 | `ENTITLEMENT_KEYS` | `[]` | Feature keys this deployment recognises, on top of the ones the shipped plan ladder declares. A key outside the vocabulary is denied by `billing.check_entitlement` (`reason="unknown_key"`), and a configured plan that mentions one fails the boot check `stapel_billing.E101`. |
 | `ALLOW_UNKNOWN_ENTITLEMENT_KEYS` | `False` | Escape hatch: let an unrecognised entitlement key be allowed again (and silence `E101`). |
+| `ALLOW_UNKNOWN_PLAN_SLUGS` | `False` | Escape hatch: let a plan slug that is **not** in `PLANS` (a renamed/retired plan still on a live subscription, or a default plan outside the host's ladder) be treated as "no ceilings" again instead of `reason="unknown_plan"` (and silence `E102`). |
 | `STRICT_CHECKOUT_RECONCILIATION` | `True` | Reconcile the provider's checkout session (mode, payment status, currency, amount vs. the catalog price, buyer) before granting credits or a plan. Off means the session's metadata is taken on faith. |
 
 ### Payment providers (dotted-path swap)
