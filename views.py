@@ -1,4 +1,37 @@
-"""DRF views for the billing service."""
+"""DRF views for the billing service.
+
+Guest (anonymous session) stance
+--------------------------------
+With ``AUTH_ANONYMOUS`` on, a guest session is ``is_authenticated``, so a bare
+``IsAuthenticated`` says nothing about whether guests belong on a view
+(``stapel_core.adoption`` E001/W002). This module's answer follows from what
+the endpoints do:
+
+    **money is account business.** A wallet, a ledger, a subscription and a
+    Stripe Checkout are all attached to a payer, and a guest session is a
+    throwaway identity — it can be minted again with one unauthenticated
+    request.
+
+So every wallet/checkout/portal/subscription view denies guests. Two of them
+were doing real damage before: ``WalletView`` minted a ``Wallet`` row per
+anonymous session, and ``CheckoutView`` let a guest open a *real* Stripe
+Checkout whose ``client_reference_id`` names an identity that will be gone by
+the time the webhook arrives — a paid session nobody can be credited for.
+
+Two views stay open, deliberately:
+
+* ``CatalogView`` is the public price list — a pricing page is drawn before
+  anyone logs in, and it exposes no user data.
+* ``StripeWebhookView`` is not a user surface at all: it is signature-gated
+  (``verify_webhook`` raises when unconfigured), and Stripe does not
+  authenticate.
+
+``InternalDebitView`` is service-to-service (``IsServiceRequest | IsStaffUser``)
+and never reachable by a session of any kind.
+
+The gate is added in :meth:`GuestDeniedMixin.get_permissions` rather than by
+rewriting each view's ``permission_classes`` — see that class for why.
+"""
 
 import logging
 
@@ -13,7 +46,13 @@ from stapel_core.django.api.errors import (
     StapelErrorResponse,
     StapelResponse,
 )
-from stapel_core.django.api.permissions import IsServiceRequest, IsStaffUser
+from stapel_core.django.api.permissions import (
+    ANONYMOUS_ALLOWED,
+    ANONYMOUS_DENIED,
+    IsNotAnonymousUser,
+    IsServiceRequest,
+    IsStaffUser,
+)
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
 from . import redirects, services
@@ -90,6 +129,29 @@ class SerializerSeamMixin:
         return self.response_serializer_class
 
 
+class GuestDeniedMixin:
+    """Deny an anonymous (guest) session — see the module docstring.
+
+    The gate is appended in :meth:`get_permissions` instead of being written
+    into ``permission_classes`` because that attribute is not only a gate
+    here: ``PermissionAwareAutoSchema`` renders its class names into every
+    operation's OpenAPI description, and ``docs/schema.json`` is gated
+    byte-for-byte against the monolith aggregate's billing slice, which is
+    regenerated in another repository. Enforcement must not wait for that, so
+    it lands in the permission layer either way — DRF calls
+    ``get_permissions()`` for every request — and ``stapel_anonymous_access``
+    keeps the stance readable from the class header, which is exactly the
+    case ``ANONYMOUS_DENIED`` names ("the gate lives elsewhere than
+    ``permission_classes``"). Moving the class into the attribute is a
+    one-line follow-up once the aggregate is regenerated.
+    """
+
+    stapel_anonymous_access = ANONYMOUS_DENIED
+
+    def get_permissions(self):
+        return [*super().get_permissions(), IsNotAnonymousUser()]
+
+
 # ─── Mappers ─────────────────────────────────────────────────
 
 
@@ -138,7 +200,7 @@ def _sub_to_dto(s: Subscription) -> SubscriptionResponse:
 
 
 @extend_schema(tags=["Wallet"])
-class WalletView(SerializerSeamMixin, APIView):
+class WalletView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     request_serializer_class = WalletUpdateRequestSerializer
     response_serializer_class = WalletResponseSerializer
@@ -172,7 +234,7 @@ class WalletView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Wallet"])
-class TransactionListView(SerializerSeamMixin, APIView):
+class TransactionListView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = TransactionListResponseSerializer
 
@@ -196,6 +258,8 @@ class TransactionListView(SerializerSeamMixin, APIView):
 
 @extend_schema(tags=["Catalog"])
 class CatalogView(SerializerSeamMixin, APIView):
+    # The public price list: a pricing page is drawn before anyone logs in.
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     permission_classes = [AllowAny]
     response_serializer_class = CatalogResponseSerializer
 
@@ -238,7 +302,7 @@ _redirect_url = redirects.resolve
 
 
 @extend_schema(tags=["Checkout"])
-class CheckoutView(SerializerSeamMixin, APIView):
+class CheckoutView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     request_serializer_class = CheckoutRequestSerializer
     response_serializer_class = CheckoutResponseSerializer
@@ -272,7 +336,7 @@ class CheckoutView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Checkout"])
-class CustomerPortalView(SerializerSeamMixin, APIView):
+class CustomerPortalView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = CustomerPortalResponseSerializer
 
@@ -299,7 +363,7 @@ class CustomerPortalView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Subscription"])
-class SubscriptionView(SerializerSeamMixin, APIView):
+class SubscriptionView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = SubscriptionResponseSerializer
 
@@ -313,7 +377,7 @@ class SubscriptionView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Subscription"])
-class SubscriptionCancelView(SerializerSeamMixin, APIView):
+class SubscriptionCancelView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = SubscriptionResponseSerializer
 
@@ -384,6 +448,8 @@ class SubscriptionCancelView(SerializerSeamMixin, APIView):
     },
 )
 class StripeWebhookView(SerializerSeamMixin, APIView):
+    # Not a user surface: Stripe does not authenticate, the signature does.
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     permission_classes = [AllowAny]
 
     def post(self, request):

@@ -116,6 +116,23 @@ stamped `cancelled_at` and reported a cancellation that no payment system had he
   are unaffected); `StripeProvider` overrides it. `cancel_subscription` is now
   documented as *must raise* when unconfigured, instead of *must be a no-op*.
 
+### Security — BILL-07: money endpoints deny anonymous (guest) sessions
+
+**Upgrade note for deployments running with `AUTH_ANONYMOUS`.** A guest session is
+`is_authenticated`, so the bare `IsAuthenticated` on every billing view admitted it.
+`GET /billing/api/wallet` minted a `Wallet` row per throwaway session and
+`POST /billing/api/checkout` opened a real Stripe Checkout whose
+`client_reference_id` names an identity that can be discarded and re-minted with one
+unauthenticated request — a payment nobody can be credited for.
+
+The wallet, transactions, checkout, portal, subscription and subscription-cancel
+views now refuse an anonymous session with **403** (`GuestDeniedMixin`, declared as
+`stapel_anonymous_access = ANONYMOUS_DENIED`). Ordinary users are unaffected.
+`GET /billing/api/products` (the public price list) and the Stripe webhook stay open
+and now say so explicitly (`ANONYMOUS_ALLOWED`). **If a guest-facing flow in your
+frontend called any money endpoint, it must convert the session to a real account
+first** — there is no opt-out setting: a guest wallet has no owner to bill.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns
