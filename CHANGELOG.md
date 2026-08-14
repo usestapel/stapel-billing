@@ -63,6 +63,28 @@ rather than by everyone being denied at runtime.
 * `STAPEL_BILLING["ALLOW_UNKNOWN_PLAN_SLUGS"] = True` restores the old permissive
   answer (and silences `E102`) while you do it.
 
+### Security — BILL-04: switches from the environment are coerced, `PAYMENT_PROVIDER` is not read from it
+
+**Upgrade note — read this if you set any billing switch as an environment variable.**
+`AppSettings` has no per-key type, so an environment variable arrives as raw text and
+every switch was consumed as a bare truth value. `bool("false")` is `True`: setting
+`ALLOW_UNKNOWN_ENTITLEMENT_KEYS=false` or `ALLOW_UNVALIDATED_REDIRECT_URLS=false`
+*enabled* the hatch it was meant to disable. The mirror image hit the gate that
+defaults to on — an empty `STRICT_CHECKOUT_RECONCILIATION=` disabled checkout
+reconciliation entirely, because `bool("")` is `False`.
+
+* `ALLOW_UNVALIDATED_REDIRECT_URLS`, `ALLOW_UNKNOWN_ENTITLEMENT_KEYS` and
+  `ALLOW_UNKNOWN_PLAN_SLUGS` are now on only for `1` / `true` / `yes` / `on`
+  (case- and space-insensitive). **If you relied on any other non-empty string to
+  keep a hatch open, it is now closed** — spell it `true`.
+* `STRICT_CHECKOUT_RECONCILIATION` is off only for an explicit `0` / `false` / `no` /
+  `off`; anything else, including an empty value, keeps the reconciliation on.
+* `PAYMENT_PROVIDER` is now `no_env`: it selects the class that handles money, and a
+  same-named environment variable in a shared pod or compose file must not swap it.
+  **If you configured the provider through a bare `PAYMENT_PROVIDER` environment
+  variable, move it into `settings.STAPEL_BILLING["PAYMENT_PROVIDER"]`** (or a flat
+  Django setting of the same name) — the environment is ignored for this key.
+
 ## [0.6.2] — 2026-08-10
 
 ### Fixed — this module translates only the keys it owns

@@ -168,11 +168,11 @@ def check_entitlement(payload: dict) -> dict:
     Payload: ``{"user_id": str, "key": str, "quantity": int = 1}``
     Returns: ``{"allowed": bool, "limit": int | None, "reason": str | None}``
     """
-    from .conf import billing_settings
+    from .conf import allow_unknown_entitlement_keys, allow_unknown_plan_slugs
 
     quantity = payload.get("quantity", 1)
     key = payload["key"]
-    if key not in declared_keys() and not billing_settings.ALLOW_UNKNOWN_ENTITLEMENT_KEYS:
+    if key not in declared_keys() and not allow_unknown_entitlement_keys():
         logger.warning(
             "billing.check_entitlement: %r is not a declared entitlement key "
             "— denying. Add it to STAPEL_BILLING['ENTITLEMENT_KEYS'] if it "
@@ -181,7 +181,7 @@ def check_entitlement(payload: dict) -> dict:
         )
         return {"allowed": False, "limit": None, "reason": REASON_UNKNOWN_KEY}
     entry = _effective_plan_entry(payload["user_id"])
-    if entry is None and not billing_settings.ALLOW_UNKNOWN_PLAN_SLUGS:
+    if entry is None and not allow_unknown_plan_slugs():
         # No plan, no answer. "The catalogue does not describe this user's
         # plan" is not a licence: read as "no ceiling configured" it turns a
         # renamed/retired plan — or a default plan outside the host's ladder,

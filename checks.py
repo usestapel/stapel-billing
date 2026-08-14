@@ -13,10 +13,10 @@ from django.core import checks
 def check_plan_entitlement_keys(app_configs, **kwargs):
     """E: every entitlement key a configured plan mentions must be declared."""
     from .catalog import PLANS
-    from .conf import billing_settings
+    from .conf import allow_unknown_entitlement_keys
     from .entitlements import declared_keys
 
-    if billing_settings.ALLOW_UNKNOWN_ENTITLEMENT_KEYS:
+    if allow_unknown_entitlement_keys():
         return []
     known = declared_keys()
     errors = []
@@ -48,10 +48,10 @@ def check_default_plan_slug(app_configs, **kwargs):
     *everyone*. This check makes that a deploy-time refusal instead.
     """
     from .catalog import PLANS_BY_SLUG
-    from .conf import billing_settings
+    from .conf import allow_unknown_plan_slugs
     from .models import Subscription
 
-    if billing_settings.ALLOW_UNKNOWN_PLAN_SLUGS:
+    if allow_unknown_plan_slugs():
         return []
     slug = Subscription._meta.get_field("plan").get_default()
     if slug in PLANS_BY_SLUG:
@@ -68,10 +68,10 @@ def check_default_plan_slug(app_configs, **kwargs):
 @checks.register(checks.Tags.security)
 def check_redirect_allowlist(app_configs, **kwargs):
     """W: the open-redirect guard is only as good as the origins it knows."""
-    from .conf import billing_settings
+    from .conf import allow_unvalidated_redirect_urls
     from .redirects import allowed_origins
 
-    if billing_settings.ALLOW_UNVALIDATED_REDIRECT_URLS:
+    if allow_unvalidated_redirect_urls():
         return [checks.Warning(
             "STAPEL_BILLING['ALLOW_UNVALIDATED_REDIRECT_URLS'] is on: a "
             "request-supplied checkout/portal redirect URL is forwarded to "

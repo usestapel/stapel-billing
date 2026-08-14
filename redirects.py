@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 from django.conf import settings
 from stapel_core.django.api.errors import StapelValidationError
 
-from .conf import billing_settings
+from .conf import allow_unvalidated_redirect_urls, billing_settings
 from .errors import (
     ERR_400_REDIRECT_URL_NOT_ALLOWED,
     ERR_400_REDIRECT_URL_NOT_CONFIGURED,
@@ -104,7 +104,7 @@ def resolve(explicit: str | None, setting_key: str, path: str) -> str:
 
 
 def _assert_allowed(url: str) -> None:
-    if billing_settings.ALLOW_UNVALIDATED_REDIRECT_URLS:
+    if allow_unvalidated_redirect_urls():
         return
     origin = origin_of(url)
     if origin is None or origin not in allowed_origins():

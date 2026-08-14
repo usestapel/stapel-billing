@@ -75,6 +75,70 @@ billing_settings = AppSettings(
     "STAPEL_BILLING",
     defaults=DEFAULTS,
     import_strings=("PAYMENT_PROVIDER",),
+    # PAYMENT_PROVIDER decides which class handles money — checkout,
+    # subscriptions, webhook verification. The name is generic enough that a
+    # same-named env var in a shared pod or compose file could swap it
+    # silently, so it resolves from the namespace dict, a flat Django setting
+    # or the default only (the gateway and workspaces apply the same rule to
+    # their own seams).
+    no_env=("PAYMENT_PROVIDER",),
 )
 
-__all__ = ["billing_settings"]
+#: Values an environment variable may spell "yes" with. AppSettings resolves
+#: env vars as raw strings (it has no per-key type) and the switches below are
+#: consumed as bare truth values, so ``bool("false")`` is True — an operator
+#: who set ``ALLOW_UNKNOWN_ENTITLEMENT_KEYS=false`` to turn the hatch OFF used
+#: to turn it ON, and re-arm the BILL-02 open redirect the same way. Anything
+#: not in this set is False.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+#: The mirror image, for switches whose *safe* value is True: only an explicit
+#: "no" turns them off. An unrecognised spelling keeps the gate closed rather
+#: than degrading to "off", which is how a deployment ends up believing it has
+#: a gate it does not have.
+_FALSY = {"0", "false", "no", "off"}
+
+
+def _opened(key: str) -> bool:
+    """A default-off switch: on only when something explicitly says so."""
+    value = getattr(billing_settings, key)
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return bool(value)
+
+
+def _closed_unless_denied(key: str) -> bool:
+    """A default-on gate: off only when something explicitly says so."""
+    value = getattr(billing_settings, key)
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSY
+    return bool(value)
+
+
+def allow_unvalidated_redirect_urls() -> bool:
+    """``ALLOW_UNVALIDATED_REDIRECT_URLS`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNVALIDATED_REDIRECT_URLS")
+
+
+def allow_unknown_entitlement_keys() -> bool:
+    """``ALLOW_UNKNOWN_ENTITLEMENT_KEYS`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNKNOWN_ENTITLEMENT_KEYS")
+
+
+def allow_unknown_plan_slugs() -> bool:
+    """``ALLOW_UNKNOWN_PLAN_SLUGS`` as a bool (see :data:`_TRUTHY`)."""
+    return _opened("ALLOW_UNKNOWN_PLAN_SLUGS")
+
+
+def strict_checkout_reconciliation() -> bool:
+    """``STRICT_CHECKOUT_RECONCILIATION`` as a bool (see :data:`_FALSY`)."""
+    return _closed_unless_denied("STRICT_CHECKOUT_RECONCILIATION")
+
+
+__all__ = [
+    "billing_settings",
+    "allow_unknown_entitlement_keys",
+    "allow_unknown_plan_slugs",
+    "allow_unvalidated_redirect_urls",
+    "strict_checkout_reconciliation",
+]

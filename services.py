@@ -321,9 +321,9 @@ def _reconcile_checkout_session(
     (trial, proration), and the recurring amount is governed by the
     provider's own price object plus the renewal invoices.
     """
-    from .conf import billing_settings
+    from .conf import strict_checkout_reconciliation
 
-    if not billing_settings.STRICT_CHECKOUT_RECONCILIATION:
+    if not strict_checkout_reconciliation():
         return None
     mode = obj.get("mode")
     if mode != expected_mode:

@@ -35,6 +35,19 @@ Resolution order per key: `settings.STAPEL_BILLING[key]` → flat Django setting
 same name → environment variable → default. All keys are read **lazily at call time**
 (never frozen at import); caches invalidate on `setting_changed`.
 
+Two rules the boolean keys and `PAYMENT_PROVIDER` add to that order:
+
+* **Environment values are text, not truth.** An env var arrives as the string an
+  operator typed, and `bool("false")` is `True`. The default-off switches
+  (`ALLOW_*`) are on only for `1` / `true` / `yes` / `on`; the default-on gate
+  (`STRICT_CHECKOUT_RECONCILIATION`) is off only for `0` / `false` / `no` / `off`,
+  so a stray or empty value cannot open a hole in either direction. A Python `bool`
+  in `settings.STAPEL_BILLING` is used as-is.
+* **`PAYMENT_PROVIDER` is `no_env`.** It names the class that handles money; the
+  name is generic enough that a same-named variable in a shared pod could swap it.
+  It resolves from `settings.STAPEL_BILLING`, a flat Django setting, or the default
+  — an environment variable is ignored.
+
 | Key | Default | What it customizes |
 |---|---|---|
 | `PAYMENT_PROVIDER` | `"stapel_billing.providers.stripe.StripeProvider"` | The payment backend. In `import_strings` — resolved via `import_string`, must be a `PaymentProvider` subclass (enforced by `get_provider()`). |
