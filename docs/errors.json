@@ -4,35 +4,40 @@
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Amount must be a positive integer"
+    "en": "Amount must be a positive integer",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.bad_request",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Bad request"
+    "en": "Bad request",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.captcha_invalid",
     "status": 400,
     "params": [],
     "remediation": "retry",
-    "en": "Captcha verification failed. Please try again."
+    "en": "Captcha verification failed. Please try again.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.captcha_required",
     "status": 400,
     "params": [],
     "remediation": "retry",
-    "en": "Captcha token is required."
+    "en": "Captcha token is required.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.expected_list",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Expected a list of items"
+    "en": "Expected a list of items",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.blank",
@@ -41,7 +46,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} may not be blank"
+    "en": "{field} may not be blank",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.does_not_exist",
@@ -50,7 +56,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} does not exist"
+    "en": "{field} does not exist",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.invalid",
@@ -59,7 +66,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} is invalid"
+    "en": "{field} is invalid",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.invalid_choice",
@@ -68,7 +76,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} is not a valid choice"
+    "en": "{field} is not a valid choice",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.max_length",
@@ -78,7 +87,8 @@
       "max_length"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at most {max_length} characters"
+    "en": "{field} must be at most {max_length} characters",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.max_value",
@@ -88,7 +98,8 @@
       "max_value"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at most {max_value}"
+    "en": "{field} must be at most {max_value}",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.min_length",
@@ -98,7 +109,8 @@
       "min_length"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at least {min_length} characters"
+    "en": "{field} must be at least {min_length} characters",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.min_value",
@@ -108,7 +120,8 @@
       "min_value"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at least {min_value}"
+    "en": "{field} must be at least {min_value}",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.null",
@@ -117,7 +130,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} may not be null"
+    "en": "{field} may not be null",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.required",
@@ -126,7 +140,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} is required"
+    "en": "{field} is required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.unique",
@@ -135,252 +150,288 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be unique"
+    "en": "{field} must be unique",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.invalid_ad_id",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Invalid advertisement ID"
+    "en": "Invalid advertisement ID",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.invalid_package",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Invalid credit package"
+    "en": "Invalid credit package",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.invalid_plan",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Invalid subscription plan"
+    "en": "Invalid subscription plan",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.invalid_stripe_signature",
     "status": 400,
     "params": [],
     "remediation": "contact_support",
-    "en": "Invalid Stripe webhook signature"
+    "en": "Invalid Stripe webhook signature",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.invalid_webhook_payload",
     "status": 400,
     "params": [],
     "remediation": "contact_support",
-    "en": "Invalid Stripe webhook payload"
+    "en": "Invalid Stripe webhook payload",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.redirect_url_not_allowed",
     "status": 400,
     "params": [],
     "remediation": "contact_support",
-    "en": "Redirect URL origin is not allowlisted for this deployment"
+    "en": "Redirect URL origin is not allowlisted for this deployment",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.redirect_url_not_configured",
     "status": 400,
     "params": [],
     "remediation": "contact_support",
-    "en": "Redirect URL not provided and no fallback configured"
+    "en": "Redirect URL not provided and no fallback configured",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.400.validation_error",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Validation error"
+    "en": "Validation error",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.verification_failed",
     "status": 400,
     "params": [],
     "remediation": "verify",
-    "en": "Verification failed"
+    "en": "Verification failed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.verification_invalid_factor",
     "status": 400,
     "params": [],
     "remediation": "verify",
-    "en": "This verification factor is not available"
+    "en": "This verification factor is not available",
+    "owner": "stapel_core"
   },
   {
     "code": "error.401.unauthorized",
     "status": 401,
     "params": [],
     "remediation": "reauthenticate",
-    "en": "Authentication required"
+    "en": "Authentication required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.402.insufficient_credits",
     "status": 402,
     "params": [],
     "remediation": "fix_input",
-    "en": "Insufficient credits"
+    "en": "Insufficient credits",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.402.payment_required",
     "status": 402,
     "params": [],
     "remediation": "retry",
-    "en": "Payment required"
+    "en": "Payment required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.forbidden",
     "status": 403,
     "params": [],
     "remediation": "retry",
-    "en": "You do not have permission to perform this action"
+    "en": "You do not have permission to perform this action",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.forbidden_billing",
     "status": 403,
     "params": [],
     "remediation": "contact_support",
-    "en": "Forbidden: cannot manage this billing account"
+    "en": "Forbidden: cannot manage this billing account",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.403.network_blocked",
     "status": 403,
     "params": [],
     "remediation": "contact_support",
-    "en": "Requests from this network are not allowed"
+    "en": "Requests from this network are not allowed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.verification_enrollment_required",
     "status": 403,
     "params": [],
     "remediation": "verify",
-    "en": "Verification factor enrollment required"
+    "en": "Verification factor enrollment required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.verification_required",
     "status": 403,
     "params": [],
     "remediation": "verify",
-    "en": "Additional verification required"
+    "en": "Additional verification required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.ad_not_found",
     "status": 404,
     "params": [],
     "remediation": "retry",
-    "en": "Listing not found"
+    "en": "Listing not found",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.not_found",
     "status": 404,
     "params": [],
     "remediation": "retry",
-    "en": "Requested resource not found"
+    "en": "Requested resource not found",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.subscription_not_found",
     "status": 404,
     "params": [],
     "remediation": "fix_input",
-    "en": "Subscription not found"
+    "en": "Subscription not found",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.404.transaction_not_found",
     "status": 404,
     "params": [],
     "remediation": "fix_input",
-    "en": "Transaction not found"
+    "en": "Transaction not found",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.404.verification_challenge_not_found",
     "status": 404,
     "params": [],
     "remediation": "verify",
-    "en": "Verification challenge not found or expired"
+    "en": "Verification challenge not found or expired",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.wallet_not_found",
     "status": 404,
     "params": [],
     "remediation": "fix_input",
-    "en": "Wallet not found"
+    "en": "Wallet not found",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.405.method_not_allowed",
     "status": 405,
     "params": [],
     "remediation": "retry",
-    "en": "Method not allowed"
+    "en": "Method not allowed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.406.not_acceptable",
     "status": 406,
     "params": [],
     "remediation": "retry",
-    "en": "Not acceptable"
+    "en": "Not acceptable",
+    "owner": "stapel_core"
   },
   {
     "code": "error.408.request_timeout",
     "status": 408,
     "params": [],
     "remediation": "retry",
-    "en": "Request timeout"
+    "en": "Request timeout",
+    "owner": "stapel_core"
   },
   {
     "code": "error.409.conflict",
     "status": 409,
     "params": [],
     "remediation": "fix_input",
-    "en": "Resource already exists"
+    "en": "Resource already exists",
+    "owner": "stapel_core"
   },
   {
     "code": "error.409.duplicate_webhook_event",
     "status": 409,
     "params": [],
     "remediation": "retry",
-    "en": "Stripe event already processed"
+    "en": "Stripe event already processed",
+    "owner": "stapel_billing"
   },
   {
     "code": "error.410.gone",
     "status": 410,
     "params": [],
     "remediation": "retry",
-    "en": "Resource has been permanently removed"
+    "en": "Resource has been permanently removed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.413.payload_too_large",
     "status": 413,
     "params": [],
     "remediation": "retry",
-    "en": "Request body is too large"
+    "en": "Request body is too large",
+    "owner": "stapel_core"
   },
   {
     "code": "error.415.unsupported_media_type",
     "status": 415,
     "params": [],
     "remediation": "retry",
-    "en": "Unsupported media type"
+    "en": "Unsupported media type",
+    "owner": "stapel_core"
   },
   {
     "code": "error.422.unprocessable_entity",
     "status": 422,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Unprocessable entity"
+    "en": "Unprocessable entity",
+    "owner": "stapel_core"
   },
   {
     "code": "error.423.locked",
     "status": 423,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Resource is locked"
+    "en": "Resource is locked",
+    "owner": "stapel_core"
   },
   {
     "code": "error.423.verification_locked",
     "status": 423,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Too many failed attempts — verification locked"
+    "en": "Too many failed attempts — verification locked",
+    "owner": "stapel_core"
   },
   {
     "code": "error.429.rate_limit",
@@ -389,20 +440,23 @@
       "retry_after_minutes"
     ],
     "remediation": "wait_and_retry",
-    "en": "Too many attempts. Try again in {retry_after_minutes} minutes."
+    "en": "Too many attempts. Try again in {retry_after_minutes} minutes.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.429.too_many_requests",
     "status": 429,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Too many requests. Please try again later."
+    "en": "Too many requests. Please try again later.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.500.internal",
     "status": 500,
     "params": [],
     "remediation": "contact_support",
-    "en": "Something went wrong"
+    "en": "Something went wrong",
+    "owner": "stapel_core"
   }
 ]
