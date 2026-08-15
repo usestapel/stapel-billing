@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-08-15
+
+### Changed — `stapel-core` floor raised to 0.26.0
+
+`docs/errors.json` carries an `owner` per entry, and only stapel-core 0.26.0
+emits it. The floor lagged behind, so a consumer resolving an older core
+regenerated an artifact without `owner` and the drift gate went red — the
+field was declared but never required. The floor now matches the artifact
+that is committed.
+
 ## [0.7.0] — 2026-08-14
 
 ### Security — BILL-01 / BILL-02 (audit 2026-08-11)

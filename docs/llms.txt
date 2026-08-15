@@ -1,4 +1,4 @@
-# stapel-billing 0.7.0
+# stapel-billing 0.7.1
 
 Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.
 
