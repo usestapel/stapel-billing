@@ -5,6 +5,127 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-23
+
+Pre-1.0, so a minor is where schema and surface changes live. **This one was
+briefed as a patch and is not**, and the reason is the finding itself: the
+erasure this release was supposed to *wire up* could never have run.
+
+### The defect
+
+`BillingGDPRProvider.delete()` anonymised a wallet with
+
+```python
+try:
+    Wallet.objects.filter(user_id=user_id).update(user_id=None)  # anonymise
+except Exception:
+    pass
+```
+
+against a **NOT NULL** column. It raised on every wallet it was ever handed,
+the bare `except` swallowed it, and the caller was told the erasure
+succeeded. The tests passed because the only ones that existed asserted the
+Stripe ids on `Subscription` — the one part of the method that worked.
+
+The second half of the same defect: `Wallet.user` was `on_delete=CASCADE`
+while `Transaction.wallet` is `PROTECT`, so deleting the auth user row
+cascaded into a wallet the ledger refuses to release and raised
+`ProtectedError` — the account deletion failed on the very rows it was meant
+to preserve.
+
+Neither is fixable without touching the schema, so this is a minor.
+
+### Added — the erasure seam (`actions.py`, `gdpr.py`)
+
+Until now the only subscriber here was `user.deleted`, the signal stapel-gdpr
+0.5.0 deprecated. The request the orchestrator actually sends reached nobody:
+a declared data owner whose part would sit unreceipted until it timed out
+thirty days later.
+
+- **`gdpr.erasure.requested`** → `handle_erasure_requested`: erase this
+  owner's slice of the subject and emit **`gdpr.section.erased`** with
+  `counts = {wallets, subscriptions, transactions, credit_holds,
+  webhook_events}`, in the **same transaction** as the erasure — a receipt
+  cannot survive a rollback of the work it certifies. A deterministic
+  `receipt_id` (`billing:<subject_type>:<subject_key>:<correlation_id>`), so a
+  redelivery produces the same receipt instead of a second audit trail.
+- **`gdpr.owner.probe`** → `handle_owner_probe`, answering
+  **`gdpr.owner.alive`** `{owner: "billing", subject_types: ["account"]}`.
+  It lives in the same module as the erasure handler on purpose: that
+  co-location is the whole evidence. An `alive` emitted from anywhere else
+  proves a container is running, not that the erasure path is consumed.
+- **`user.deleted`** still works and now routes through the same
+  `erase_subject("account", …)` call, so when stapel-gdpr 0.6.0 drops the
+  event, deleting the handler deletes no erasure logic.
+- All four schemas declared (`schemas/consumes/gdpr.erasure.requested.json`,
+  `gdpr.owner.probe.json`, `schemas/emits/gdpr.section.erased.json`,
+  `gdpr.owner.alive.json`); `user.deleted`'s consumes schema gains the
+  `correlation_id` the receipt echoes.
+
+**Subject types: `account` only.** Every row here hangs off a `Wallet` or a
+`Subscription` keyed by exactly one id — the user's. No `workspace_id` column,
+no `billing.*` payload carrying an entity id, so a `workspace` or `meeting`
+erasure has no key to match on; claiming the type would produce a receipt for
+work nobody could have done.
+
+### Changed — erasure removes the person, the bill stays
+
+The deletion-lifecycle spec's §6 verdict for every owner that carries a ledger.
+One operation, `stapel_billing.gdpr.erase_subject`, reached identically by the
+in-process provider and by the subscriber, so a monolith and a fleet erase the
+same rows the same way:
+
+- the ids that **name the subject** are pseudonymized — `erased:<hmac>`, a
+  keyed HMAC-SHA256 under the deployment's `SECRET_KEY`, the same funnel as
+  `stapel_video.presence.pseudonymize_user` and stapel-agent 0.14.3, down to
+  the prefix and the 32-hex truncation. Stable (one subject's rows stay one
+  subject), irreversible without the key, idempotent (an existing pseudonym is
+  returned as-is). A `SECRET_KEY` rotation splits pseudonyms — documented and
+  accepted fleet-wide; the alternative is a second key nobody rotates.
+- `description` is blanked and `metadata` is cut to `LEDGER_METADATA_KEYS`
+  (`package`, `plan`, `lot_id`, `lots`, `hold_id`, `source`, `expires_at`) on
+  every transaction and hold. An allowlist, so a key nobody anticipated falls
+  on the erasing side. The Stripe ids this package writes into metadata
+  (`stripe_session_id`, `stripe_subscription_id`, `stripe_invoice_id`) are
+  deliberately **not** kept: they are the processor's names for the same
+  person, and leaving them would keep the row joinable to a live Stripe
+  customer after we swore it was not.
+- the raw **`StripeWebhookEvent.payload`** rows keyed on the subject's customer
+  or subscription id become `{"erased": true}`. By volume this is the largest
+  store of a person's PII in the package — email, billing address, card
+  details — and no earlier erasure touched it. The rows are found by exact JSON
+  key lookup (`data.object.customer`, `data.object.id`), not a text scan. The
+  **row stays**: its `stripe_event_id` is the unique key that stops a
+  redelivered webhook from crediting a wallet twice, and dropping it would
+  trade a privacy promise for a double-grant.
+- amounts, credit counts, `balance_after`, lot expiries and timestamps are not
+  read and not written. `CreditLot` and `HoldAllocation` are untouched and
+  uncounted: they carry no free text and no id of their own, so the wallet's
+  pseudonymization is their erasure, and a number for them would inflate the
+  receipt.
+
+`anonymize` is now an alias of `delete` rather than a documented no-op — after
+the run the rows hold amounts and a pseudonym, which is what an anonymisation
+is meant to produce. Two names for one operation, and the alias is named so
+nobody looks for a second implementation.
+
+### Changed — schema (migration `0004_erasure_pseudonyms`)
+
+- `Wallet.user` and `Subscription.user`: **nullable**, `on_delete=SET_NULL`
+  (was NOT NULL / `CASCADE`). This is what "keep the bill, drop the person"
+  means at the database level, and it is what makes the anonymisation above
+  actually commit.
+- `Wallet.user_pseudonym` / `Subscription.user_pseudonym`: indexed
+  `CharField(max_length=64, default="")` — where the keyed HMAC lands.
+
+Expand-only and backfill-free: existing rows keep their owner and get an empty
+pseudonym, no old writer can violate the new rule, and no data moves.
+
+**Host impact.** Code that reads `wallet.user` must tolerate `None` on an
+erased wallet (`Wallet.objects.filter(user=...)` and every service entry point
+are unaffected — they select by a live user). No setting was added, no
+function signature changed, and no endpoint's contract moved.
+
 ## [0.8.1] — 2026-08-23
 
 ### Added — the wallet endpoint publishes what the balance is made of

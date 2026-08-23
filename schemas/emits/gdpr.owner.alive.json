@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.owner.alive",
+  "description": "Answer to gdpr.owner.probe, emitted from the SAME module that consumes gdpr.erasure.requested \u2014 which is what makes it evidence that the erasure path is consumed rather than that a container is running. This module answers {owner: \"billing\", subject_types: [\"account\"], correlation_id}. The shape below is the action's contract (every owner emits it), not this emitter's subset.",
+  "type": "object",
+  "required": [
+    "owner"
+  ],
+  "properties": {
+    "owner": {
+      "type": "string"
+    },
+    "subject_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "correlation_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

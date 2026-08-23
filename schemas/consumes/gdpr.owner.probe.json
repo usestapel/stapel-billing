@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.owner.probe",
+  "description": "Daily liveness probe from stapel-gdpr. Answered with gdpr.owner.alive from the same subscriber that handles gdpr.erasure.requested.",
+  "type": "object",
+  "required": ["correlation_id"],
+  "properties": {
+    "correlation_id": { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}

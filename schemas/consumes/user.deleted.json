@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "user.deleted",
-  "description": "All user PII permanently deleted after grace period. Every package storing user data must subscribe.",
+  "description": "DEPRECATED account erasure signal. stapel-gdpr emits it alongside gdpr.erasure.requested for account subjects until its 0.6.0; this module consumes both and routes them through one erase call, so the handler can be deleted without deleting any erasure logic.",
   "type": "object",
-  "required": ["user_id", "deleted_at", "trigger"],
+  "required": ["user_id"],
   "properties": {
-    "user_id":    { "type": "string", "format": "uuid" },
-    "deleted_at": { "type": "string", "format": "date-time" },
-    "trigger":    { "type": "string", "enum": ["manual", "inactivity", "platform"] }
+    "user_id":        { "type": "string" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "trigger":        { "type": "string" },
+    "deleted_at":     { "type": "string", "format": "date-time" }
   },
   "additionalProperties": false
 }

@@ -111,7 +111,29 @@ class Wallet(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="wallet",
+        help_text=(
+            "NULL once the owner has been erased — the ledger outlives the "
+            "person (see stapel_billing.gdpr). SET_NULL and not CASCADE "
+            "because Transaction protects its wallet: a cascade from the "
+            "user row would raise ProtectedError and block the account "
+            "deletion it was supposed to serve."
+        ),
+    )
+    user_pseudonym = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "The erased owner's stable pseudonym ('erased:<hmac>'), written "
+            "by stapel_billing.gdpr.erase_subject. Empty for a live wallet. "
+            "Keeps one subject's history one subject without naming them."
+        ),
     )
     balance = models.IntegerField(
         default=0,
@@ -355,7 +377,22 @@ class Subscription(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="subscription"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="subscription",
+        help_text="NULL once the owner has been erased — see stapel_billing.gdpr.",
+    )
+    user_pseudonym = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "The erased owner's stable pseudonym ('erased:<hmac>'). Empty "
+            "for a live subscription."
+        ),
     )
     plan = models.CharField(max_length=16, choices=Plan.choices, default=Plan.FREE)
     status = models.CharField(

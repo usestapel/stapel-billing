@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.erasure.requested",
+  "description": "stapel-gdpr 0.5.0+ asks every data owner that claims subject_type to erase its slice. This module claims account only \u2014 every row here hangs off a wallet or a subscription keyed by the user id, and no billing.* payload carries a workspace or entity id \u2014 and ignores every other subject_type (gdpr creates no part for an owner that does not claim it). Documentation of what is consumed: the authoritative schema is the emitter's, in stapel-gdpr/schemas/emits/.",
+  "type": "object",
+  "required": [
+    "request_id",
+    "correlation_id",
+    "subject_type",
+    "subject_key"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "integer"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "subject_type": {
+      "type": "string"
+    },
+    "subject_key": {
+      "type": "string"
+    },
+    "workspace_id": {
+      "type": "string"
+    },
+    "requested_by": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "due_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

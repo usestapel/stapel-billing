@@ -208,15 +208,19 @@ live in `schemas/emits/`, `schemas/consumes/` and `schemas/functions/`.
 |---|---|---|
 | `payment.completed` | `user_id`, `amount_cents`, `currency`, `transaction_id`, `created_at` (+ optional `package` / `plan`) | Package purchase, initial plan bonus, plan renewal grant |
 | `subscription.changed` | `user_id`, `plan`, `status` (+ `current_period_end`) | Subscription created / status updated / deleted |
+| `gdpr.section.erased` | `owner`, `subject_type`, `subject_key`, `correlation_id`, `receipt_id`, `counts` | Receipt for one erasure — same transaction as the erasure (see **Erasure**) |
+| `gdpr.owner.alive` | `owner`, `subject_types` (+ `correlation_id`) | Answer to the liveness probe |
 
 **Consumes** (`actions.py`, `@on_action`; handlers must be idempotent — delivery is at-least-once):
 
 | Event | Handler | Effect |
 |---|---|---|
-| `user.deleted` | `handle_user_deleted` | `BillingGDPRProvider().delete(user_id)` — erase billing PII |
+| `gdpr.erasure.requested` | `handle_erasure_requested` | Erase this owner's slice of the subject, receipt `gdpr.section.erased` with counts |
+| `gdpr.owner.probe` | `handle_owner_probe` | Answer `gdpr.owner.alive` — from the same module, which is what makes it evidence |
+| `user.deleted` | `handle_user_deleted` | DEPRECATED account signal, routed through the same `erase_subject("account", …)` |
 
-(`schemas/consumes/user.deletion_initiated.json` is declared, but `actions.py` currently
-subscribes only to `user.deleted`.)
+(`schemas/consumes/user.deletion_initiated.json` is declared, but `actions.py` does not
+subscribe to it.)
 
 **Functions provided** (`entitlements.py`, registered in `apps.ready()`; payload
 contracts in `schemas/functions/`):
@@ -233,6 +237,51 @@ Callers that must degrade when billing is absent catch `FunctionNotRegistered` /
 `FunctionRouteNotConfigured` and treat it as "allowed" (see stapel-workspaces).
 The HTTP endpoint `internal/debit` remains for deployments routing over HTTP (pass
 `idempotency_key` — duplicates short-circuit to the original transaction).
+
+## Erasure
+
+This module is a GDPR **data owner**. Its name is `billing` — the string on
+`BillingGDPRProvider.section`, and the one a host must use in
+`STAPEL_GDPR["DATA_OWNERS"]`, because an owner with two names is an owner whose
+receipts land on nobody's part.
+
+**Erasure removes the person; the bill stays.** A wallet's history is the product's
+financial record — what was purchased, what was spent, what expired — so nothing here is
+deleted. `stapel_billing.gdpr.erase_subject("account", user_id)` is the one operation,
+reached identically by the in-process provider (monolith) and by the
+`gdpr.erasure.requested` subscriber (fleet):
+
+| What | Erasure does |
+|---|---|
+| `Wallet.user`, `Subscription.user` | detached (`NULL`); `user_pseudonym` = `erased:<hmac>` — a keyed HMAC-SHA256 under `SECRET_KEY`, the `stapel_video.presence.pseudonymize_user` funnel, truncated to 32 hex |
+| `Transaction.description`, `CreditHold.description` | blanked — the argument is free-form, and a host that files a meeting title there has filed content |
+| `Transaction.metadata`, `CreditHold.metadata` | cut to `LEDGER_METADATA_KEYS` (`package`, `plan`, `lot_id`, `lots`, `hold_id`, `source`, `expires_at`). Allowlist, not denylist: a key nobody anticipated falls on the erasing side |
+| `Subscription.stripe_customer_id` / `stripe_subscription_id`, and the `StripeWebhookEvent.payload` rows keyed on them | cleared / replaced with `{"erased": true}` — a Stripe payload carries the person's email, address and card details. The webhook **row** stays: its `stripe_event_id` is the unique key that stops a redelivery from crediting a wallet twice |
+| amounts, credit counts, `balance_after`, lot expiries, timestamps | untouched — an erasure that restated a closed reporting period would be a bookkeeping change wearing a privacy costume |
+
+`CreditLot` and `HoldAllocation` are deliberately absent: they carry no free text and no
+id of their own, so the wallet's pseudonymization *is* their erasure, and counting them
+would inflate a receipt with work that was not done.
+
+**Subject types: `account` only.** Every row in this package hangs off a `Wallet` or a
+`Subscription` keyed by exactly one id — the user's. There is no `workspace_id` column
+and no `billing.*` payload that carries an entity id, so a `workspace` or `meeting`
+erasure has no key to match on here; claiming the type would produce a receipt for work
+nobody could have done. The probe answers what this module can really erase, not what a
+settings file hoped for.
+
+**The receipt.** `gdpr.section.erased` carries `counts = {wallets, subscriptions,
+transactions, credit_holds, webhook_events}` — rows *touched* — and is emitted inside the
+same transaction as the erasure, so a rollback takes the receipt with it. Redelivery is
+expected (at-least-once): the second run finds a detached wallet, touches nothing, and
+receipts zeroes under the same deterministic `receipt_id`.
+
+**Schema note (0.9.0).** `Wallet.user` / `Subscription.user` became nullable and moved
+from `CASCADE` to `SET_NULL` (migration `0004`). Both changes were preconditions, not
+polish: the 0.8.x provider ran `update(user_id=None)` against a NOT NULL column inside a
+bare `except Exception: pass`, so it raised on every wallet and reported success; and a
+`CASCADE` from the auth user row hit `Transaction.wallet`'s `PROTECT` and raised
+`ProtectedError`, failing the account deletion on the very rows it was meant to preserve.
 
 ### Django signals
 
