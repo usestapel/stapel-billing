@@ -109,6 +109,67 @@ class TestLotConsumptionOrder:
 
 
 @pytest.mark.django_db
+class TestCreditIdempotency:
+    """``credit()`` mirrors ``debit()``'s idempotency_key semantics: a
+    retried grant with the same key returns the original transaction
+    instead of granting again."""
+
+    def test_duplicate_credit_short_circuits(self, user):
+        keyed_first = services.credit(
+            user=user,
+            credits=50,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+            idempotency_key="grant-1",
+        )
+        keyed_second = services.credit(
+            user=user,
+            credits=50,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+            idempotency_key="grant-1",
+        )
+        assert keyed_second.id == keyed_first.id
+        txns = Transaction.objects.filter(
+            wallet__user=user, metadata__idempotency_key="grant-1"
+        )
+        assert txns.count() == 1
+        lots = CreditLot.objects.filter(granting_transaction=keyed_first)
+        assert lots.count() == 1
+        assert lots.first().credits_initial == 50
+        assert keyed_first.metadata["idempotency_key"] == "grant-1"
+
+    def test_distinct_keys_credit_separately(self, user):
+        first = services.credit(
+            user=user,
+            credits=20,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+            idempotency_key="a",
+        )
+        second = services.credit(
+            user=user,
+            credits=20,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+            idempotency_key="b",
+        )
+        assert first.id != second.id
+        wallet = user.wallet
+        wallet.refresh_from_db()
+        assert wallet.balance == 40
+
+    def test_credit_without_key_is_legacy_behaviour(self, user):
+        first = _fund(user, 10)
+        second = _fund(user, 10)
+        assert first.id != second.id
+        assert "idempotency_key" not in first.metadata
+        wallet = user.wallet
+        wallet.refresh_from_db()
+        assert wallet.balance == 20
+
+
+@pytest.mark.django_db
 class TestExpiry:
     def _expired_lot(self, user, credits=30):
         txn = _fund(

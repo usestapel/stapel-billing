@@ -294,6 +294,7 @@ def credit(
     amount_cents: Optional[int] = None,
     metadata: Optional[dict] = None,
     expires_at=None,
+    idempotency_key: Optional[str] = None,
 ) -> Transaction:
     """Add credits to a user's wallet as one lot, plus its ledger row.
 
@@ -305,6 +306,11 @@ def credit(
     *expires_at* is the moment the lot dies (``None`` = never). Pass the
     subscription's ``current_period_end`` for plan bundles; leave it None for
     purchased packages.
+
+    When *idempotency_key* is given, a duplicate call (same key, same
+    wallet) short-circuits and returns the original transaction without
+    granting again — safe under at-least-once service-to-service retries.
+    The key is stored on ``Transaction.metadata["idempotency_key"]``.
     """
     if credits <= 0:
         raise ValueError("credits must be positive")
@@ -314,6 +320,20 @@ def credit(
         # silently-zero grant is the worst way to find out about it.
         raise ValueError("expires_at must be in the future")
     wallet = _lock_wallet(user)
+    if idempotency_key:
+        # The wallet row is locked above, so concurrent duplicates
+        # serialize here and the second caller sees the first's row.
+        existing = Transaction.objects.filter(
+            wallet=wallet,
+            metadata__idempotency_key=idempotency_key,
+        ).first()
+        if existing is not None:
+            logger.info(
+                "credit short-circuited by idempotency_key=%s (txn %s)",
+                idempotency_key,
+                existing.id,
+            )
+            return existing
     _expire_due_lots(wallet, now=now)
     lot = CreditLot.objects.create(
         wallet=wallet,
@@ -323,6 +343,9 @@ def credit(
         expires_at=expires_at,
     )
     balance = _sync_balance(wallet, now=now)
+    metadata = dict(metadata or {})
+    if idempotency_key:
+        metadata["idempotency_key"] = idempotency_key
     txn = Transaction.objects.create(
         wallet=wallet,
         lot=lot,
@@ -331,7 +354,7 @@ def credit(
         credits_delta=credits,
         balance_after=balance,
         description=description,
-        metadata=metadata or {},
+        metadata=metadata,
     )
     lot.granting_transaction = txn
     lot.save(update_fields=["granting_transaction"])

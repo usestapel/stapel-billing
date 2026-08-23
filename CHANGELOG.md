@@ -5,6 +5,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-08-23
+
+### Fixed
+
+`services.credit()` had no `idempotency_key`, while `services.debit()` did —
+a granting caller doing a retry-safe backfill had no way to make a grant
+idempotent except faking it through `metadata`, which protects nothing (no
+short-circuit, no dedup).
+
+Added `idempotency_key: Optional[str] = None` to `credit()` with exactly
+`debit()`'s semantics: with the wallet row locked, a duplicate call (same
+key, same wallet) short-circuits and returns the original transaction
+without granting again, safe under at-least-once retries. The key is stored
+on `Transaction.metadata["idempotency_key"]` — same place, same mechanism as
+`debit()`; there is no dedicated column or unique constraint on either side.
+`None` keeps the legacy behaviour (every call grants).
+
+No backfill: existing callers using the `metadata` workaround are unaffected
+and can migrate to the real parameter at their own pace.
+
 ## [0.9.0] — 2026-08-23
 
 Pre-1.0, so a minor is where schema and surface changes live. **This one was

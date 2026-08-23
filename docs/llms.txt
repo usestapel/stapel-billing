@@ -1,4 +1,4 @@
-# stapel-billing 0.9.0
+# stapel-billing 0.9.1
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.
 
