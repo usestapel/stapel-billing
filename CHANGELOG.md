@@ -114,6 +114,10 @@ demoted from truth to cache. The migration docstring says all of this.
 - New `CONFIG.MD` (the file `pyproject.toml` already shipped as package data
   but the repo never had), MODULE.md "Wallet = lots" + hold-lifecycle
   sections, and the surface intents for the new callables.
+- New `stapel-billing[celery]` extra (also folded into `[all]`): the module
+  stays celery-optional — the three workers are plain callables a cron can
+  drive — but `get_billing_beat_schedule()` builds celery crontab entries and
+  now has an extra that says so.
 - `docs/errors.json` picks up `error.503.mandate_unavailable` from the current
   `stapel-core` — an upstream key, unrelated to this release, that the
   committed artifact had not been regenerated against.

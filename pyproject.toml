@@ -39,7 +39,11 @@ Issues = "https://github.com/usestapel/stapel-billing/issues"
 
 [project.optional-dependencies]
 stripe = ["stripe>=8.0,<12"]
-all = ["stapel-billing[stripe]"]
+# tasks.py imports celery lazily and works without it (the three workers are
+# plain callables a cron can drive), but get_billing_beat_schedule() builds
+# celery crontab entries — the extra is for hosts that want that factory.
+celery = ["celery>=5.3"]
+all = ["stapel-billing[stripe,celery]"]
 
 [tool.setuptools]
 package-dir = {"stapel_billing" = "."}

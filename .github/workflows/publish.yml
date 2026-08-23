@@ -33,7 +33,10 @@ jobs:
         run: python -c "import stapel_billing; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
+        # celery: get_billing_beat_schedule() builds crontab entries, so the
+        # test that proves the three workers are wired needs it present. The
+        # library itself stays celery-optional (see tasks.py).
+        run: pip install pytest pytest-django pytest-cov celery "stapel-tools>=0.9.1,<1"
 
       - name: Tests with coverage
         run: |
