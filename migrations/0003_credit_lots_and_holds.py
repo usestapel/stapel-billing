@@ -91,7 +91,7 @@ class Migration(migrations.Migration):
             name='CreditHold',
             fields=[
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('credits', models.IntegerField(help_text='Credits currently reserved by this hold.')),
+                ('credits', models.IntegerField(help_text='Credits reserved by this hold.')),
                 ('type', models.CharField(choices=[('credit_purchase', 'Credit Purchase'), ('transcription_charge', 'Transcription Charge'), ('ai_charge', 'AI Charge'), ('subscription_bonus', 'Subscription Bonus'), ('refund', 'Refund'), ('adjustment', 'Manual Adjustment'), ('expiration', 'Credit Expiration')], help_text='Transaction type the capture will be billed under.', max_length=32)),
                 ('description', models.CharField(blank=True, max_length=255, null=True)),
                 ('metadata', models.JSONField(blank=True, default=dict)),
@@ -133,7 +133,7 @@ class Migration(migrations.Migration):
             name='HoldAllocation',
             fields=[
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                ('credits', models.IntegerField(help_text='Credits this hold took from this lot.')),
+                ('credits', models.IntegerField(help_text='Credits this hold currently draws from this lot — a partial capture or a release reduces it, so what remains is what was actually billed against the lot.')),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('hold', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='allocations', to='billing.credithold')),
                 ('lot', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='allocations', to='billing.creditlot')),
