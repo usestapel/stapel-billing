@@ -5,6 +5,119 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-23
+
+### Added — a wallet is a set of credit lots, with expiry
+
+`Wallet.balance` was one integer, so "these 3000 came with February's
+subscription and die with it" and "these 500 were bought with a card and never
+do" were the same number. They are now separate `CreditLot` rows carrying
+`source` (`purchase` / `subscription` / `grant` / `adjustment` /
+`hold_release`) and a nullable `expires_at`, and `debit()` walks them
+`expires_at ASC NULLS LAST` — expiring-soonest first, so credits die used
+rather than unused and the cash a customer paid for is spent last.
+
+`Wallet.balance` survives as a **maintained cache** of the live lots,
+recomputed from them inside the same `select_for_update()` block as every
+mutation: every read path already expects a cheap scalar, and re-aggregating
+the lot table on each of them would be a tax on reads to pay for a property
+writes can maintain for free under a lock they already take. `Transaction`
+gains a nullable `lot` FK (set when an operation touched exactly one lot; the
+full split is always on `metadata["lots"]`).
+
+`expire_credit_lots` (hourly) zeroes lots past their deadline and writes one
+`TransactionType.EXPIRATION` row each — its own type, because "the customer
+used them" and "the deployment took them back" are different answers to where
+the month's credits went. Every wallet operation also sweeps the wallet it
+locks, so no ledger row can record a `balance_after` that includes dead
+credits. `services.reconcile_wallet_balances()` (daily) reports — never
+repairs — a wallet whose cache disagrees with its lots.
+
+`get_billing_beat_schedule()` wires the three workers at once, and system check
+`stapel_billing.W105` warns a beat-driven host that schedules none of them: an
+unscheduled expiry is silent retention, credits sold as expiring that quietly
+never do.
+
+### Added — credit reservations: `hold()` / `capture()` / `release()`
+
+For work priced only after it runs (an LLM answer, a transcription of unknown
+length) there was nothing between "not charged" and "charged" — the choice was
+to debit an estimate and refund later, and a refund that never runs because
+the worker died is a charge for work nobody did.
+
+`hold()` takes the credits out of the lots immediately (a real reservation, not
+an overlay: `balance` stays "spendable now", so nobody computes
+`balance - sum(open holds)` — an aggregate two concurrent requests would both
+read before either wrote) and writes no ledger row, because nothing has been
+billed. `capture(actual_credits=...)` writes the one charge that did happen;
+`release()` hands the credits back. Both refund **per lot**: `HoldAllocation`
+records which lot each held credit came from, and the credits return as a
+`hold_release` lot carrying that lot's `expires_at`. Without that, a released
+subscription bundle would come back as credits that never expire — a pool the
+deployment could never reclaim. A portion whose lot expired while the work ran
+comes back already dead and is swept into an `EXPIRATION` row: reserved
+credits run out the clock, they are not renewed.
+
+`hold()` needs an `idempotency_key` (unique per wallet); `capture()` /
+`release()` do not, because `hold_id` already is one — a repeated capture
+returns the original charge, a repeated release is a no-op. `expire_holds`
+(hourly) releases holds past `expires_at` and records them as `expired`, so a
+pipeline that dies between the reservation and the answer cannot lock a
+customer's credits forever; the deadline defaults to the new
+`STAPEL_BILLING["HOLD_DEFAULT_TTL_SECONDS"]` (3600).
+
+New comm Functions `billing.hold` / `billing.capture` / `billing.release`
+alongside `billing.debit`, same structural-failure envelope (`ok=false` +
+`reason`, never an exception) and new reasons `hold_not_found` /
+`hold_not_held`. **`billing.debit` and `billing.check_entitlement` are
+unchanged** — their payloads and returns are byte-identical to 0.7.1.
+
+### Changed — BREAKING: `credit()` requires `source`
+
+```python
+credit(user=u, credits=3000, type=TransactionType.SUBSCRIPTION_BONUS,
+       source=LotSource.SUBSCRIPTION, expires_at=sub.current_period_end)
+```
+
+`source` is keyword-only and has no default on purpose: a lot that cannot say
+where its credits came from cannot be reasoned about later, and defaulting it
+would make every un-migrated call site quietly mint credits of an invented
+origin. `expires_at` is optional and defaults to `None` (never expires).
+
+The module's own callers are updated: `handle_checkout_completed` grants a
+package as `source=purchase, expires_at=None` and a plan bundle as
+`source=subscription`; `handle_invoice_paid` dates the renewal from the
+invoice's own service period, because at `invoice.paid` the stored
+`current_period_end` is still the period that just ended. A first bundle
+granted before Stripe said what the period is starts undated and is stamped by
+`_stamp_subscription_period` on the next subscription event — otherwise every
+subscriber's first month would never expire.
+
+### Migration `0003_credit_lots_and_holds`
+
+Creates the three tables and gives every wallet with credits exactly ONE lot:
+`source=adjustment, expires_at=NULL`, sized to the balance it already had. One
+lot, and an adjustment one, because the history cannot be replayed into lots
+honestly — the ledger records deltas against a single scalar and never said
+which credits a debit came out of. Pre-migration credits therefore never
+expire and are spent last, so existing balances survive untouched while
+everything granted from now on carries its real deadline. Deletion-driven:
+nothing is dropped, because nothing is replaced — `Wallet.balance` stays,
+demoted from truth to cache. The migration docstring says all of this.
+
+### Also
+
+- GDPR export gains `credit_lots` and `credit_holds` (where a balance came
+  from and when it dies is part of the answer to "what do you hold about me").
+- `CreditLot` / `CreditHold` admin is read-only: moving credits outside
+  `services.py` skips the lock and the ledger row that explains the move.
+- New `CONFIG.MD` (the file `pyproject.toml` already shipped as package data
+  but the repo never had), MODULE.md "Wallet = lots" + hold-lifecycle
+  sections, and the surface intents for the new callables.
+- `docs/errors.json` picks up `error.503.mandate_unavailable` from the current
+  `stapel-core` — an upstream key, unrelated to this release, that the
+  committed artifact had not been regenerated against.
+
 ## [0.7.1] — 2026-08-15
 
 ### Changed — `stapel-core` floor raised to 0.26.0

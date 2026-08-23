@@ -7,6 +7,7 @@ import pytest
 from stapel_billing import catalog, services
 from stapel_billing.gdpr import BillingGDPRProvider
 from stapel_billing.models import (
+    LotSource,
     Subscription,
     Transaction,
     TransactionType,
@@ -21,6 +22,7 @@ class TestGDPRExport:
             user=user,
             credits=100,
             type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
             amount_cents=200,
             description="pack",
         )
@@ -41,7 +43,13 @@ class TestGDPRExport:
 
     def test_export_without_data(self, user):
         data = BillingGDPRProvider().export(user.id)
-        assert data == {"wallet": {}, "transactions": [], "subscription": {}}
+        assert data == {
+            "wallet": {},
+            "credit_lots": [],
+            "credit_holds": [],
+            "transactions": [],
+            "subscription": {},
+        }
 
 
 @pytest.mark.django_db
@@ -139,7 +147,12 @@ def test_error_keys_view_exposes_billing_errors():
 class TestServiceGuards:
     def test_credit_rejects_non_positive(self, user):
         with pytest.raises(ValueError):
-            services.credit(user=user, credits=0, type=TransactionType.ADJUSTMENT)
+            services.credit(
+                user=user,
+                credits=0,
+                type=TransactionType.ADJUSTMENT,
+                source=LotSource.ADJUSTMENT,
+            )
 
     def test_debit_rejects_non_positive(self, user):
         with pytest.raises(ValueError):

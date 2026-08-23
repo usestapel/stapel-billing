@@ -1,6 +1,6 @@
 {
   "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_billing/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code. `surface_roots` + `surface` are the usage layer (stapel_tools.surface): the symbols a product must CALL instead of writing its own ledger write, its own signature check or its own Stripe client. The roots select the symbols; every selected symbol MUST carry an intent line here or emission fails naming it.",
-  "provides": "Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.",
+  "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.",
   "requires": [
     {
       "module": "stapel-core",
@@ -54,6 +54,10 @@
     {
       "select": "functions",
       "path": "catalog.py"
+    },
+    {
+      "select": "functions",
+      "path": "tasks.py"
     }
   ],
   "surface": {
@@ -79,6 +83,31 @@
         "stapel_billing.models.Transaction.objects.create",
         "stapel_billing.models.Wallet.balance"
       ]
+    },
+    "hold": {
+      "kind": "factory",
+      "intent": "Reserve credits BEFORE work whose real cost is only known afterwards. The credits leave the lots immediately, so two concurrent requests cannot both spend the last one; nothing is billed until capture. Use it instead of debiting an estimate — a refund that never runs because the worker died is a charge for work nobody did.",
+      "instead_of": [
+        "stapel_billing.services.debit"
+      ]
+    },
+    "capture": {
+      "kind": "factory",
+      "intent": "Close a hold at what the work actually cost, writing the one ledger row that explains it. Under-spend goes back to the lots it came from, expiry intact; over-spend takes the difference and can still refuse. Never debit after a hold — that charges twice.",
+      "instead_of": [
+        "stapel_billing.services.debit"
+      ]
+    },
+    "release": {
+      "kind": "factory",
+      "intent": "Give a hold's credits back when the work failed. Each portion returns with the expiry of the lot it came from, so a released subscription bundle does not become credits that never expire. Idempotent through the hold; skipping it locks the credits until expire_holds notices.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
+    },
+    "reconcile_wallet_balances": {
+      "kind": "gate_function",
+      "intent": "Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module."
     },
     "get_provider": {
       "kind": "factory",
@@ -155,6 +184,22 @@
         "django.conf.settings.STAPEL_BILLING[\"PLANS\"]",
         "stapel_billing.catalog.DEFAULT_PLANS"
       ]
+    },
+    "expire_credit_lots": {
+      "kind": "gate_function",
+      "intent": "The task that makes credit expiry real: zeroes lots past expires_at, one EXPIRATION ledger row each. Wire it via get_billing_beat_schedule — nothing else enforces the deadline subscription credits are sold with (check stapel_billing.W105)."
+    },
+    "expire_holds": {
+      "kind": "gate_function",
+      "intent": "Hourly crash-safety task: releases credit holds past expires_at, recorded as expired. Wire it via get_billing_beat_schedule; without it a pipeline that dies between hold and capture reserves a customer's credits for good."
+    },
+    "reconcile_wallets": {
+      "kind": "gate_function",
+      "intent": "Daily task over reconcile_wallet_balances: logs at ERROR every wallet whose balance cache no longer matches its lots — how a deployment learns something wrote Wallet.balance directly."
+    },
+    "get_billing_beat_schedule": {
+      "kind": "factory",
+      "intent": "Spread `**get_billing_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all three billing workers at once (credit expiry, abandoned-hold release, reconciliation). Hand-authoring the entries is how expire_credit_lots gets silently dropped."
     }
   }
 }

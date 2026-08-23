@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.release",
+  "description": "Payload for the billing.release comm Function — hand a hold's credits back (wrapper over stapel_billing.services.release). Each portion returns to a lot carrying the expiry of the lot it was taken from, so a released subscription bundle does not become non-expiring. No idempotency_key: hold_id IS the key — releasing a hold that is already captured, released or expired is a no-op, so a retried release cannot conjure credits. Returns {\"ok\": bool, \"balance\": int|null, \"status\": str|null, \"reason\": str|null}; reason is hold_not_found.",
+  "type": "object",
+  "required": ["hold_id"],
+  "properties": {
+    "hold_id": { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}

@@ -16,6 +16,7 @@ from django.utils import timezone
 from stapel_core.comm import call
 from stapel_core.comm.exceptions import SchemaValidationError
 
+from stapel_billing import services
 from stapel_billing.catalog import DEFAULT_PLANS, PlanCatalogEntry
 from stapel_billing.models import (
     Subscription,
@@ -216,10 +217,18 @@ class TestCheckEntitlement:
 @pytest.mark.django_db
 class TestDebitFunction:
     def _fund(self, user, balance=10):
-        wallet, _ = Wallet.objects.get_or_create(user=user)
-        wallet.balance = balance
-        wallet.save(update_fields=["balance"])
-        return wallet
+        # Through the service, not by writing Wallet.balance: since 0.8.0 the
+        # balance is a cache of the credit lots, and a hand-set number is a
+        # wallet with nothing in it to spend.
+        from stapel_billing.models import LotSource
+
+        services.credit(
+            user=user,
+            credits=balance,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
+        return Wallet.objects.get(user=user)
 
     def test_debit_success(self, user):
         self._fund(user, 10)
@@ -248,7 +257,10 @@ class TestDebitFunction:
         assert second["transaction_id"] == first["transaction_id"]
         assert second["balance"] == first["balance"] == 6
         assert Wallet.objects.get(user=user).balance == 6
-        assert Transaction.objects.filter(wallet__user=user).count() == 1
+        # The funding credit row is there too; exactly one DEBIT was written.
+        assert Transaction.objects.filter(
+            wallet__user=user, credits_delta__lt=0
+        ).count() == 1
 
     def test_debit_insufficient_credits_is_structural(self, user):
         self._fund(user, 3)
@@ -260,7 +272,9 @@ class TestDebitFunction:
             "ok": False, "balance": 3, "reason": "insufficient_credits",
         }
         assert Wallet.objects.get(user=user).balance == 3
-        assert not Transaction.objects.filter(wallet__user=user).exists()
+        assert not Transaction.objects.filter(
+            wallet__user=user, credits_delta__lt=0
+        ).exists()
 
     def test_debit_unknown_user(self, db):
         result = call(

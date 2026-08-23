@@ -156,3 +156,53 @@ def check_redirect_allowlist(app_configs, **kwargs):
             id="stapel_billing.W103",
         )]
     return []
+
+
+@checks.register(checks.Tags.compatibility)
+def check_expiry_is_scheduled(app_configs, **kwargs):
+    """W105: credits are sold with an expiry and nothing enforces it.
+
+    Subscription bundles are granted with a deadline (`CreditLot.expires_at`
+    = the period end the customer paid for). The deadline is only a fact if
+    something acts on it: without ``expire_credit_lots`` the credits stay
+    spendable forever, so a cancelled subscriber keeps the last month's
+    bundle and the plan ladder quietly stops being a ladder. The same
+    schedule carries ``expire_holds``, whose absence leaves the credits of
+    any pipeline that crashed mid-charge reserved for good.
+
+    Only hosts that drive a beat schedule are checked: a host with no
+    ``CELERY_BEAT_SCHEDULE`` runs the plain callables in ``tasks.py`` from
+    its own cron, which this process cannot see and must not second-guess.
+    """
+    from django.conf import settings
+
+    from .tasks import (
+        EXPIRE_HOLDS_TASK_NAME,
+        EXPIRE_LOTS_TASK_NAME,
+        RECONCILE_TASK_NAME,
+    )
+
+    schedule = getattr(settings, "CELERY_BEAT_SCHEDULE", None)
+    if not schedule:
+        return []
+    scheduled = {(entry or {}).get("task") for entry in schedule.values()}
+    missing = [
+        name
+        for name in (EXPIRE_LOTS_TASK_NAME, EXPIRE_HOLDS_TASK_NAME, RECONCILE_TASK_NAME)
+        if name not in scheduled
+    ]
+    if not missing:
+        return []
+    return [checks.Warning(
+        "CELERY_BEAT_SCHEDULE has no entry for " + ", ".join(missing) + ": "
+        "credits granted with an expiry never actually expire, abandoned "
+        "credit holds stay reserved forever, and nothing checks the wallet "
+        "balance cache against the lots it summarises.",
+        hint=(
+            "CELERY_BEAT_SCHEDULE = {**get_billing_beat_schedule(), ...} "
+            "(stapel_billing.tasks), or run stapel_billing.tasks."
+            "expire_credit_lots / expire_holds / reconcile_wallets from your "
+            "own scheduler."
+        ),
+        id="stapel_billing.W105",
+    )]

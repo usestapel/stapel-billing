@@ -1,9 +1,9 @@
-"""API tests for iron-billing."""
+"""API tests for stapel-billing."""
 
 import pytest
 
 from stapel_billing import services
-from stapel_billing.models import Transaction, TransactionType, Wallet
+from stapel_billing.models import LotSource, Transaction, TransactionType, Wallet
 
 
 @pytest.mark.django_db
@@ -44,7 +44,10 @@ class TestWallet:
 class TestWalletService:
     def test_credit_and_debit(self, user):
         services.credit(
-            user=user, credits=100, type=TransactionType.CREDIT_PURCHASE
+            user=user,
+            credits=100,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
         )
         services.debit(
             user=user, credits=30, type=TransactionType.TRANSCRIPTION_CHARGE
@@ -54,7 +57,12 @@ class TestWalletService:
         assert Transaction.objects.filter(wallet=wallet).count() == 2
 
     def test_debit_insufficient(self, user):
-        services.credit(user=user, credits=10, type=TransactionType.CREDIT_PURCHASE)
+        services.credit(
+            user=user,
+            credits=10,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
         with pytest.raises(services.InsufficientCreditsError):
             services.debit(
                 user=user, credits=100, type=TransactionType.TRANSCRIPTION_CHARGE
@@ -103,7 +111,10 @@ class TestInternalDebit:
     def test_service_can_debit(self, api_client, user, settings):
         settings.SERVICE_API_KEY = "test-service-key"
         services.credit(
-            user=user, credits=500, type=TransactionType.CREDIT_PURCHASE
+            user=user,
+            credits=500,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
         )
         resp = api_client.post(
             "/billing/api/internal/debit",
@@ -122,7 +133,10 @@ class TestInternalDebit:
     def test_service_debit_insufficient(self, api_client, user, settings):
         settings.SERVICE_API_KEY = "test-service-key"
         services.credit(
-            user=user, credits=10, type=TransactionType.CREDIT_PURCHASE
+            user=user,
+            credits=10,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
         )
         resp = api_client.post(
             "/billing/api/internal/debit",

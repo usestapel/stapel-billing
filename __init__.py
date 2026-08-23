@@ -6,12 +6,16 @@ no Django code until an attribute is actually accessed):
     billing_settings          — the ``STAPEL_BILLING`` settings namespace
     credit                    — add credits to a user's wallet
     debit                     — deduct credits (raises InsufficientCreditsError)
+    hold                      — reserve credits before work of unknown cost
+    capture                   — bill a hold for what the work actually cost
+    release                   — hand a hold's credits back, expiry preserved
     get_provider              — instantiate the configured PaymentProvider
     PaymentProvider           — base class for custom payment backends
     InsufficientCreditsError  — raised by ``debit`` on insufficient balance
     CHECK_ENTITLEMENT         — name of the ``billing.check_entitlement``
                                 comm Function (call via stapel_core.comm.call)
     DEBIT                     — name of the ``billing.debit`` comm Function
+    HOLD / CAPTURE / RELEASE  — names of the reservation comm Functions
     check_entitlement         — the ``billing.check_entitlement`` provider
 
 (The ``billing.debit`` provider itself is ``entitlements.debit`` — not
@@ -20,15 +24,23 @@ function; callers use ``comm.call(DEBIT, ...)`` anyway.)
 """
 
 __all__ = [
+    "CAPTURE",
     "CHECK_ENTITLEMENT",
     "DEBIT",
+    "HOLD",
+    "HoldNotFoundError",
+    "HoldStateError",
     "InsufficientCreditsError",
     "PaymentProvider",
+    "RELEASE",
     "billing_settings",
+    "capture",
     "check_entitlement",
     "credit",
     "debit",
     "get_provider",
+    "hold",
+    "release",
 ]
 
 # name -> (relative module, attribute)
@@ -37,10 +49,18 @@ _EXPORTS = {
     "credit": (".services", "credit"),
     "debit": (".services", "debit"),
     "get_provider": (".services", "get_provider"),
+    "hold": (".services", "hold"),
+    "capture": (".services", "capture"),
+    "release": (".services", "release"),
     "InsufficientCreditsError": (".services", "InsufficientCreditsError"),
+    "HoldNotFoundError": (".services", "HoldNotFoundError"),
+    "HoldStateError": (".services", "HoldStateError"),
     "PaymentProvider": (".providers.base", "PaymentProvider"),
     "CHECK_ENTITLEMENT": (".entitlements", "CHECK_ENTITLEMENT"),
     "DEBIT": (".entitlements", "DEBIT"),
+    "HOLD": (".entitlements", "HOLD"),
+    "CAPTURE": (".entitlements", "CAPTURE"),
+    "RELEASE": (".entitlements", "RELEASE"),
     "check_entitlement": (".entitlements", "check_entitlement"),
 }
 

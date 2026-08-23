@@ -1,7 +1,7 @@
 {
   "module": "stapel-billing",
-  "version": "0.7.1",
-  "provides": "Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.",
+  "version": "0.8.0",
+  "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
       "key": "PAYMENT_PROVIDER",
@@ -73,6 +73,15 @@
       "intent": "Cancel the subscription on the processor's side, raising when the remote call fails — deliberately the FIRST half of a cancellation. Call it before marking anything cancelled locally: a local cancellation the processor never heard about tells the user billing stopped while their card keeps being charged.",
       "instead_of": [
         "stripe.Subscription.modify"
+      ]
+    },
+    {
+      "name": "capture",
+      "kind": "factory",
+      "path": "stapel_billing.services.capture",
+      "intent": "Close a hold at what the work actually cost, writing the one ledger row that explains it. Under-spend goes back to the lots it came from, expiry intact; over-spend takes the difference and can still refuse. Never debit after a hold — that charges twice.",
+      "instead_of": [
+        "stapel_billing.services.debit"
       ]
     },
     {
@@ -166,6 +175,30 @@
       "intent": "The status reconciliation on customer.subscription.updated: maps the processor's lifecycle (active / trialing / past_due / canceled / incomplete) onto SubscriptionStatus, refreshes the billing period and announces the change. That mapping is the module's contract — anything deciding what \"past_due\" means locally must read it here rather than invent a second answer."
     },
     {
+      "name": "hold",
+      "kind": "factory",
+      "path": "stapel_billing.services.hold",
+      "intent": "Reserve credits BEFORE work whose real cost is only known afterwards. The credits leave the lots immediately, so two concurrent requests cannot both spend the last one; nothing is billed until capture. Use it instead of debiting an estimate — a refund that never runs because the worker died is a charge for work nobody did.",
+      "instead_of": [
+        "stapel_billing.services.debit"
+      ]
+    },
+    {
+      "name": "reconcile_wallet_balances",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.reconcile_wallet_balances",
+      "intent": "Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module."
+    },
+    {
+      "name": "release",
+      "kind": "factory",
+      "path": "stapel_billing.services.release",
+      "intent": "Give a hold's credits back when the work failed. Each portion returns with the expiry of the lot it came from, so a released subscription bundle does not become credits that never expire. Idempotent through the hold; skipping it locks the credits until expire_holds notices.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
+    },
+    {
       "name": "verify_stripe_signature",
       "kind": "gate_function",
       "path": "stapel_billing.services.verify_stripe_signature",
@@ -174,6 +207,30 @@
         "stripe.Webhook.construct_event",
         "hmac.compare_digest"
       ]
+    },
+    {
+      "name": "expire_credit_lots",
+      "kind": "gate_function",
+      "path": "stapel_billing.tasks.expire_credit_lots",
+      "intent": "The task that makes credit expiry real: zeroes lots past expires_at, one EXPIRATION ledger row each. Wire it via get_billing_beat_schedule — nothing else enforces the deadline subscription credits are sold with (check stapel_billing.W105)."
+    },
+    {
+      "name": "expire_holds",
+      "kind": "gate_function",
+      "path": "stapel_billing.tasks.expire_holds",
+      "intent": "Hourly crash-safety task: releases credit holds past expires_at, recorded as expired. Wire it via get_billing_beat_schedule; without it a pipeline that dies between hold and capture reserves a customer's credits for good."
+    },
+    {
+      "name": "get_billing_beat_schedule",
+      "kind": "factory",
+      "path": "stapel_billing.tasks.get_billing_beat_schedule",
+      "intent": "Spread `**get_billing_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all three billing workers at once (credit expiry, abandoned-hold release, reconciliation). Hand-authoring the entries is how expire_credit_lots gets silently dropped."
+    },
+    {
+      "name": "reconcile_wallets",
+      "kind": "gate_function",
+      "path": "stapel_billing.tasks.reconcile_wallets",
+      "intent": "Daily task over reconcile_wallet_balances: logs at ERROR every wallet whose balance cache no longer matches its lots — how a deployment learns something wrote Wallet.balance directly."
     }
   ],
   "operations_total": 10,

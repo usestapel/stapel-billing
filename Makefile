@@ -20,10 +20,17 @@ PYTHON ?= python3
 # is, how to think about it) plus everything emitted above. Badges, version,
 # surface counts and doc links are generated, so a release cannot leave them
 # behind. Edit docs/readme.md; never README.md.
+# LLMS_BUDGET is raised from the 4000-token default DELIBERATELY (0.8.0): the
+# module's callable surface grew by a third — credit lots, hold/capture/release
+# and three scheduled workers — and the errors section (~700 tokens) is owned by
+# stapel-core, so a key added upstream would otherwise turn this release red for
+# reasons nothing in this repo can fix. Trim intents before raising it again.
+LLMS_BUDGET ?= 4400
+
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs
 	$(PYTHON) -m stapel_billing._capabilities --out docs
-	$(PYTHON) -m stapel_tools.llms_txt .
+	$(PYTHON) -m stapel_tools.llms_txt . --budget $(LLMS_BUDGET)
 	$(PYTHON) -m stapel_tools.readme .
 
 # Drift gate: regenerate into a temp dir and diff against the committed docs/*.json
@@ -32,7 +39,7 @@ contract-check:
 	@tmp=$$(mktemp -d); \
 	$(PYTHON) -m stapel_billing._codegen --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
 	$(PYTHON) -m stapel_billing._capabilities --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
-	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
+	$(PYTHON) -m stapel_tools.llms_txt . --budget $(LLMS_BUDGET) --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
 	rc=0; \
 	for f in schema.json flows.json errors.json capabilities.json llms.txt; do \
 		if ! diff -q "docs/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \

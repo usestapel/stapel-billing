@@ -10,7 +10,7 @@
 [![license](https://img.shields.io/github/license/usestapel/stapel-billing)](https://github.com/usestapel/stapel-billing/blob/main/LICENSE)
 [![llms.txt](https://img.shields.io/badge/llms.txt-blue)](https://github.com/usestapel/stapel-billing/blob/main/docs/llms.txt)
 
-> Payments and billing: per-user credit wallets with an immutable transaction ledger, one-off credit packages and recurring subscription plans, Stripe-backed checkout and self-service customer portal, idempotent webhooks and a service-to-service debit endpoint.
+> Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.
 
 Part of the [Stapel framework](https://github.com/usestapel) — composable Django apps that deploy as a monolith or as microservices without changing module code.
 
@@ -24,13 +24,13 @@ pip install stapel-billing
 
 | Fact | Value |
 |---|---|
-| Version | `0.7.1` |
+| Version | `0.8.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 10 |
 | Config axes | 1 |
-| Usage surface | 15 |
+| Usage surface | 23 |
 | Extension points | 5 |
-| Error codes | 54 |
+| Error codes | 55 |
 | Fleet dependencies | [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation
@@ -45,6 +45,43 @@ INSTALLED_APPS = [
     ...
     'stapel_billing',
 ]
+
+from stapel_billing.tasks import get_billing_beat_schedule
+
+CELERY_BEAT_SCHEDULE = {
+    **get_billing_beat_schedule(),   # credit expiry, hold sweep, reconcile
+}
+```
+
+Register the beat schedule (or run the three callables in `stapel_billing.tasks`
+from your own cron): credits granted with an expiry only expire because
+something runs. System check `stapel_billing.W105` says so if nothing does.
+
+## Wallets are lots
+
+A wallet is a set of `CreditLot` rows — each one knows where its credits came
+from (`purchase`, `subscription`, `grant`, `adjustment`, `hold_release`) and
+when they die (`expires_at`, `NULL` = never). Spend walks the lots
+**expiring-soonest first**, so a subscription bundle is used before the
+non-expiring credits a customer paid cash for. `Wallet.balance` is a
+maintained cache of that total, recomputed from the lots inside the same row
+lock as every mutation.
+
+```python
+from stapel_billing import credit, debit, hold, capture, release
+from stapel_billing.models import LotSource, TransactionType
+
+credit(user=user, credits=3000, type=TransactionType.SUBSCRIPTION_BONUS,
+       source=LotSource.SUBSCRIPTION, expires_at=sub.current_period_end)
+
+held = hold(user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key=f"mic:{recording_id}")
+try:
+    used = do_the_work()
+except Exception:
+    release(hold_id=held.id)      # credits go back with their original expiry
+else:
+    capture(hold_id=held.id, actual_credits=used)
 ```
 
 ## Bus events

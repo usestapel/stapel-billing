@@ -2,7 +2,14 @@ from django.contrib import admin
 
 from stapel_core.django.admin.base import StapelModelAdmin
 
-from .models import StripeWebhookEvent, Subscription, Transaction, Wallet
+from .models import (
+    CreditHold,
+    CreditLot,
+    StripeWebhookEvent,
+    Subscription,
+    Transaction,
+    Wallet,
+)
 
 
 @admin.register(Wallet)
@@ -25,6 +32,45 @@ class TransactionAdmin(admin.ModelAdmin):
         "credits_delta",
         "balance_after",
         "metadata",
+        "created_at",
+    ]
+
+
+@admin.register(CreditLot)
+class CreditLotAdmin(admin.ModelAdmin):
+    list_display = ["wallet", "source", "credits_remaining", "credits_initial", "expires_at", "created_at"]
+    list_filter = ["source"]
+    search_fields = ["wallet__user__email", "wallet__user__id"]
+    # A lot is moved by services.py under the wallet's row lock; editing one
+    # here would change a balance without the ledger row that explains it.
+    readonly_fields = [
+        "id",
+        "wallet",
+        "source",
+        "credits_initial",
+        "credits_remaining",
+        "expires_at",
+        "granting_transaction",
+        "created_at",
+    ]
+
+
+@admin.register(CreditHold)
+class CreditHoldAdmin(admin.ModelAdmin):
+    list_display = ["wallet", "credits", "type", "status", "expires_at", "created_at"]
+    list_filter = ["status", "type"]
+    search_fields = ["wallet__user__email", "idempotency_key", "description"]
+    readonly_fields = [
+        "id",
+        "wallet",
+        "credits",
+        "type",
+        "description",
+        "metadata",
+        "idempotency_key",
+        "status",
+        "expires_at",
+        "resolved_at",
         "created_at",
     ]
 

@@ -1,4 +1,4 @@
-"""comm Function providers of the billing module: entitlements + debit.
+"""comm Function providers of the billing module: entitlements, debit, holds.
 
 Other modules gate features and charge credits by name — no import of this
 app, no HTTP client code (the transport is deployment configuration, see
@@ -64,6 +64,30 @@ Callers that must degrade when billing is not installed catch
   (default 1) is the prospective total, not a delta — billing does not
   track usage; the caller counts and passes current+1.
 
+``billing.hold`` / ``billing.capture`` / ``billing.release`` are the
+pre-flight form of the same charge, for work whose real cost is only known
+afterwards::
+
+    held = call("billing.hold", {"user_id": str(user.id), "credits": 15,
+                                 "idempotency_key": f"mic:{recording_id}"})
+    # -> {"ok": bool, "hold_id": str | None, "balance": int | None,
+    #     "reason": str | None}
+    ...                                  # do the work
+    call("billing.capture", {"hold_id": held["hold_id"], "actual_credits": 12})
+    # -> {"ok": bool, "balance": int | None, "transaction_id": str | None,
+    #     "reason": str | None}
+    # on failure instead:
+    call("billing.release", {"hold_id": held["hold_id"]})
+    # -> {"ok": bool, "balance": int | None, "status": str | None,
+    #     "reason": str | None}
+
+``hold`` needs its own ``idempotency_key`` (unique per wallet); ``capture``
+and ``release`` do not, because ``hold_id`` already is one — a hold resolves
+exactly once, so a repeated capture returns the original charge and a
+repeated release is a no-op. Refusing a hold is an expected outcome
+(``ok=False`` + ``reason``), and the caller is expected to render it rather
+than degrade silently.
+
 ``billing.debit`` wraps :func:`stapel_billing.services.debit` (previously
 reachable only through the internal HTTP endpoint
 :class:`stapel_billing.views.InternalDebitView`) with the same idempotency
@@ -84,6 +108,9 @@ logger = logging.getLogger(__name__)
 
 CHECK_ENTITLEMENT = "billing.check_entitlement"
 DEBIT = "billing.debit"
+HOLD = "billing.hold"
+CAPTURE = "billing.capture"
+RELEASE = "billing.release"
 
 # Denial reasons (structural — mapped to error keys by the caller, e.g.
 # workspaces' error.402.entitlement_required / error.402.member_limit_reached).
@@ -93,6 +120,8 @@ REASON_INSUFFICIENT_CREDITS = "insufficient_credits"
 REASON_USER_NOT_FOUND = "user_not_found"
 REASON_UNKNOWN_KEY = "unknown_key"
 REASON_UNKNOWN_PLAN = "unknown_plan"
+REASON_HOLD_NOT_FOUND = "hold_not_found"
+REASON_HOLD_NOT_HELD = "hold_not_held"
 
 # Single source of truth for the payload contracts: the committed schema
 # files (registered by the schemas/ autoloader too; passing them at
@@ -106,6 +135,9 @@ def _load_schema(name: str) -> dict:
 
 CHECK_ENTITLEMENT_SCHEMA = _load_schema(CHECK_ENTITLEMENT)
 DEBIT_SCHEMA = _load_schema(DEBIT)
+HOLD_SCHEMA = _load_schema(HOLD)
+CAPTURE_SCHEMA = _load_schema(CAPTURE)
+RELEASE_SCHEMA = _load_schema(RELEASE)
 
 def _granting_statuses() -> tuple:
     """Subscription statuses under which the subscribed plan's entitlements
@@ -260,6 +292,120 @@ def debit(payload: dict) -> dict:
     }
 
 
+def _resolve_user(user_id):
+    from django.contrib.auth import get_user_model
+
+    return get_user_model().objects.filter(id=user_id).first()
+
+
+def hold(payload: dict) -> dict:
+    """Provider for ``billing.hold``.
+
+    Payload: ``{"user_id": str, "credits": int, "idempotency_key": str,
+    "type": str = "adjustment", "description": str = None,
+    "metadata": dict = {}, "expires_in_seconds": int = None}``
+    Returns: ``{"ok": bool, "hold_id": str | None, "balance": int | None,
+    "reason": str | None}``
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from . import services
+    from .models import TransactionType
+
+    user = _resolve_user(payload["user_id"])
+    if user is None:
+        return {"ok": False, "hold_id": None, "balance": None,
+                "reason": REASON_USER_NOT_FOUND}
+    ttl = payload.get("expires_in_seconds")
+    try:
+        held = services.hold(
+            user=user,
+            credits=payload["credits"],
+            type=payload.get("type", TransactionType.ADJUSTMENT),
+            description=payload.get("description"),
+            metadata=payload.get("metadata") or {},
+            idempotency_key=payload["idempotency_key"],
+            expires_at=timezone.now() + timedelta(seconds=ttl) if ttl else None,
+        )
+    except services.InsufficientCreditsError:
+        wallet = services.get_or_create_wallet(user)
+        return {
+            "ok": False,
+            "hold_id": None,
+            "balance": wallet.balance,
+            "reason": REASON_INSUFFICIENT_CREDITS,
+        }
+    held.wallet.refresh_from_db(fields=["balance"])
+    return {
+        "ok": True,
+        "hold_id": str(held.id),
+        "balance": held.wallet.balance,
+        "reason": None,
+    }
+
+
+def capture(payload: dict) -> dict:
+    """Provider for ``billing.capture``.
+
+    Payload: ``{"hold_id": str, "actual_credits": int = None,
+    "description": str = None, "metadata": dict = {}}``
+    Returns: ``{"ok": bool, "balance": int | None,
+    "transaction_id": str | None, "reason": str | None}``
+    """
+    from . import services
+
+    try:
+        txn = services.capture(
+            hold_id=payload["hold_id"],
+            actual_credits=payload.get("actual_credits"),
+            description=payload.get("description"),
+            metadata=payload.get("metadata") or {},
+        )
+    except services.HoldNotFoundError:
+        return {"ok": False, "balance": None, "transaction_id": None,
+                "reason": REASON_HOLD_NOT_FOUND}
+    except services.HoldStateError:
+        return {"ok": False, "balance": None, "transaction_id": None,
+                "reason": REASON_HOLD_NOT_HELD}
+    except services.InsufficientCreditsError:
+        # The work cost more than was reserved and the wallet cannot cover
+        # the difference. The hold is still held: the caller decides whether
+        # to capture at the reserved amount instead, or release.
+        return {"ok": False, "balance": None, "transaction_id": None,
+                "reason": REASON_INSUFFICIENT_CREDITS}
+    return {
+        "ok": True,
+        "balance": txn.balance_after,
+        "transaction_id": str(txn.id),
+        "reason": None,
+    }
+
+
+def release(payload: dict) -> dict:
+    """Provider for ``billing.release``.
+
+    Payload: ``{"hold_id": str}``
+    Returns: ``{"ok": bool, "balance": int | None, "status": str | None,
+    "reason": str | None}``
+    """
+    from . import services
+
+    try:
+        held = services.release(hold_id=payload["hold_id"])
+    except services.HoldNotFoundError:
+        return {"ok": False, "balance": None, "status": None,
+                "reason": REASON_HOLD_NOT_FOUND}
+    held.wallet.refresh_from_db(fields=["balance"])
+    return {
+        "ok": True,
+        "balance": held.wallet.balance,
+        "status": held.status,
+        "reason": None,
+    }
+
+
 def register() -> None:
     """Register this module's Function providers.
 
@@ -268,3 +414,6 @@ def register() -> None:
     """
     register_function(CHECK_ENTITLEMENT, check_entitlement, schema=CHECK_ENTITLEMENT_SCHEMA)
     register_function(DEBIT, debit, schema=DEBIT_SCHEMA)
+    register_function(HOLD, hold, schema=HOLD_SCHEMA)
+    register_function(CAPTURE, capture, schema=CAPTURE_SCHEMA)
+    register_function(RELEASE, release, schema=RELEASE_SCHEMA)

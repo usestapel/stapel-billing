@@ -5,7 +5,7 @@ class BillingGDPRProvider(GDPRProvider):
     section = 'billing'
 
     def export(self, user_id: int) -> dict:
-        from .models import Subscription, Transaction, Wallet
+        from .models import CreditHold, CreditLot, Subscription, Transaction, Wallet
 
         try:
             wallet = Wallet.objects.get(user_id=user_id)
@@ -17,9 +17,20 @@ class BillingGDPRProvider(GDPRProvider):
             transactions = list(Transaction.objects.filter(wallet=wallet).values(
                 'type', 'amount_cents', 'credits_delta', 'balance_after', 'description', 'created_at',
             ))
+            # Where the balance came from and when it dies is part of the
+            # answer to "what do you hold about me" — a single number is not.
+            lots = list(CreditLot.objects.filter(wallet=wallet).values(
+                'source', 'credits_initial', 'credits_remaining', 'expires_at', 'created_at',
+            ))
+            holds = list(CreditHold.objects.filter(wallet=wallet).values(
+                'credits', 'type', 'description', 'status', 'expires_at',
+                'resolved_at', 'created_at',
+            ))
         except Wallet.DoesNotExist:
             wallet_data   = {}
             transactions  = []
+            lots          = []
+            holds         = []
 
         try:
             sub = Subscription.objects.get(user_id=user_id)
@@ -35,6 +46,8 @@ class BillingGDPRProvider(GDPRProvider):
 
         return {
             'wallet':       wallet_data,
+            'credit_lots':  _serialize_dates(lots),
+            'credit_holds': _serialize_dates(holds),
             'transactions': _serialize_dates(transactions),
             'subscription': sub_data,
         }

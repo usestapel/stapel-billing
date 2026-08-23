@@ -4,7 +4,7 @@ import pytest
 
 from stapel_billing import services
 from stapel_billing.conf import billing_settings
-from stapel_billing.models import Subscription, TransactionType, Wallet
+from stapel_billing.models import LotSource, Subscription, TransactionType, Wallet
 from stapel_billing.providers.base import PaymentProvider
 
 
@@ -85,7 +85,12 @@ class TestTransactionListEndpoint:
         assert api_client.get("/billing/api/wallet/transactions").status_code in (401, 403)
 
     def test_lists_transactions_newest_first(self, authed_client, user):
-        services.credit(user=user, credits=100, type=TransactionType.CREDIT_PURCHASE)
+        services.credit(
+            user=user,
+            credits=100,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
         services.debit(
             user=user,
             credits=40,
@@ -293,7 +298,12 @@ class TestInternalDebitValidation:
             is_staff=True,
         )
         api_client.force_authenticate(user=staff)
-        services.credit(user=user, credits=50, type=TransactionType.CREDIT_PURCHASE)
+        services.credit(
+            user=user,
+            credits=50,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
         resp = api_client.post(
             "/billing/api/internal/debit",
             {"user_id": str(user.id), "credits": 10, "type": "adjustment"},

@@ -72,6 +72,12 @@ DEFAULTS = {
     # payments that no payment system has heard of. Boot check E104 refuses a
     # deployment whose provider has no credentials; W104 reports this hatch.
     "ALLOW_UNCONFIGURED_PAYMENT_PROVIDER": False,
+    # How long a credit reservation (services.hold) stays valid when the
+    # caller does not set its own deadline. The crash-safety bound: a
+    # pipeline that dies between the hold and the answer locks a customer's
+    # credits for at most this long. 0 (or None) means "never sweep", which
+    # is a decision, not a default.
+    "HOLD_DEFAULT_TTL_SECONDS": 3600,
     # Reconcile the provider's checkout object (mode, payment status,
     # currency, amount, owner) against the catalog before granting credits
     # or a plan. Off means the provider's metadata is taken on faith.
@@ -142,6 +148,31 @@ def allow_unconfigured_payment_provider() -> bool:
     return _opened("ALLOW_UNCONFIGURED_PAYMENT_PROVIDER")
 
 
+def hold_default_ttl_seconds() -> int:
+    """``HOLD_DEFAULT_TTL_SECONDS`` as a non-negative int (0 = never sweep).
+
+    Env vars arrive as text, so the value is coerced here rather than at the
+    call site; anything unparseable falls back to the default instead of
+    crashing a charge path, and says so.
+    """
+    value = billing_settings.HOLD_DEFAULT_TTL_SECONDS
+    if value is None:
+        return 0
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        import logging
+
+        logging.getLogger(__name__).error(
+            "STAPEL_BILLING['HOLD_DEFAULT_TTL_SECONDS']=%r is not a number — "
+            "falling back to %s seconds.",
+            value,
+            DEFAULTS["HOLD_DEFAULT_TTL_SECONDS"],
+        )
+        return DEFAULTS["HOLD_DEFAULT_TTL_SECONDS"]
+    return max(seconds, 0)
+
+
 def strict_checkout_reconciliation() -> bool:
     """``STRICT_CHECKOUT_RECONCILIATION`` as a bool (see :data:`_FALSY`)."""
     return _closed_unless_denied("STRICT_CHECKOUT_RECONCILIATION")
@@ -150,6 +181,7 @@ def strict_checkout_reconciliation() -> bool:
 __all__ = [
     "billing_settings",
     "allow_unconfigured_payment_provider",
+    "hold_default_ttl_seconds",
     "allow_unknown_entitlement_keys",
     "allow_unknown_plan_slugs",
     "allow_unvalidated_redirect_urls",

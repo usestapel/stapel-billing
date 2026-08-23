@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.capture",
+  "description": "Payload for the billing.capture comm Function — bill a hold for what the work actually cost and write the ledger row (wrapper over stapel_billing.services.capture). actual_credits defaults to the full reserved amount; less refunds the difference into the lots it came from with their original expiry, more takes the extra from the live lots and can fail with insufficient_credits. No idempotency_key: hold_id IS the key — capturing an already-captured hold returns the charge written the first time. Returns {\"ok\": bool, \"balance\": int|null, \"transaction_id\": str|null, \"reason\": str|null}; reason is one of hold_not_found, hold_not_held, insufficient_credits.",
+  "type": "object",
+  "required": ["hold_id"],
+  "properties": {
+    "hold_id":        { "type": "string", "format": "uuid" },
+    "actual_credits": { "type": "integer", "minimum": 0 },
+    "description":    { "type": "string" },
+    "metadata":       { "type": "object" }
+  },
+  "additionalProperties": false
+}

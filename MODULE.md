@@ -14,17 +14,87 @@ registries). Everything below is verifiable against the code in this repo.
 
 | Area | Contents |
 |---|---|
-| Models (`models.py`) | `Wallet` (one per user, integer credit `balance`), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, JSON `metadata`), `Subscription` (one per user, Stripe-backed; provider customer/subscription ids unique when set), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique), `ProviderGrant` (one grant per provider *object* — `(provider, scope, external_id)` unique) |
-| Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `debit` supports `idempotency_key`, raises `InsufficientCreditsError`), `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, `claim_provider_object()` (one grant per provider object), webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`) |
+| Models (`models.py`) | `Wallet` (one per user; `balance` = maintained **cache** of the live lots), `CreditLot` (`source`, `credits_initial`/`credits_remaining`, `expires_at`, `granting_transaction`), `CreditHold` (a reservation: `credits`, `status`, `idempotency_key` unique per wallet, `expires_at`) + `HoldAllocation` (which lot each held credit came from), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, `lot`, JSON `metadata`), `Subscription` (one per user, Stripe-backed; provider customer/subscription ids unique when set), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique), `ProviderGrant` (one grant per provider *object* — `(provider, scope, external_id)` unique) |
+| Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `credit` requires `source` and takes `expires_at`, `debit` walks lots expiring-first and supports `idempotency_key`, raising `InsufficientCreditsError`), `hold()` / `capture()` / `release()` (reservations), `reconcile_wallet_balances()`, `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, `claim_provider_object()` (one grant per provider object), webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`) |
 | HTTP API (`urls.py`, `views.py`) | `wallet` (GET/PATCH), `wallet/transactions`, `products` (public catalog), `checkout`, `portal`, `subscription`, `subscription/cancel`, `webhooks/stripe`, `internal/debit` (service-to-service, `IsServiceRequest \| IsStaffUser`); every wallet/checkout/portal/subscription view denies anonymous (guest) sessions — `GuestDeniedMixin`, `stapel_anonymous_access = ANONYMOUS_DENIED` — while `products` and `webhooks/stripe` are declared `ANONYMOUS_ALLOWED` |
 | Catalog (`catalog.py`) | `CreditPackage` / `PlanCatalogEntry` frozen dataclasses (`PlanCatalogEntry.entitlements: dict[str, int \| bool]` — feature switches / ceilings per plan); `CREDIT_PACKAGES`, `PLANS`, `CREDIT_PACKAGES_BY_SLUG`, `PLANS_BY_SLUG` are lazy views that re-read `STAPEL_BILLING` on every access |
-| Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` (see "Events & functions" below); denial-reason constants `REASON_*` |
+| Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` / `billing.hold` / `billing.capture` / `billing.release` (see "Events & functions" below); denial-reason constants `REASON_*` |
+| Workers (`tasks.py`) | `expire_credit_lots` (hourly), `expire_holds` (hourly), `reconcile_wallets` (daily); `get_billing_beat_schedule()` — the host composes the beat schedule explicitly. Plain callables first, Celery tasks second (cron works too). System check `stapel_billing.W105` when a beat-driven host schedules none of them |
 | Providers (`providers/`) | `PaymentProvider` ABC (`providers/base.py`), `StripeProvider` default implementation (`providers/stripe.py`, lazy credentials; refuses with `ProviderNotConfiguredError` when unconfigured, dev placeholder URLs only under `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER`) |
 | GDPR (`gdpr.py`, `apps.py`) | `BillingGDPRProvider` (section `"billing"`), registered with `stapel_core.gdpr.gdpr_registry` in `AppConfig.ready()`; export + delete (Stripe IDs cleared, wallet anonymised, ledger retained) |
 | Public API (`__init__.py`, PEP 562 lazy) | `__all__ = ["CHECK_ENTITLEMENT", "DEBIT", "InsufficientCreditsError", "PaymentProvider", "billing_settings", "check_entitlement", "credit", "debit", "get_provider"]` |
 
 Money is always in **minor units** (`price_cents`, `amount_cents` — integers); wallet
 credits are **integers, never fractional**.
+
+## Wallet = lots (since 0.8.0)
+
+A wallet is **a set of `CreditLot` rows**, not one integer. Every credit enters as a
+lot that remembers where it came from (`source`) and when it dies (`expires_at`,
+`NULL` = never):
+
+| Grant | `source` | `expires_at` |
+|---|---|---|
+| Package purchase (`handle_checkout_completed`) | `purchase` | `NULL` — bought with a card, does not evaporate |
+| Plan bundle at checkout / on renewal (`handle_invoice_paid`) | `subscription` | the period end that paid for it |
+| Anything a host grants | `grant` / `adjustment` | the host's call |
+| Credits handed back by `release()` / a short `capture()` | `hold_release` | **the expiry of the lot it came from** |
+
+`credit()` therefore *requires* `source` (the 0.8.0 breaking change): a lot that
+cannot say where it came from cannot be reasoned about later.
+
+**Consumption order** — `debit()` and `hold()` walk
+`order_by(F("expires_at").asc(nulls_last=True), "created_at", "id")`: expiring-soonest
+first, non-expiring last. Credits die used, not unused. `Transaction.lot` names the lot
+when exactly one was touched; the per-lot split is always on
+`Transaction.metadata["lots"]`.
+
+**`Wallet.balance` is a maintained cache**, not the truth — the truth is
+`SUM(credit_lot.credits_remaining)` over live lots. It is recomputed from the lots
+inside the same `select_for_update()` block as every mutation, so read paths (API
+responses, entitlement checks, host pre-flights) keep the cheap scalar they already
+expect. `services.reconcile_wallet_balances()` (daily, via the beat schedule) reports
+— never repairs — any wallet where the two disagree.
+
+**Expiry** — `expire_credit_lots` zeroes lots past `expires_at` and writes one
+`TransactionType.EXPIRATION` row each. Every wallet operation also sweeps the wallet it
+locks, so a ledger row can never record a `balance_after` that includes dead credits.
+An unscheduled expiry is a silent-retention bug, so `stapel_billing.W105` warns when a
+beat-driven host has no entry for it.
+
+### Hold lifecycle
+
+`hold()` → `capture()` / `release()` is the pre-flight form of a charge, for work whose
+real cost is known only afterwards (an LLM call, a transcription of unknown length).
+
+```
+hold(credits=15, idempotency_key=...)      # lots decremented NOW; no ledger row yet
+   ├── capture(actual_credits=12)          # ledger row -12; the extra 3 go back to
+   │                                       # their own lots, original expiry intact
+   ├── capture(actual_credits=18)          # takes 3 more from the live lots;
+   │                                       # may raise InsufficientCreditsError
+   ├── release()                           # all 15 go back, expiry preserved
+   └── expire_holds (expires_at passed)    # same as release, recorded as `expired`
+```
+
+* A hold is a **real withdrawal**, not an overlay. `balance` is always "spendable now",
+  so a caller never computes `balance - sum(open holds)` — an aggregate two concurrent
+  requests would both read before either wrote.
+* **No ledger row is written by `hold()` or `release()`**: nothing was billed. The
+  charge appears at `capture()`. Consequence: `balance_after` is the spendable balance
+  at that moment, *not* the running sum of `credits_delta`.
+* **Refunds are per-lot.** `HoldAllocation` records which lot each held credit came
+  from, and the refund returns it as a `hold_release` lot carrying that lot's
+  `expires_at`. Without it, a released subscription bundle would come back as credits
+  that never expire. A portion whose lot expired while the work ran comes back already
+  dead and is swept into an `EXPIRATION` row — reserved credits run out the clock, they
+  are not renewed.
+* **Idempotency**: `hold()` needs `idempotency_key` (unique per wallet). `capture()` /
+  `release()` do not — `hold_id` already is one. A repeated capture returns the original
+  charge; a repeated release is a no-op.
+* `expires_at` defaults to `STAPEL_BILLING["HOLD_DEFAULT_TTL_SECONDS"]` from now, and
+  `expire_holds` is the crash-safety net: a worker that dies between hold and answer
+  must not lock a customer's credits forever.
 
 ## Extension points (fork-free)
 
@@ -64,6 +134,7 @@ Two rules the boolean keys and `PAYMENT_PROVIDER` add to that order:
 | `ALLOW_UNKNOWN_ENTITLEMENT_KEYS` | `False` | Escape hatch: let an unrecognised entitlement key be allowed again (and silence `E101`). System check `stapel_billing.W101` names it on every boot, the way `W102` names the redirect hatch. |
 | `ALLOW_UNKNOWN_PLAN_SLUGS` | `False` | Escape hatch: let a plan slug that is **not** in `PLANS` (a renamed/retired plan still on a live subscription, or a default plan outside the host's ladder) be treated as "no ceilings" again instead of `reason="unknown_plan"` (and silence `E102`). |
 | `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER` | `False` | Escape hatch for a developer's machine: let an unconfigured provider answer with dev placeholders (fake checkout session, portal link to nowhere, cancel that cancels nothing) instead of refusing. Silences `E104`, reported by `W104`. |
+| `HOLD_DEFAULT_TTL_SECONDS` | `3600` | How long a `services.hold()` reservation stays valid when the caller sets no deadline of its own — the bound on how long a crashed pipeline can keep a customer's credits reserved. `expire_holds` releases holds past it. `0` (or `None`) means "never sweep", which is a decision, not a default. |
 | `STRICT_CHECKOUT_RECONCILIATION` | `True` | Reconcile the provider's checkout session (mode, payment status, currency, amount vs. the catalog price, buyer) before granting credits or a plan. Off means the session's metadata is taken on faith. |
 
 ### Payment providers (dotted-path swap)
@@ -99,8 +170,8 @@ import — see `StripeProvider.api_key` / `.webhook_secret` properties for the p
 
 None. This module defines no swappable models of its own; it binds to the host user
 model via `settings.AUTH_USER_MODEL` (standard Django swap — that is the only model
-seam). `Wallet`, `Transaction`, `Subscription`, `StripeWebhookEvent`, `ProviderGrant` have
-fixed `db_table` names (`billing_*`). Extend user-visible billing data in an app-layer model
+seam). `Wallet`, `CreditLot`, `CreditHold`, `HoldAllocation`, `Transaction`, `Subscription`,
+`StripeWebhookEvent`, `ProviderGrant` have fixed `db_table` names (`billing_*`). Extend user-visible billing data in an app-layer model
 with a FK/OneToOne to the user or to these tables — do not fork to add fields.
 
 ### Serializer seams (`views.py`)
@@ -154,6 +225,9 @@ contracts in `schemas/functions/`):
 |---|---|---|
 | `billing.check_entitlement` | `user_id`, `key` (+ `quantity`=1 — the prospective total; billing tracks no usage) | `{allowed, limit, reason}` — checks `key` against the effective plan's `PlanCatalogEntry.entitlements`. `bool` value = feature switch, `int` = ceiling (`quantity <= value`), key absent from *this plan* but part of the deployment's vocabulary = **allowed, no limit** (how the upper plans say "unlimited"), key outside the vocabulary = **denied** with `reason="unknown_key"` (see `ENTITLEMENT_KEYS`). No/cancelled/incomplete subscription resolves to the default plan (`free`). |
 | `billing.debit` | `user_id`, `credits`, `idempotency_key` (required — comm is at-least-once; + optional `type`/`description`/`metadata`) | `{ok, balance, reason, transaction_id?}` — wrapper over `services.debit` with its idempotency contract; failures are structural (`ok=false` + `insufficient_credits` / `user_not_found`), never exceptions. |
+| `billing.hold` | `user_id`, `credits`, `idempotency_key` (required, unique per wallet; + optional `type`/`description`/`metadata`/`expires_in_seconds`) | `{ok, hold_id, balance, reason}` — reserves the credits out of the lots; `reason` is `insufficient_credits` / `user_not_found`. |
+| `billing.capture` | `hold_id` (+ optional `actual_credits`/`description`/`metadata`) | `{ok, balance, transaction_id, reason}` — bills the hold and writes the ledger row; `reason` is `hold_not_found` / `hold_not_held` / `insufficient_credits` (the last leaves the hold *held*, so the caller may capture at the reserved amount instead). |
+| `billing.release` | `hold_id` | `{ok, balance, status, reason}` — gives the credits back with their original expiry; a hold that is already resolved is a no-op. `reason` is `hold_not_found`. |
 
 Callers that must degrade when billing is absent catch `FunctionNotRegistered` /
 `FunctionRouteNotConfigured` and treat it as "allowed" (see stapel-workspaces).
@@ -191,8 +265,10 @@ forbidden for everyone including superuser at the admin layer; view requires HIG
 clearance) and its `ModelAdmin` subclasses `stapel_core.django.admin.base.
 StapelModelAdmin`. It is an idempotency/delivery log for inbound Stripe webhooks
 (`stripe_event_id`, `payload`, `processed_at`) that staff never edit — mutation only
-happens through the webhook claim protocol above. `Wallet`, `Transaction`, and
-`Subscription` are business tables and stay undecorated (implicit `@access.standard`).
+happens through the webhook claim protocol above. `Wallet`, `CreditLot`, `CreditHold`, `HoldAllocation`, `Transaction`, and
+`Subscription` are business tables and stay undecorated (implicit `@access.standard`);
+their `ModelAdmin`s make the lot/hold fields read-only, because moving credits outside
+`services.py` skips the lock and the ledger row that explains the move.
 No model in this repo stores a secret/token/credential value — `STRIPE_SECRET_KEY` /
 `STRIPE_WEBHOOK_SECRET` are process settings read lazily via `billing_settings`, never
 persisted to a DB field — so `@access.secret` does not apply anywhere here.
@@ -285,9 +361,20 @@ then commit `docs/{schema,flows,errors}.json`.
 - **Don't import other `stapel-*` modules.** Cross-module effects go through comm
   events (`payment.completed`, `subscription.changed`), core signals, or HTTP. This
   module imports only `stapel_core`.
-- **Don't touch `Wallet.balance` or create `Transaction` rows directly.** Use
-  `credit()` / `debit()` — they take the wallet row lock and keep the
-  `balance_after` ledger invariant. Direct writes corrupt the ledger.
+- **Don't touch `Wallet.balance`, `CreditLot.credits_remaining` or create `Transaction`
+  rows directly.** Use `credit()` / `debit()` / `hold()` / `capture()` / `release()` —
+  they take the wallet row lock, walk the lots in the one sanctioned order and
+  recompute the balance cache from what they actually moved. A hand-set balance is a
+  wallet with nothing in it to spend, and `reconcile_wallets` will name it.
+- **Don't compute `available = balance - sum(open holds)`.** `balance` is already
+  spendable-now: `hold()` really removes the credits. Recomputing an overlay is a
+  read-then-write two concurrent requests both win.
+- **Don't debit an estimate and refund the difference later.** Use `hold()` +
+  `capture(actual_credits=...)`; a refund that never runs because the worker died is a
+  charge for work nobody did.
+- **Don't credit released credits back with `credit()`.** `release()` restores them
+  per-lot with the original expiry; a plain `credit()` would turn an expiring
+  subscription bundle into credits the deployment can never reclaim.
 - **Money stays in minor units.** `price_cents` / `amount_cents` are integers; wallet
   credits are integers, never fractional. No floats, no Decimal-in-major-units.
 - **Don't read provider credentials at import time.** Read through `billing_settings`

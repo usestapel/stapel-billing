@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.hold",
+  "description": "Payload for the billing.hold comm Function — reserve credits before doing work whose real cost is not known yet (wrapper over stapel_billing.services.hold). The credits leave the wallet's lots immediately, expiring-soonest first; no ledger row is written until the hold is captured. idempotency_key is REQUIRED and unique per wallet: comm delivery is at-least-once and a retry with the same key returns the original hold instead of reserving twice. expires_in_seconds overrides STAPEL_BILLING['HOLD_DEFAULT_TTL_SECONDS'] — the deadline after which expire_holds gives the credits back, so a pipeline that dies mid-charge cannot lock them forever. Returns {\"ok\": bool, \"hold_id\": str|null, \"balance\": int|null, \"reason\": str|null}; reason is one of user_not_found, insufficient_credits.",
+  "type": "object",
+  "required": ["user_id", "credits", "idempotency_key"],
+  "properties": {
+    "user_id":            { "type": "string", "format": "uuid" },
+    "credits":            { "type": "integer", "minimum": 1 },
+    "idempotency_key":    { "type": "string", "minLength": 1 },
+    "metadata":           { "type": "object" },
+    "description":        { "type": "string" },
+    "expires_in_seconds": { "type": "integer", "minimum": 1 },
+    "type": {
+      "type": "string",
+      "enum": [
+        "credit_purchase",
+        "transcription_charge",
+        "ai_charge",
+        "subscription_bonus",
+        "refund",
+        "adjustment"
+      ],
+      "default": "adjustment"
+    }
+  },
+  "additionalProperties": false
+}

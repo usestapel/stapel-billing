@@ -7,7 +7,7 @@ import pytest
 
 from stapel_billing import catalog, services
 from stapel_billing.conf import billing_settings
-from stapel_billing.models import Subscription, Transaction, TransactionType
+from stapel_billing.models import LotSource, Subscription, Transaction, TransactionType
 from stapel_billing.providers.base import PaymentProvider
 from stapel_billing.providers.stripe import StripeProvider
 
@@ -163,7 +163,12 @@ class TestIdempotentDebit:
 
     def test_duplicate_debit_short_circuits(self, api_client, user, settings):
         settings.SERVICE_API_KEY = "test-service-key"
-        services.credit(user=user, credits=500, type=TransactionType.CREDIT_PURCHASE)
+        services.credit(
+            user=user,
+            credits=500,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
 
         first = self._debit(api_client, user, "job-42")
         assert first.status_code == 200, first.content
@@ -182,13 +187,23 @@ class TestIdempotentDebit:
 
     def test_different_keys_debit_separately(self, api_client, user, settings):
         settings.SERVICE_API_KEY = "test-service-key"
-        services.credit(user=user, credits=500, type=TransactionType.CREDIT_PURCHASE)
+        services.credit(
+            user=user,
+            credits=500,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
         assert self._debit(api_client, user, "a").json()["balance_after"] == 400
         assert self._debit(api_client, user, "b").json()["balance_after"] == 300
 
     def test_service_debit_without_key_still_works(self, api_client, user, settings):
         settings.SERVICE_API_KEY = "test-service-key"
-        services.credit(user=user, credits=500, type=TransactionType.CREDIT_PURCHASE)
+        services.credit(
+            user=user,
+            credits=500,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
         resp = api_client.post(
             "/billing/api/internal/debit",
             {"user_id": str(user.id), "credits": 100, "type": "ai_charge"},
