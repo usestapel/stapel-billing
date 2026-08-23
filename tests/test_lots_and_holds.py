@@ -526,3 +526,107 @@ class TestMigrationBackfill:
         Wallet.objects.create(user=user, balance=0)
         _backfill()(apps, None)
         assert not CreditLot.objects.exists()
+
+
+@pytest.mark.django_db
+class TestWalletEndpointShowsTheLots:
+    """`GET /wallet` publishes what the balance is made of (0.8.1).
+
+    Before this the endpoint answered with one integer, so a client that
+    wanted to say "3000 credits expire on the 28th" had to either invent the
+    rule or not say it. The lots go out in the debit walker's own order, so
+    the client never re-derives which credits go first.
+    """
+
+    def test_lots_go_out_in_the_order_the_debit_walker_spends_them(
+        self, authed_client, user
+    ):
+        later = timezone.now() + timedelta(days=30)
+        _fund(user, 100)  # non-expiring cash, granted FIRST
+        _fund(user, 30, source=LotSource.SUBSCRIPTION, expires_at=later)
+
+        data = authed_client.get("/billing/api/wallet").json()
+
+        assert data["balance"] == 130
+        assert [(lot["source"], lot["credits_remaining"]) for lot in data["lots"]] == [
+            ("subscription", 30),
+            ("purchase", 100),
+        ]
+        assert data["lots"][0]["credits_initial"] == 30
+        assert data["lots"][0]["expires_at"] is not None
+        assert data["lots"][1]["expires_at"] is None
+
+    def test_expiring_soon_names_the_first_dated_lot(self, authed_client, user):
+        soon = timezone.now() + timedelta(days=2)
+        later = timezone.now() + timedelta(days=30)
+        _fund(user, 100)
+        _fund(user, 30, source=LotSource.SUBSCRIPTION, expires_at=later)
+        _fund(user, 10, source=LotSource.SUBSCRIPTION, expires_at=soon)
+
+        data = authed_client.get("/billing/api/wallet").json()
+
+        assert data["expiring_soon"]["credits"] == 10
+        assert data["expiring_soon"]["expires_at"] == data["lots"][0]["expires_at"]
+
+    def test_nothing_expires_when_every_lot_is_cash(self, authed_client, user):
+        _fund(user, 100)
+        data = authed_client.get("/billing/api/wallet").json()
+        assert data["expiring_soon"] is None
+        assert len(data["lots"]) == 1
+
+    def test_a_spent_lot_is_gone_and_an_expired_one_never_shows(
+        self, authed_client, user
+    ):
+        # credit() refuses a deadline already gone, so the lot is granted
+        # alive and then walked past its expiry.
+        _fund(
+            user,
+            10,
+            source=LotSource.SUBSCRIPTION,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        _fund(user, 100)
+        CreditLot.objects.filter(source=LotSource.SUBSCRIPTION).update(
+            expires_at=timezone.now() - timedelta(minutes=1)
+        )
+
+        data = authed_client.get("/billing/api/wallet").json()
+
+        # Dead credits are not spendable, so they are not in the snapshot —
+        # with or without the hourly sweep having run.
+        assert [lot["source"] for lot in data["lots"]] == ["purchase"]
+        assert data["expiring_soon"] is None
+
+    def test_a_held_hold_is_published_and_a_released_one_is_not(
+        self, authed_client, user
+    ):
+        _fund(user, 100)
+        held = services.hold(
+            user=user,
+            credits=15,
+            type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+            description="transcribe",
+        )
+
+        data = authed_client.get("/billing/api/wallet").json()
+        assert data["balance"] == 85
+        assert len(data["holds"]) == 1
+        published = data["holds"][0]
+        assert published["id"] == str(held.id)
+        assert published["credits"] == 15
+        assert published["status"] == HoldStatus.HELD
+        assert published["type"] == TransactionType.AI_CHARGE
+        assert published["description"] == "transcribe"
+
+        services.release(hold_id=held.id)
+
+        after = authed_client.get("/billing/api/wallet").json()
+        assert after["holds"] == []
+        assert after["balance"] == 100
+
+    def test_an_empty_wallet_answers_with_empty_lists(self, authed_client, user):
+        data = authed_client.get("/billing/api/wallet").json()
+        assert data["lots"] == []
+        assert data["holds"] == []
+        assert data["expiring_soon"] is None

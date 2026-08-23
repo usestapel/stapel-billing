@@ -5,6 +5,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-23
+
+### Added — the wallet endpoint publishes what the balance is made of
+
+0.8.0 broke the balance into `CreditLot` rows and reservations, but only
+behind the Python API: `GET /billing/api/wallet` still answered with one
+integer, so a client that wanted to say "3000 credits expire on the 28th"
+could not — the facts existed and the contract hid them.
+
+`WalletResponse` now carries them:
+
+* `lots` — the live lots, **in the debit walker's own order**
+  (`expires_at ASC NULLS LAST`, then `created_at`, then `id`). `lots[0]` is
+  literally the next credit to be spent. The order is shipped rather than
+  left to the client, because a product that sorts the list itself has
+  forked the consumption rule and will eventually show a deadline the charge
+  does not honour.
+* `holds` — reservations still holding credits (`status=held`). Captured,
+  released and expired holds are history: their credits are either billed or
+  back in the lots, so they say nothing about what the wallet can spend.
+* `expiring_soon` — `{credits, expires_at}` of the earliest-expiring live
+  lot, or `null`. The one fact a banner needs, so the common case is not a
+  client-side scan of `lots`.
+
+Additive: every field already on `WalletResponse` is unchanged, and the three
+new ones are optional in the schema. `services.live_lots()` and
+`services.open_holds()` are the read-only twins of the consumption walk —
+same ordering, no row lock, so reporting the lots never queues against
+spending them.
+
 ## [0.8.0] — 2026-08-23
 
 ### Added — a wallet is a set of credit lots, with expiry

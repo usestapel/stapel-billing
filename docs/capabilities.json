@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -181,6 +181,24 @@
       "intent": "Reserve credits BEFORE work whose real cost is only known afterwards. The credits leave the lots immediately, so two concurrent requests cannot both spend the last one; nothing is billed until capture. Use it instead of debiting an estimate — a refund that never runs because the worker died is a charge for work nobody did.",
       "instead_of": [
         "stapel_billing.services.debit"
+      ]
+    },
+    {
+      "name": "live_lots",
+      "kind": "factory",
+      "path": "stapel_billing.services.live_lots",
+      "intent": "The wallet's live credit lots in the exact order debit() will spend them — expiring soonest, non-expiring last — read without taking the row lock. Report expiry through it (a \"3000 credits expire on the 28th\" banner, an admin screen) instead of querying CreditLot: a product that orders the lots itself has forked the consumption rule, and will show a deadline the charge does not honour.",
+      "instead_of": [
+        "stapel_billing.models.CreditLot.objects.filter"
+      ]
+    },
+    {
+      "name": "open_holds",
+      "kind": "factory",
+      "path": "stapel_billing.services.open_holds",
+      "intent": "The reservations still holding a wallet's credits (status=held) — the credits already gone from the spendable balance and not yet billed. Ask it what is outstanding rather than filtering CreditHold by hand: captured, released and expired holds are history, and counting them is how a product invents a second, wrong 'available balance'.",
+      "instead_of": [
+        "stapel_billing.models.CreditHold.objects.filter"
       ]
     },
     {

@@ -60,8 +60,11 @@ from .catalog import CREDIT_PACKAGES, PLANS
 from .dto import (
     CatalogResponse,
     CheckoutResponse,
+    CreditHoldResponse,
+    CreditLotResponse,
     CreditOperationResponse,
     CustomerPortalResponse,
+    ExpiringCreditsResponse,
     PackageResponse,
     PlanResponse,
     SubscriptionResponse,
@@ -76,7 +79,13 @@ from .errors import (
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
 )
-from .models import StripeWebhookEvent, Subscription, Wallet
+from .models import (
+    CreditHold,
+    CreditLot,
+    StripeWebhookEvent,
+    Subscription,
+    Wallet,
+)
 from .providers.base import ProviderNotConfiguredError
 from .serializers import (
     CatalogResponseSerializer,
@@ -155,7 +164,40 @@ class GuestDeniedMixin:
 # ─── Mappers ─────────────────────────────────────────────────
 
 
+def _lot_to_dto(lot: CreditLot) -> CreditLotResponse:
+    return CreditLotResponse(
+        id=lot.id,
+        credits_remaining=lot.credits_remaining,
+        credits_initial=lot.credits_initial,
+        source=lot.source,
+        expires_at=lot.expires_at.isoformat() if lot.expires_at else None,
+        created_at=lot.created_at.isoformat(),
+    )
+
+
+def _hold_to_dto(h: CreditHold) -> CreditHoldResponse:
+    return CreditHoldResponse(
+        id=h.id,
+        credits=h.credits,
+        type=h.type,
+        description=h.description,
+        status=h.status,
+        expires_at=h.expires_at.isoformat() if h.expires_at else None,
+        created_at=h.created_at.isoformat(),
+    )
+
+
 def _wallet_to_dto(w: Wallet) -> WalletResponse:
+    """The wallet snapshot: the balance *and* what it is made of.
+
+    The lots go out in the debit walker's own order (expiring soonest,
+    non-expiring last), so ``lots[0]`` is literally the next credit to be
+    spent and ``expiring_soon`` is the first dated lot in that same list —
+    the server answers "what expires next", instead of shipping an unordered
+    set and letting every client re-derive the rule.
+    """
+    lots = list(services.live_lots(w))
+    earliest = next((lot for lot in lots if lot.expires_at is not None), None)
     return WalletResponse(
         user_id=w.user_id,
         balance=w.balance,
@@ -165,6 +207,16 @@ def _wallet_to_dto(w: Wallet) -> WalletResponse:
         auto_recharge_package=w.auto_recharge_package,
         low_balance_alert=w.low_balance_alert,
         updated_at=w.updated_at.isoformat(),
+        lots=[_lot_to_dto(lot) for lot in lots],
+        holds=[_hold_to_dto(h) for h in services.open_holds(w)],
+        expiring_soon=(
+            ExpiringCreditsResponse(
+                credits=earliest.credits_remaining,
+                expires_at=earliest.expires_at.isoformat(),
+            )
+            if earliest is not None
+            else None
+        ),
     )
 
 

@@ -109,6 +109,20 @@
       "kind": "gate_function",
       "intent": "Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module."
     },
+    "live_lots": {
+      "kind": "factory",
+      "intent": "The wallet's live credit lots in the exact order debit() will spend them — expiring soonest, non-expiring last — read without taking the row lock. Report expiry through it (a \"3000 credits expire on the 28th\" banner, an admin screen) instead of querying CreditLot: a product that orders the lots itself has forked the consumption rule, and will show a deadline the charge does not honour.",
+      "instead_of": [
+        "stapel_billing.models.CreditLot.objects.filter"
+      ]
+    },
+    "open_holds": {
+      "kind": "factory",
+      "intent": "The reservations still holding a wallet's credits (status=held) — the credits already gone from the spendable balance and not yet billed. Ask it what is outstanding rather than filtering CreditHold by hand: captured, released and expired holds are history, and counting them is how a product invents a second, wrong 'available balance'.",
+      "instead_of": [
+        "stapel_billing.models.CreditHold.objects.filter"
+      ]
+    },
     "get_provider": {
       "kind": "factory",
       "intent": "Resolve the configured PaymentProvider (STAPEL_BILLING[\"PAYMENT_PROVIDER\"], Stripe by default) — the entry point for a billing flow this module does not already serve. Reach for it instead of importing the Stripe SDK or instantiating StripeProvider: a deployment that swapped the processor, and a test that configured none, both have to arrive through here.",

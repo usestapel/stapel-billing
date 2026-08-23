@@ -96,7 +96,7 @@ def _live_lot_filter(now) -> Q:
     )
 
 
-def _live_lots(wallet, *, now):
+def _live_lots_ordered(wallet, *, now):
     """The consumption order: expiring soonest first, non-expiring last.
 
     ``nulls_last`` is the whole point — a lot with no expiry is the one that
@@ -105,11 +105,38 @@ def _live_lots(wallet, *, now):
     older subscription bundle goes before a newer one with the same deadline).
     """
     return (
-        CreditLot.objects.select_for_update()
-        .filter(wallet=wallet)
+        CreditLot.objects.filter(wallet=wallet)
         .filter(_live_lot_filter(now))
         .order_by(F("expires_at").asc(nulls_last=True), "created_at", "id")
     )
+
+
+def _live_lots(wallet, *, now):
+    """The consumption walk, locked: what :func:`debit` actually spends."""
+    return _live_lots_ordered(wallet, now=now).select_for_update()
+
+
+def live_lots(wallet, *, now=None):
+    """The wallet's live lots, in the order a debit would spend them.
+
+    The read-only twin of the consumption walk — same ordering, no row lock,
+    because a caller that is only *reporting* the lots must not queue behind
+    (or in front of) the caller that is spending them. Sharing the ordering
+    with the walker is the point: "which credits go first" is the server's
+    answer, and a client handed the list in any other order would have to
+    guess it back.
+    """
+    return _live_lots_ordered(wallet, now=now or timezone.now())
+
+
+def open_holds(wallet):
+    """Reservations still holding credits (``status=held``), newest first.
+
+    Captured, released and expired holds are history: their credits are
+    either billed or back in the lots, so they say nothing about what this
+    wallet can spend right now.
+    """
+    return CreditHold.objects.filter(wallet=wallet, status=HoldStatus.HELD)
 
 
 def _live_balance(wallet, *, now) -> int:

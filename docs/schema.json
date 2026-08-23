@@ -498,6 +498,92 @@
           "user_id"
         ]
       },
+      "CreditHoldResponse": {
+        "type": "object",
+        "description": "A reservation: credits already out of the spendable balance.\n\nA hold is a real withdrawal, not an overlay — its credits are gone from\n``balance`` from the moment it is created, and come back only if it is\nreleased or expires.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Hold UUID; also the capture/release handle"
+          },
+          "credits": {
+            "type": "integer",
+            "description": "Credits reserved by this hold"
+          },
+          "type": {
+            "type": "string",
+            "description": "Transaction type the capture will be billed under"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "Caller-supplied label carried onto the capture, or null"
+          },
+          "status": {
+            "type": "string",
+            "description": "held, captured, released or expired"
+          },
+          "expires_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO 8601 deadline expire_holds sweeps; null = never swept"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601"
+          }
+        },
+        "required": [
+          "created_at",
+          "credits",
+          "description",
+          "expires_at",
+          "id",
+          "status",
+          "type"
+        ]
+      },
+      "CreditLotResponse": {
+        "type": "object",
+        "description": "One live batch of credits — where it came from, when it dies.\n\nA lot only ever shrinks, so ``credits_remaining`` against\n``credits_initial`` is how much of this batch is already gone.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Lot UUID; the same id travels in transaction metadata"
+          },
+          "credits_remaining": {
+            "type": "integer",
+            "description": "Credits still unspent and unreserved"
+          },
+          "credits_initial": {
+            "type": "integer",
+            "description": "Credits the lot was created with"
+          },
+          "source": {
+            "type": "string",
+            "description": "purchase, subscription, grant, adjustment or hold_release"
+          },
+          "expires_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO 8601 deadline; null = these credits never expire"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601"
+          }
+        },
+        "required": [
+          "created_at",
+          "credits_initial",
+          "credits_remaining",
+          "expires_at",
+          "id",
+          "source"
+        ]
+      },
       "CreditOperationResponse": {
         "type": "object",
         "description": "CreditOperationResponse(transaction_id: uuid.UUID, balance_after: int)",
@@ -525,6 +611,24 @@
         },
         "required": [
           "portal_url"
+        ]
+      },
+      "ExpiringCreditsResponse": {
+        "type": "object",
+        "description": "The wallet's nearest credit deadline.",
+        "properties": {
+          "credits": {
+            "type": "integer",
+            "description": "Credits in the earliest-expiring live lot"
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "ISO 8601 — when they die"
+          }
+        },
+        "required": [
+          "credits",
+          "expires_at"
         ]
       },
       "PackageResponse": {
@@ -754,7 +858,7 @@
           },
           "balance": {
             "type": "integer",
-            "description": "Integer credits"
+            "description": "Spendable integer credits — live reservations already out"
           },
           "currency": {
             "type": "string",
@@ -780,6 +884,29 @@
           "updated_at": {
             "type": "string",
             "description": "ISO 8601"
+          },
+          "lots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditLotResponse"
+            },
+            "description": "Live lots in spend order — expiring soonest, non-expiring last"
+          },
+          "holds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditHoldResponse"
+            },
+            "description": "Open reservations (status=held); settled holds are history"
+          },
+          "expiring_soon": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExpiringCreditsResponse"
+              }
+            ],
+            "nullable": true,
+            "description": "The earliest-expiring live lot; null if none expires"
           }
         },
         "required": [

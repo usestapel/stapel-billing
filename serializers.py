@@ -9,8 +9,11 @@ from .dto import (
     CheckoutRequest,
     CheckoutResponse,
     CreditDebitRequest,
+    CreditHoldResponse,
+    CreditLotResponse,
     CreditOperationResponse,
     CustomerPortalResponse,
+    ExpiringCreditsResponse,
     PackageResponse,
     PlanResponse,
     SubscriptionResponse,
@@ -25,6 +28,21 @@ from .errors import (
     ERR_400_INVALID_PLAN,
 )
 from .models import TransactionType
+
+
+class CreditLotResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = CreditLotResponse
+
+
+class CreditHoldResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = CreditHoldResponse
+
+
+class ExpiringCreditsResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = ExpiringCreditsResponse
 
 
 class WalletResponseSerializer(StapelDataclassSerializer):
