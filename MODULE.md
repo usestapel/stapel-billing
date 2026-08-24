@@ -14,15 +14,15 @@ registries). Everything below is verifiable against the code in this repo.
 
 | Area | Contents |
 |---|---|
-| Models (`models.py`) | `Wallet` (one per user; `balance` = maintained **cache** of the live lots), `CreditLot` (`source`, `credits_initial`/`credits_remaining`, `expires_at`, `granting_transaction`), `CreditHold` (a reservation: `credits`, `status`, `idempotency_key` unique per wallet, `expires_at`) + `HoldAllocation` (which lot each held credit came from), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, `lot`, JSON `metadata`), `Subscription` (one per user, Stripe-backed; provider customer/subscription ids unique when set), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique), `ProviderGrant` (one grant per provider *object* — `(provider, scope, external_id)` unique) |
-| Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `credit` requires `source` and takes `expires_at`, `debit` walks lots expiring-first and supports `idempotency_key`, raising `InsufficientCreditsError`), `hold()` / `capture()` / `release()` (reservations), `reconcile_wallet_balances()`, `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, `claim_provider_object()` (one grant per provider object), webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`) |
+| Models (`models.py`) | `Wallet` (one per user; `balance` = maintained **cache** of the live lots), `CreditLot` (`source`, `credits_initial`/`credits_remaining`, `expires_at`, `granting_transaction`), `CreditHold` (a reservation: `credits`, `status`, `idempotency_key` unique per wallet, `expires_at`) + `HoldAllocation` (which lot each held credit came from), `Transaction` (immutable ledger: `credits_delta`, `balance_after`, `amount_cents`, `lot`, JSON `metadata`), `Subscription` (one per user, Stripe-backed; provider customer/subscription ids unique when set), `StripeWebhookEvent` (webhook idempotency log, `stripe_event_id` unique), `ProviderGrant` (one grant per provider *object* — `(provider, scope, external_id)` unique; since 0.11.0 also scopes `clawback` per refund event and `plan_bundle` per (wallet, plan, period) under `provider="local"`), `CreditDebt` (credits owed — `credits_outstanding`, `reason` `partial_debit`/`clawback`, `settled_at`; collected oldest-first by the next `credit()`), `PendingSubscriptionPeriod` (a billing period that arrived before the subscription it belongs to) |
+| Services (`services.py`) | `credit()` / `debit()` (row-locked wallet ops writing ledger rows; `credit` requires `source` and takes `expires_at`, `debit` walks lots expiring-first and supports `idempotency_key`, raising `InsufficientCreditsError`), `hold()` / `capture()` / `release()` (reservations), `can_afford()` (read-only pre-flight — no lock, no rows), `grant_plan_bundle()` + `plan_bundle_entitlements()` (plan bundles no payment provider sells), `open_debts()` / `outstanding_debt()`, `claw_back_grant()`, `reconcile_wallet_balances()`, `get_provider()`, `create_checkout_session()`, `create_customer_portal()`, `cancel_provider_subscription()`, `verify_stripe_signature()`, `claim_provider_object()` (one grant per provider object), webhook handlers (`handle_checkout_completed`, `handle_invoice_paid`, `handle_subscription_updated`, `handle_subscription_deleted`, `handle_charge_refunded`, `handle_dispute_created`, `handle_credit_note_created`) |
 | HTTP API (`urls.py`, `views.py`) | `wallet` (GET/PATCH), `wallet/transactions`, `products` (public catalog), `checkout`, `portal`, `subscription`, `subscription/cancel`, `webhooks/stripe`, `internal/debit` (service-to-service, `IsServiceRequest \| IsStaffUser`); every wallet/checkout/portal/subscription view denies anonymous (guest) sessions — `GuestDeniedMixin`, `stapel_anonymous_access = ANONYMOUS_DENIED` — while `products` and `webhooks/stripe` are declared `ANONYMOUS_ALLOWED` |
 | Catalog (`catalog.py`) | `CreditPackage` / `PlanCatalogEntry` frozen dataclasses (`PlanCatalogEntry.entitlements: dict[str, int \| bool]` — feature switches / ceilings per plan); `CREDIT_PACKAGES`, `PLANS`, `CREDIT_PACKAGES_BY_SLUG`, `PLANS_BY_SLUG` are lazy views that re-read `STAPEL_BILLING` on every access |
-| Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` / `billing.hold` / `billing.capture` / `billing.release` (see "Events & functions" below); denial-reason constants `REASON_*` |
-| Workers (`tasks.py`) | `expire_credit_lots` (hourly), `expire_holds` (hourly), `reconcile_wallets` (daily); `get_billing_beat_schedule()` — the host composes the beat schedule explicitly. Plain callables first, Celery tasks second (cron works too). System check `stapel_billing.W105` when a beat-driven host schedules none of them |
+| Entitlements (`entitlements.py`) | comm Functions `billing.check_entitlement` / `billing.debit` / `billing.can_afford` / `billing.hold` / `billing.capture` / `billing.release` (see "Events & functions" below); denial-reason constants `REASON_*` |
+| Workers (`tasks.py`) | `expire_credit_lots` (hourly), `expire_holds` (hourly), `reconcile_wallets` (daily), `grant_plan_bundles` (daily, since 0.11.0); `get_billing_beat_schedule()` — the host composes the beat schedule explicitly. Plain callables first, Celery tasks second (cron works too). System checks `stapel_billing.W105` (expiry/holds/reconcile unscheduled) and `W106` (the default plan bundles credits with no grant worker) |
 | Providers (`providers/`) | `PaymentProvider` ABC (`providers/base.py`), `StripeProvider` default implementation (`providers/stripe.py`, lazy credentials; refuses with `ProviderNotConfiguredError` when unconfigured, dev placeholder URLs only under `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER`) |
 | GDPR (`gdpr.py`, `apps.py`) | `BillingGDPRProvider` (section `"billing"`), registered with `stapel_core.gdpr.gdpr_registry` in `AppConfig.ready()`; export + delete (Stripe IDs cleared, wallet anonymised, ledger retained) |
-| Public API (`__init__.py`, PEP 562 lazy) | `__all__ = ["CHECK_ENTITLEMENT", "DEBIT", "InsufficientCreditsError", "PaymentProvider", "billing_settings", "check_entitlement", "credit", "debit", "get_provider"]` |
+| Public API (`__init__.py`, PEP 562 lazy) | the service primitives (`credit`, `debit`, `can_afford`, `hold`, `capture`, `release`, `grant_plan_bundle`, `claw_back_grant`, `get_provider`), their result types (`DebitResult`, `Affordability`, `ClawbackResult`), the exceptions (`InsufficientCreditsError`, `HoldNotFoundError`, `HoldStateError`, `HoldKeyResolvedError`), the comm Function names (`CHECK_ENTITLEMENT`, `DEBIT`, `CAN_AFFORD`, `HOLD`, `CAPTURE`, `RELEASE`), `check_entitlement`, `billing_settings`, `PaymentProvider`, `get_stripe_handler` / `stripe_handlers` |
 
 Money is always in **minor units** (`price_cents`, `amount_cents` — integers); wallet
 credits are **integers, never fractional**.
@@ -92,9 +92,126 @@ hold(credits=15, idempotency_key=...)      # lots decremented NOW; no ledger row
 * **Idempotency**: `hold()` needs `idempotency_key` (unique per wallet). `capture()` /
   `release()` do not — `hold_id` already is one. A repeated capture returns the original
   charge; a repeated release is a no-op.
+* **A resolved key is a refusal, not a hold (0.11.0).** The short-circuit only covers a
+  hold that is still `held`. Until 0.11.0 it matched **any** status, so re-using a key
+  whose hold had been released, captured or expired answered "reserved" with nothing
+  reserved — and the capture that followed failed with `hold_not_held`, at the point
+  where the work was already done and had to be given away. `hold()` now raises
+  `HoldKeyResolvedError` (carrying the hold and its status), and `billing.hold` answers
+  `ok=False, reason="hold_already_resolved"` with that `status`. A genuine retry of a
+  finished operation has nothing left to do; a NEW operation needs a new key.
 * `expires_at` defaults to `STAPEL_BILLING["HOLD_DEFAULT_TTL_SECONDS"]` from now, and
   `expire_holds` is the crash-safety net: a worker that dies between hold and answer
   must not lock a customer's credits forever.
+
+## Credits that no payment provider grants (since 0.11.0)
+
+Until 0.11.0 credits entered a wallet only through a Stripe webhook. A plan
+whose bundle is not sold through Stripe — the free tier above all, but also an
+invoiced enterprise agreement or a plan a host assigns from its own admin —
+therefore granted **nothing at all**: its `monthly_credits_included` was a
+number in a catalogue that no code path read, and those users started and
+stayed at zero.
+
+```python
+from stapel_billing import services
+
+services.grant_plan_bundle(user=user, plan_slug="free")          # current month
+services.grant_plan_bundle(user=user, plan_slug="pro",
+                           period_key="2026-09")                 # a named period
+```
+
+* **Idempotent per `(wallet, plan, period_key)`**, through the same unique
+  `ProviderGrant` row the Stripe grants use (`provider="local"`, scope
+  `plan_bundle`). Two sweeps in a month, an operator re-running the job and a
+  host that also grants at signup all produce one bundle.
+* **The lot expires** — default `expires_at` is the end of the `YYYY-MM` period
+  the key names. A bundle that belongs to a period must die with it, or a free
+  tier quietly becomes a growing balance nobody sold. A host on another cadence
+  passes its own `period_key` *and* `expires_at`; an unparseable key with no
+  explicit deadline is refused rather than granted forever.
+* **Who is entitled is a seam**, `STAPEL_BILLING["PLAN_BUNDLE_ENTITLEMENTS"]`,
+  because plan membership is host knowledge. The default reads the local
+  `Subscription` row and **skips anything carrying a `stripe_subscription_id`** —
+  those are granted by the provider's invoices, and granting again here would
+  double them. It walks wallets, not users: a user with no wallet row has never
+  touched billing, and scanning the whole user table is not a library's call.
+* `tasks.grant_plan_bundles` drives it (daily in `get_billing_beat_schedule()`).
+  Daily rather than monthly because the grant is idempotent per period, so the
+  cost is one claim query per entitled wallet and the gain is that a wallet
+  created on the 14th gets that period's bundle on the 14th.
+* System check **`stapel_billing.W106`** fires when the default plan bundles
+  credits and a beat-driven host has no entry for the worker.
+
+## Partial charges and tracked debt (since 0.11.0)
+
+`debit()` is all-or-nothing by default and stays that way. But a consumer that
+has **already done the work** had only two options when the wallet came up
+short: refuse a completed job, or serve it and let the shortfall vanish. Free
+service that nothing records is indistinguishable from a bug.
+
+```python
+result = services.debit(user=user, credits=25, type=..., allow_partial=True)
+result.debited      # 10 — what the wallet actually covered
+result.shortfall    # 15 — what it did not
+result.debt_id      # the CreditDebt row that remembers it
+```
+
+* Default behaviour is untouched: without `allow_partial` the call still raises
+  `InsufficientCreditsError` and returns a `Transaction`. With it, the return
+  value is a `DebitResult`.
+* A partial debit **always writes a ledger row**, even at `credits_delta = 0`:
+  the charge happened, and a debt with no transaction behind it is a number
+  nobody can trace to the work that caused it.
+* **A debt is not a negative balance.** The balance counts credits that exist,
+  and credits already spent do not come back into existence because a charge
+  failed. Driving the balance below zero would make every lot, every expiry and
+  every `balance_after` in the ledger untrue; the shortfall gets its own row
+  instead.
+* **Collection is automatic**: every `credit()` (and therefore every grant,
+  renewal, purchase and admin grant) settles the wallet's outstanding debts
+  oldest-first, inside the same row lock, before the credits become spendable.
+  Each collection is a real debit — it walks the lots expiring-soonest first and
+  writes its own ledger row. Pass `settle_debts=False` to opt one grant out.
+* The wallet endpoint publishes `debts[]` and `debt_outstanding`: an owner told
+  only the balance cannot find out why their next top-up partly disappeared.
+
+## Refund, dispute and credit-note clawback (since 0.11.0)
+
+Three built-in webhook handlers — `charge.refunded`, `charge.dispute.created`,
+`credit_note.created` — take back the credits a refunded payment bought. Before
+0.11.0 nothing handled money going the other way: the card was refunded and the
+credits stayed spendable.
+
+The grant is found by the provider ids it recorded on itself (invoice, payment
+intent, charge); an event naming none of them is logged and left alone rather
+than guessed at. `claw_back_grant()` then splits the amount three ways:
+
+| Bucket | Meaning |
+|---|---|
+| `reclaimed` | still sitting in the lots **that grant created** — taken straight back |
+| `forgiven` | already expired unspent — the deployment took those credits back once already, and charging for them twice would be a second clawback of the same credits |
+| `outstanding` | already spent — becomes a `CreditDebt` the next top-up collects |
+
+Only the refunded grant's own lots are touched. Taking the shortfall out of
+whatever else the wallet holds would pay a refunded subscription back with the
+credits the customer bought for cash. Idempotent per **event** (scope
+`clawback`) rather than per charge: a partial refund followed later by a second
+partial refund of the same charge is two real clawbacks.
+
+## Read-only affordability (since 0.11.0)
+
+`services.can_afford(user=..., credits=N)` / `billing.can_afford` answers "would
+this charge go through" **without** taking a lock, creating a hold, a lot or an
+allocation. It exists because consumers were pre-flighting with a real `hold()`
+they immediately released — and every such probe returned the credits as a
+*new* `hold_release` lot, so an affordability check per request grew the
+customer's lot table without bound and slowed every later spend.
+
+It answers from the lots, not from `Wallet.balance`: lots past their deadline
+that the sweep has not reached yet still count in the cache, and a debit would
+refuse them. Nothing is locked, so two callers can both be told yes — the
+caller that needs the answer to *stay* true takes a hold.
 
 ## Extension points (fork-free)
 
@@ -135,7 +252,9 @@ Two rules the boolean keys and `PAYMENT_PROVIDER` add to that order:
 | `ALLOW_UNKNOWN_PLAN_SLUGS` | `False` | Escape hatch: let a plan slug that is **not** in `PLANS` (a renamed/retired plan still on a live subscription, or a default plan outside the host's ladder) be treated as "no ceilings" again instead of `reason="unknown_plan"` (and silence `E102`). |
 | `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER` | `False` | Escape hatch for a developer's machine: let an unconfigured provider answer with dev placeholders (fake checkout session, portal link to nowhere, cancel that cancels nothing) instead of refusing. Silences `E104`, reported by `W104`. |
 | `HOLD_DEFAULT_TTL_SECONDS` | `3600` | How long a `services.hold()` reservation stays valid when the caller sets no deadline of its own — the bound on how long a crashed pipeline can keep a customer's credits reserved. `expire_holds` releases holds past it. `0` (or `None`) means "never sweep", which is a decision, not a default. |
-| `STRIPE_WEBHOOK_HANDLERS` | `{}` | Stripe event type → handler, merged **over** `webhooks.BUILTIN_STRIPE_HANDLERS` (last-wins per type — same canon as `STAPEL_NOTIFICATIONS["TYPES"]`). A value is a callable taking the event dict, a dotted path to one, or `None` to switch a built-in off. This is how a host adds `charge.dispute.created` or replaces what `checkout.session.completed` does — without forking the view. An entry that does not import is boot check `stapel_billing.E106`. |
+| `STRIPE_WEBHOOK_HANDLERS` | `{}` | Stripe event type → handler, merged **over** `webhooks.BUILTIN_STRIPE_HANDLERS` (last-wins per type — same canon as `STAPEL_NOTIFICATIONS["TYPES"]`). A value is a callable taking the event dict, a dotted path to one, or `None` to switch a built-in off. This is how a host adds an event type the library does not carry, or replaces what `checkout.session.completed` does — without forking the view. An entry that does not import is boot check `stapel_billing.E106`. |
+| `PLAN_BUNDLE_ENTITLEMENTS` | `"stapel_billing.services.default_plan_bundle_entitlements"` | Who receives a plan bundle no payment provider grants. In `import_strings` and `no_env` (it decides who is handed free credits). A zero-argument callable yielding `{"user_id": ..., "plan": <slug>}` mappings — optionally `wallet_id` / `credits` / `period_key` / `expires_at` — or `(user_id, plan_slug)` pairs. Plan membership is HOST knowledge; the default reads the local `Subscription` row and skips Stripe-billed ones. |
+| `LEGACY_IDEMPOTENCY_JSON_LOOKUP` | `True` | Keep answering the pre-0.11.0 spelling of the retry key (`metadata->>'idempotency_key'`) after the indexed `Transaction.idempotency_key` column misses. Expand-only: rows written before 0.11.0 carry the key only in `metadata`, so turning this off before backfilling the column makes every old key a fresh charge. |
 | `STRICT_CHECKOUT_RECONCILIATION` | `True` | Reconcile the provider's checkout session (mode, payment status, currency, amount vs. the catalog price, buyer) before granting credits or a plan. Off means the session's metadata is taken on faith. |
 
 ### Payment providers (dotted-path swap)
@@ -229,8 +348,9 @@ contracts in `schemas/functions/`):
 | Function | Payload | Returns |
 |---|---|---|
 | `billing.check_entitlement` | `user_id`, `key` (+ `quantity`=1 — the prospective total; billing tracks no usage) | `{allowed, limit, reason}` — checks `key` against the effective plan's `PlanCatalogEntry.entitlements`. `bool` value = feature switch, `int` = ceiling (`quantity <= value`), key absent from *this plan* but part of the deployment's vocabulary = **allowed, no limit** (how the upper plans say "unlimited"), key outside the vocabulary = **denied** with `reason="unknown_key"` (see `ENTITLEMENT_KEYS`). No/cancelled/incomplete subscription resolves to the default plan (`free`). |
-| `billing.debit` | `user_id`, `credits`, `idempotency_key` (required — comm is at-least-once; + optional `type`/`description`/`metadata`) | `{ok, balance, reason, transaction_id?}` — wrapper over `services.debit` with its idempotency contract; failures are structural (`ok=false` + `insufficient_credits` / `user_not_found`), never exceptions. |
-| `billing.hold` | `user_id`, `credits`, `idempotency_key` (required, unique per wallet; + optional `type`/`description`/`metadata`/`expires_in_seconds`) | `{ok, hold_id, balance, reason}` — reserves the credits out of the lots; `reason` is `insufficient_credits` / `user_not_found`. |
+| `billing.debit` | `user_id`, `credits`, `idempotency_key` (required — comm is at-least-once; + optional `type`/`description`/`metadata`/`allow_partial`) | `{ok, balance, reason, transaction_id?}` — wrapper over `services.debit` with its idempotency contract; failures are structural (`ok=false` + `insufficient_credits` / `user_not_found`), never exceptions. With `allow_partial=true` the wallet is charged what it has and the answer also carries `requested` / `debited` / `shortfall` / `debt_id`. |
+| `billing.can_afford` | `user_id`, `credits` | `{ok, affordable, balance, shortfall, reason}` — a pure read: no lock, no hold, no lot. `ok=false` means the question was unanswerable (`user_not_found`); `ok=true, affordable=false` is the real answer "no" (`insufficient_credits`). Nothing is reserved, so two callers can both be told yes. |
+| `billing.hold` | `user_id`, `credits`, `idempotency_key` (required, unique per wallet; + optional `type`/`description`/`metadata`/`expires_in_seconds`) | `{ok, hold_id, balance, reason}` — reserves the credits out of the lots; `reason` is `insufficient_credits` / `user_not_found` / `hold_already_resolved` (the key names a hold that is captured, released or expired — the answer carries that hold's `hold_id` and `status`, and **nothing is reserved**). |
 | `billing.capture` | `hold_id` (+ optional `actual_credits`/`description`/`metadata`) | `{ok, balance, transaction_id, reason}` — bills the hold and writes the ledger row; `reason` is `hold_not_found` / `hold_not_held` / `insufficient_credits` (the last leaves the hold *held*, so the caller may capture at the reserved amount instead). |
 | `billing.release` | `hold_id` | `{ok, balance, status, reason}` — gives the credits back with their original expiry; a hold that is already resolved is a no-op. `reason` is `hold_not_found`. |
 
@@ -312,7 +432,18 @@ event describes is claimed separately by `services.claim_provider_object()` unde
 completed session) in several distinct events that can be delivered concurrently.
 Checkout grants are additionally reconciled against the catalog entry the session's
 metadata names — mode, payment status, currency, amount (net of coupon) and buyer —
-before any credit is written (`STRICT_CHECKOUT_RECONCILIATION`).
+before any credit is written (`STRICT_CHECKOUT_RECONCILIATION`). The refund handlers
+claim per **event** (scope `clawback`), because two partial refunds of one charge are
+two real clawbacks.
+
+**Ordering is not promised** (0.11.0). `customer.subscription.*` can land before the
+checkout that creates the local row, and that payload is the only one carrying the
+billing period. The handler used to return silently, so the checkout granted an
+*undated* subscription lot and the event that would have dated it was already marked
+processed — the bundle a cancelled subscriber kept never expired. Now the period is
+parked in `PendingSubscriptionPeriod` under the provider's subscription id, and the
+checkout claims it before it reads `current_period_end`. `handle_subscription_deleted`
+also stamps the period, since a cancellation is the last event that carries one.
 
 ### Admin categories (`stapel_core.access`, admin-suite AS-5)
 
@@ -445,6 +576,31 @@ then commit `docs/{schema,flows,errors}.json`.
   must not believe billing stopped while the provider keeps charging.
 - **Don't debit service-to-service without an `idempotency_key`.** Retries under
   at-least-once semantics will double-charge the wallet.
+- **Don't pre-flight with a real `hold()` you then release.** Use `can_afford()` /
+  `billing.can_afford`. Every released hold returns the credits as a *new*
+  `hold_release` lot, so probing on each request fragments the wallet's lots without
+  bound and slows every later spend.
+- **Don't re-use a `hold()` idempotency key for a new operation.** A key belongs to one
+  reservation for the life of the wallet; once its hold is captured, released or
+  expired, `hold()` refuses (`HoldKeyResolvedError` / `hold_already_resolved`) instead
+  of handing back a hold that reserves nothing.
+- **Don't hand out work for free when the wallet is short.** Either refuse (the default
+  `debit()`), or serve it with `allow_partial=True` so the shortfall becomes a
+  `CreditDebt` the next top-up collects. Unrecorded free service is indistinguishable
+  from a bug, and nothing will ever collect it.
+- **Don't write off a `CreditDebt` by hand, and don't drive a balance negative.** Debts
+  are collected by `credit()` under the wallet's row lock; a hand-edited row moves
+  credits with no ledger entry behind it.
+- **Don't claw a refund back out of the wallet's other lots.** `claw_back_grant()`
+  touches only the lots the refunded grant created; the rest becomes a debt. Anything
+  else pays a refunded subscription back with credits the customer bought for cash.
+- **Don't grant a plan bundle with a bare `credit()` in a loop.** Use
+  `grant_plan_bundle()`: it claims `(wallet, plan, period)` under a unique constraint
+  and dates the lot to the period. A loop that grants on its own will double-grant the
+  first time it is re-run.
+- **Don't grant a plan bundle for a Stripe-billed subscription.** The invoices already
+  do it; the default entitlement resolver skips any `Subscription` carrying a
+  `stripe_subscription_id`, and a custom resolver must too.
 
 ## App-layer override vs upstream contribution — rule of thumb
 

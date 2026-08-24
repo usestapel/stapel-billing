@@ -47,6 +47,7 @@ class TestGDPRExport:
             "wallet": {},
             "credit_lots": [],
             "credit_holds": [],
+            "credit_debts": [],
             "transactions": [],
             "subscription": {},
         }

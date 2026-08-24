@@ -250,6 +250,104 @@ class TestHold:
         assert first.id == second.id
         assert Wallet.objects.get(user=user).balance == 85
 
+    def test_a_released_key_refuses_instead_of_answering_ok_with_nothing_held(
+        self, user
+    ):
+        """audit major #4: the phantom hold.
+
+        The short-circuit used to match a hold in ANY status, so re-using a
+        key whose hold had been released answered "reserved" with zero
+        credits actually reserved — and the capture that followed failed
+        with hold_not_held, at the point where the work was already done.
+        """
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.release(hold_id=first.id)
+
+        with pytest.raises(services.HoldKeyResolvedError) as exc:
+            services.hold(
+                user=user, credits=15, type=TransactionType.AI_CHARGE,
+                idempotency_key="mic:1",
+            )
+        # The refusal is structured: which hold, and what became of it.
+        assert exc.value.hold_id == first.id
+        assert exc.value.status == HoldStatus.RELEASED
+        # Nothing was reserved, and nothing was taken.
+        assert Wallet.objects.get(user=user).balance == 100
+        assert CreditHold.objects.filter(wallet__user=user).count() == 1
+
+    def test_a_captured_key_refuses_too(self, user):
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.capture(hold_id=first.id)
+
+        with pytest.raises(services.HoldKeyResolvedError) as exc:
+            services.hold(
+                user=user, credits=15, type=TransactionType.AI_CHARGE,
+                idempotency_key="mic:1",
+            )
+        assert exc.value.status == HoldStatus.CAPTURED
+        # The capture stands; the refused re-hold reserved nothing on top.
+        assert Wallet.objects.get(user=user).balance == 85
+
+    def test_an_expired_key_refuses_too(self, user):
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.release(hold_id=first.id, expired=True)
+
+        with pytest.raises(services.HoldKeyResolvedError) as exc:
+            services.hold(
+                user=user, credits=15, type=TransactionType.AI_CHARGE,
+                idempotency_key="mic:1",
+            )
+        assert exc.value.status == HoldStatus.EXPIRED
+
+    def test_a_fresh_key_reserves_normally_after_a_release(self, user):
+        """The refusal is about the KEY, not about the wallet."""
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.release(hold_id=first.id)
+
+        second = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:2",
+        )
+        assert second.status == HoldStatus.HELD
+        assert Wallet.objects.get(user=user).balance == 85
+        # And it captures — the sequence that used to end in hold_not_held.
+        txn = services.capture(hold_id=second.id)
+        assert txn.credits_delta == -15
+
+    def test_the_comm_function_propagates_the_refusal(self, user):
+        from stapel_billing import entitlements
+
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.release(hold_id=first.id)
+
+        answer = entitlements.hold(
+            {"user_id": str(user.id), "credits": 15, "idempotency_key": "mic:1"}
+        )
+        assert answer["ok"] is False
+        assert answer["reason"] == entitlements.REASON_HOLD_ALREADY_RESOLVED
+        assert answer["status"] == HoldStatus.RELEASED
+        assert answer["hold_id"] == str(first.id)
+
     def test_hold_refuses_when_the_lots_are_short(self, user):
         _fund(user, 10)
         with pytest.raises(services.InsufficientCreditsError):
@@ -518,10 +616,11 @@ class TestCommFunctions:
 
 
 class TestBeatSchedule:
-    def test_factory_names_all_three_workers(self):
+    def test_factory_names_every_worker(self):
         from stapel_billing.tasks import (
             EXPIRE_HOLDS_TASK_NAME,
             EXPIRE_LOTS_TASK_NAME,
+            GRANT_PLAN_BUNDLES_TASK_NAME,
             RECONCILE_TASK_NAME,
             get_billing_beat_schedule,
         )
@@ -531,6 +630,7 @@ class TestBeatSchedule:
             EXPIRE_LOTS_TASK_NAME,
             EXPIRE_HOLDS_TASK_NAME,
             RECONCILE_TASK_NAME,
+            GRANT_PLAN_BUNDLES_TASK_NAME,
         }
 
     def test_w105_fires_when_the_schedule_omits_the_expiry(self, settings):
@@ -555,6 +655,42 @@ class TestBeatSchedule:
 
         settings.CELERY_BEAT_SCHEDULE = {}
         assert check_expiry_is_scheduled(None) == []
+
+    def test_w106_fires_when_the_free_tier_bundles_ungranted_credits(self, settings):
+        from stapel_billing.checks import check_plan_bundle_grants_are_scheduled
+        from stapel_billing.conf import billing_settings
+
+        settings.CELERY_BEAT_SCHEDULE = {"something-else": {"task": "myapp.noop"}}
+        settings.STAPEL_BILLING = {
+            **getattr(settings, "STAPEL_BILLING", {}),
+            "PLANS": [
+                {
+                    "slug": "free",
+                    "name": "Free",
+                    "price_cents": 0,
+                    "monthly_credits_included": 25,
+                    "storage_limit_bytes": 0,
+                    "description": "Advertises credits nothing hands over.",
+                }
+            ],
+        }
+        billing_settings.reload()
+        try:
+            warnings = check_plan_bundle_grants_are_scheduled(None)
+            assert [w.id for w in warnings] == ["stapel_billing.W106"]
+            from stapel_billing.tasks import get_billing_beat_schedule
+
+            settings.CELERY_BEAT_SCHEDULE = {**get_billing_beat_schedule()}
+            assert check_plan_bundle_grants_are_scheduled(None) == []
+        finally:
+            billing_settings.reload()
+
+    def test_w106_is_silent_when_the_default_plan_bundles_nothing(self, settings):
+        """The stock free plan includes 0 credits — nothing to grant."""
+        from stapel_billing.checks import check_plan_bundle_grants_are_scheduled
+
+        settings.CELERY_BEAT_SCHEDULE = {"something-else": {"task": "myapp.noop"}}
+        assert check_plan_bundle_grants_are_scheduled(None) == []
 
 
 @pytest.mark.django_db
@@ -691,3 +827,31 @@ class TestWalletEndpointShowsTheLots:
         assert data["lots"] == []
         assert data["holds"] == []
         assert data["expiring_soon"] is None
+        assert data["debts"] == []
+        assert data["debt_outstanding"] == 0
+
+    def test_the_wallet_publishes_what_it_owes(self, authed_client, user):
+        """An owner told only the balance cannot find out why their next
+        top-up partly disappears."""
+        services.debit(
+            user=user,
+            credits=30,
+            type=TransactionType.AI_CHARGE,
+            description="transcribe",
+            allow_partial=True,
+        )
+
+        data = authed_client.get("/billing/api/wallet").json()
+        assert data["balance"] == 0
+        assert data["debt_outstanding"] == 30
+        (debt,) = data["debts"]
+        assert debt["credits_outstanding"] == 30
+        assert debt["reason"] == "partial_debit"
+        assert debt["type"] == TransactionType.AI_CHARGE
+        assert debt["description"] == "transcribe"
+
+        _fund(user, 50)
+        after = authed_client.get("/billing/api/wallet").json()
+        assert after["debts"] == []
+        assert after["debt_outstanding"] == 0
+        assert after["balance"] == 20

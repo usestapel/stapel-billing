@@ -19,14 +19,22 @@ def test_all_lists_the_public_api():
         "InsufficientCreditsError",
         "HoldNotFoundError",
         "HoldStateError",
+        "HoldKeyResolvedError",
         "CHECK_ENTITLEMENT",
         "DEBIT",
         "HOLD",
         "CAPTURE",
         "RELEASE",
+        "CAN_AFFORD",
         "check_entitlement",
         "get_stripe_handler",
         "stripe_handlers",
+        "can_afford",
+        "grant_plan_bundle",
+        "claw_back_grant",
+        "Affordability",
+        "ClawbackResult",
+        "DebitResult",
     }
 
 
@@ -86,4 +94,4 @@ def test_package_import_pulls_no_django():
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "19"
+    assert proc.stdout.strip() == "27"

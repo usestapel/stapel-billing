@@ -10,7 +10,7 @@
 [![license](https://img.shields.io/github/license/usestapel/stapel-billing)](https://github.com/usestapel/stapel-billing/blob/main/LICENSE)
 [![llms.txt](https://img.shields.io/badge/llms.txt-blue)](https://github.com/usestapel/stapel-billing/blob/main/docs/llms.txt)
 
-> Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.
+> Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
 Part of the [Stapel framework](https://github.com/usestapel) — composable Django apps that deploy as a monolith or as microservices without changing module code.
 
@@ -24,12 +24,12 @@ pip install stapel-billing
 
 | Fact | Value |
 |---|---|
-| Version | `0.10.0` |
+| Version | `0.11.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 10 |
 | Config axes | 1 |
-| Usage surface | 25 |
-| Extension points | 5 |
+| Usage surface | 37 |
+| Extension points | 6 |
 | Error codes | 55 |
 | Fleet dependencies | [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
 

@@ -25,8 +25,9 @@ credentials are read lazily at call time — nothing is frozen at import.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Optional
+from typing import Iterable, Optional
 
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q, Sum, Value
@@ -38,11 +39,14 @@ from stapel_core.signals import payment_completed, subscription_changed
 
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from .models import (
+    CreditDebt,
     CreditHold,
     CreditLot,
+    DebtReason,
     HoldAllocation,
     HoldStatus,
     LotSource,
+    PendingSubscriptionPeriod,
     ProviderGrant,
     Subscription,
     SubscriptionStatus,
@@ -65,6 +69,95 @@ class HoldNotFoundError(Exception):
 
 class HoldStateError(Exception):
     """The hold exists but has already been captured, released or expired."""
+
+
+class HoldKeyResolvedError(HoldStateError):
+    """This wallet has used that idempotency key, and that hold is over.
+
+    Raised by :func:`hold` instead of handing back a hold that reserves
+    nothing. Until 0.11.0 the idempotency short-circuit matched a hold in
+    ANY status, so re-using a key whose hold had been released, captured or
+    expired answered "ok, reserved" with zero credits actually held — and
+    the capture that followed failed with ``hold_not_held``, at the point
+    where the work was already done and had to be given away.
+
+    Carries the resolved hold so the caller can decide: a genuine retry
+    of an already-finished operation is done (nothing more to do), while a
+    NEW operation that happens to reuse the key needs a new key.
+    """
+
+    def __init__(self, hold: "CreditHold"):
+        self.hold = hold
+        self.hold_id = hold.id
+        self.status = hold.status
+        super().__init__(
+            f"idempotency_key {hold.idempotency_key!r} belongs to hold "
+            f"{hold.id}, which is {hold.status} — nothing is reserved"
+        )
+
+
+@dataclass(frozen=True)
+class DebitResult:
+    """What a partial debit actually managed to charge.
+
+    Returned by :func:`debit` only when the caller passes
+    ``allow_partial=True`` — the all-or-nothing default still returns the
+    ``Transaction``, so nothing that worked on 0.10.0 changes shape.
+
+    ``shortfall`` is the part the wallet could not cover. It is not lost:
+    ``debt`` is the :class:`~stapel_billing.models.CreditDebt` row that
+    records it, and the next credit into this wallet collects it.
+    """
+
+    transaction: Transaction
+    requested: int
+    debited: int
+    shortfall: int
+    balance: int
+    debt: Optional[CreditDebt] = None
+
+    @property
+    def debt_id(self) -> Optional[str]:
+        return str(self.debt.id) if self.debt is not None else None
+
+    @property
+    def complete(self) -> bool:
+        """True when the wallet covered the whole charge."""
+        return self.shortfall == 0
+
+
+@dataclass(frozen=True)
+class Affordability:
+    """The read-only answer to "would a charge of N go through right now".
+
+    A pre-flight, not a reservation: nothing is locked and nothing is
+    written, so two callers can both be told yes and only one of them will
+    be right. That is the honest shape of the question — the caller that
+    needs the answer to *stay* true takes a :func:`hold`.
+    """
+
+    affordable: bool
+    balance: int
+    requested: int
+    shortfall: int
+
+
+@dataclass(frozen=True)
+class ClawbackResult:
+    """What a refund/dispute/credit-note clawback recovered.
+
+    ``reclaimed`` came back out of the lots the grant created; ``forgiven``
+    had already expired unspent (the deployment took those credits back
+    long ago, and charging for them twice would be a second clawback of the
+    same credits); ``debt`` is what was already spent and is now owed.
+    """
+
+    transaction: Transaction
+    requested: int
+    reclaimed: int
+    forgiven: int
+    outstanding: int
+    debt: Optional[CreditDebt] = None
 
 
 def _get_user_model():
@@ -246,6 +339,153 @@ def _single_lot(taken: list[tuple[CreditLot, int]]) -> Optional[CreditLot]:
     return taken[0][0] if len(taken) == 1 else None
 
 
+def _transaction_by_idempotency_key(wallet, key: str) -> Optional[Transaction]:
+    """The row a previous call with this key wrote, or None.
+
+    Reads the indexed ``Transaction.idempotency_key`` column first. Rows
+    written before 0.11.0 carry the key only in ``metadata``, so the JSON
+    lookup stays as a second query — expand-only: the new column is a
+    double-write, not a replacement, and the old spelling keeps answering
+    until a host has backfilled it and turned
+    ``STAPEL_BILLING["LEGACY_IDEMPOTENCY_JSON_LOOKUP"]`` off.
+
+    The JSON half is the one the audit flagged: unindexed, it scans the
+    wallet's whole transaction history on every charge, and that history
+    only ever grows.
+    """
+    existing = Transaction.objects.filter(wallet=wallet, idempotency_key=key).first()
+    if existing is not None:
+        return existing
+    from .conf import legacy_idempotency_json_lookup
+
+    if not legacy_idempotency_json_lookup():
+        return None
+    return Transaction.objects.filter(
+        wallet=wallet, metadata__idempotency_key=key
+    ).first()
+
+
+# ─── Debts (credits owed, not credits held) ─────────────────
+
+
+def open_debts(wallet):
+    """This wallet's uncollected debts, oldest first — the collection order.
+
+    Oldest-first because a debt is not a fine: the deployment took the risk
+    in the order the charges arrived, and settling the newest first would
+    leave the oldest one outstanding forever on a wallet that is topped up
+    in small amounts.
+    """
+    return CreditDebt.objects.filter(
+        wallet=wallet, settled_at__isnull=True, credits_outstanding__gt=0
+    ).order_by("created_at", "id")
+
+
+def outstanding_debt(wallet) -> int:
+    """Total credits this wallet owes. 0 for the overwhelming majority."""
+    return (
+        open_debts(wallet).aggregate(total=Sum("credits_outstanding"))["total"] or 0
+    )
+
+
+def _clean_metadata(metadata: Optional[dict]) -> dict:
+    """A copy without the caller's retry key.
+
+    Copying ``idempotency_key`` onto a row the caller did not ask for would
+    make the duplicate lookup in :func:`credit` / :func:`debit` find a
+    settlement row and short-circuit a real charge.
+    """
+    return {k: v for k, v in (metadata or {}).items() if k != "idempotency_key"}
+
+
+def _open_debt(
+    wallet,
+    *,
+    credits: int,
+    reason: str,
+    type: str,
+    description: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
+) -> CreditDebt:
+    """Record credits consumed without cover. Caller holds the wallet lock."""
+    debt = CreditDebt.objects.create(
+        wallet=wallet,
+        credits_initial=credits,
+        credits_outstanding=credits,
+        reason=reason,
+        type=type,
+        description=description,
+        metadata=_clean_metadata(metadata),
+        idempotency_key=idempotency_key or "",
+    )
+    logger.warning(
+        "wallet %s owes %s credit(s) (%s, debt %s)",
+        wallet.id,
+        credits,
+        reason,
+        debt.id,
+    )
+    return debt
+
+
+def _settle_debts(wallet, *, now) -> int:
+    """Collect what this wallet owes out of its live lots, oldest debt first.
+
+    Runs inside :func:`credit`, under the same row lock: credits that arrive
+    on a wallet with an outstanding debt are not spendable credits yet, and
+    a collection that happened on a later, separate lock could be raced by
+    the spend it exists to prevent.
+
+    Each collection is a real debit — it walks the lots expiring-soonest
+    first like any other spend and writes its own ledger row — so the debt
+    is repaid with the credits that were about to die rather than with the
+    ones the customer paid cash for.
+    """
+    debts = list(open_debts(wallet).select_for_update())
+    if not debts:
+        return 0
+    collected = 0
+    for debt in debts:
+        available = _live_balance(wallet, now=now)
+        if available <= 0:
+            break
+        amount = min(debt.credits_outstanding, available)
+        taken = _consume_lots(wallet, amount, now=now)
+        balance = _sync_balance(wallet, now=now)
+        debt.credits_outstanding -= amount
+        fields = ["credits_outstanding"]
+        if debt.credits_outstanding <= 0:
+            debt.settled_at = now
+            fields.append("settled_at")
+        debt.save(update_fields=fields)
+        Transaction.objects.create(
+            wallet=wallet,
+            lot=_single_lot(taken),
+            type=debt.type,
+            amount_cents=None,
+            credits_delta=-amount,
+            balance_after=balance,
+            description=debt.description or f"Debt settlement ({debt.reason})",
+            metadata={
+                **_clean_metadata(debt.metadata),
+                "debt_id": str(debt.id),
+                "debt_settlement": True,
+                "debt_reason": debt.reason,
+                "lots": _consumption_metadata(taken),
+            },
+        )
+        collected += amount
+        logger.info(
+            "collected %s credit(s) against debt %s on wallet %s (%s left)",
+            amount,
+            debt.id,
+            wallet.id,
+            debt.credits_outstanding,
+        )
+    return collected
+
+
 def _refund_allocations(hold: CreditHold, credits: int) -> int:
     """Hand *credits* back, newest allocation first, preserving lot expiry.
 
@@ -295,6 +535,7 @@ def credit(
     metadata: Optional[dict] = None,
     expires_at=None,
     idempotency_key: Optional[str] = None,
+    settle_debts: bool = True,
 ) -> Transaction:
     """Add credits to a user's wallet as one lot, plus its ledger row.
 
@@ -310,7 +551,15 @@ def credit(
     When *idempotency_key* is given, a duplicate call (same key, same
     wallet) short-circuits and returns the original transaction without
     granting again — safe under at-least-once service-to-service retries.
-    The key is stored on ``Transaction.metadata["idempotency_key"]``.
+    The key is stored on the indexed ``Transaction.idempotency_key`` column
+    and, for compatibility with readers written against 0.10.0, mirrored
+    into ``Transaction.metadata["idempotency_key"]``.
+
+    Credits landing on a wallet that owes credits are collected against the
+    outstanding :class:`~stapel_billing.models.CreditDebt` rows first,
+    oldest debt first, inside the same lock (*settle_debts*, on by
+    default): a top-up on an indebted wallet is repayment before it is
+    spending money.
     """
     if credits <= 0:
         raise ValueError("credits must be positive")
@@ -323,10 +572,7 @@ def credit(
     if idempotency_key:
         # The wallet row is locked above, so concurrent duplicates
         # serialize here and the second caller sees the first's row.
-        existing = Transaction.objects.filter(
-            wallet=wallet,
-            metadata__idempotency_key=idempotency_key,
-        ).first()
+        existing = _transaction_by_idempotency_key(wallet, idempotency_key)
         if existing is not None:
             logger.info(
                 "credit short-circuited by idempotency_key=%s (txn %s)",
@@ -355,9 +601,14 @@ def credit(
         balance_after=balance,
         description=description,
         metadata=metadata,
+        idempotency_key=idempotency_key or "",
     )
     lot.granting_transaction = txn
     lot.save(update_fields=["granting_transaction"])
+    if settle_debts:
+        # After the grant row, so the ledger reads in the order it happened:
+        # the credits arrived, then the debt took its share of them.
+        _settle_debts(wallet, now=now)
     return txn
 
 
@@ -370,7 +621,8 @@ def debit(
     description: Optional[str] = None,
     metadata: Optional[dict] = None,
     idempotency_key: Optional[str] = None,
-) -> Transaction:
+    allow_partial: bool = False,
+):
     """Deduct credits from a user's wallet.  Raises InsufficientCreditsError.
 
     Spends the lots expiring-soonest first, so credits die used rather than
@@ -381,7 +633,26 @@ def debit(
     When *idempotency_key* is given, a duplicate call (same key, same
     wallet) short-circuits and returns the original transaction without
     debiting again — safe under at-least-once service-to-service retries.
-    The key is stored on ``Transaction.metadata["idempotency_key"]``.
+    The key is stored on the indexed ``Transaction.idempotency_key`` column
+    and mirrored into ``Transaction.metadata["idempotency_key"]``.
+
+    *allow_partial* changes the shape of the answer, and only when asked:
+
+    * ``False`` (the default, unchanged): all-or-nothing. The wallet either
+      covers the whole charge or ``InsufficientCreditsError`` is raised and
+      nothing moves. Returns the :class:`Transaction`.
+    * ``True``: charge what the wallet has, record the rest as a
+      :class:`~stapel_billing.models.CreditDebt`, and return a
+      :class:`DebitResult` describing both halves. For the consumer that
+      has already done the work and is choosing between "serve it free and
+      forget" and "serve it and remember what is owed" — the first is what
+      an all-or-nothing debit forced, and free service that nothing records
+      is indistinguishable from a bug.
+
+    A partial debit always writes a ledger row, even when the wallet had
+    nothing at all (``credits_delta = 0``): the charge happened, the ledger
+    is where charges are, and a debt with no transaction pointing at it
+    would be a number nobody can trace back to the work that caused it.
     """
     if credits <= 0:
         raise ValueError("credits must be positive")
@@ -390,33 +661,124 @@ def debit(
     if idempotency_key:
         # The wallet row is locked above, so concurrent duplicates
         # serialize here and the second caller sees the first's row.
-        existing = Transaction.objects.filter(
-            wallet=wallet,
-            metadata__idempotency_key=idempotency_key,
-        ).first()
+        existing = _transaction_by_idempotency_key(wallet, idempotency_key)
         if existing is not None:
             logger.info(
                 "debit short-circuited by idempotency_key=%s (txn %s)",
                 idempotency_key,
                 existing.id,
             )
-            return existing
+            return _replay_debit(wallet, existing, credits) if allow_partial else existing
     _expire_due_lots(wallet, now=now)
-    taken = _consume_lots(wallet, credits, now=now)
+    if allow_partial:
+        chargeable = min(credits, _live_balance(wallet, now=now))
+    else:
+        chargeable = credits
+    taken = _consume_lots(wallet, chargeable, now=now) if chargeable else []
     balance = _sync_balance(wallet, now=now)
     metadata = dict(metadata or {})
     if idempotency_key:
         metadata["idempotency_key"] = idempotency_key
     metadata["lots"] = _consumption_metadata(taken)
-    return Transaction.objects.create(
+    shortfall = credits - chargeable
+    debt = None
+    if shortfall:
+        metadata["partial"] = True
+        metadata["requested_credits"] = credits
+        metadata["shortfall"] = shortfall
+    txn = Transaction.objects.create(
         wallet=wallet,
         lot=_single_lot(taken),
         type=type,
         amount_cents=None,
-        credits_delta=-credits,
+        credits_delta=-chargeable,
         balance_after=balance,
         description=description,
         metadata=metadata,
+        idempotency_key=idempotency_key or "",
+    )
+    if shortfall:
+        debt = _open_debt(
+            wallet,
+            credits=shortfall,
+            reason=DebtReason.PARTIAL_DEBIT,
+            type=type,
+            description=description,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+        )
+        debt.transaction = txn
+        debt.save(update_fields=["transaction"])
+        txn.metadata["debt_id"] = str(debt.id)
+        txn.save(update_fields=["metadata"])
+    if not allow_partial:
+        return txn
+    return DebitResult(
+        transaction=txn,
+        requested=credits,
+        debited=chargeable,
+        shortfall=shortfall,
+        balance=balance,
+        debt=debt,
+    )
+
+
+def _replay_debit(wallet, txn: Transaction, requested: int) -> DebitResult:
+    """Rebuild the :class:`DebitResult` a short-circuited retry already got.
+
+    The retry must be told the same thing the first call was told —
+    including that part of it went on the slate — or a consumer that
+    retries will report a shortfall it never saw and bill it twice.
+    """
+    debited = -txn.credits_delta
+    metadata = txn.metadata or {}
+    original = metadata.get("requested_credits")
+    if not isinstance(original, int) or isinstance(original, bool):
+        original = requested if requested is not None else debited
+    debt = CreditDebt.objects.filter(transaction=txn).first()
+    return DebitResult(
+        transaction=txn,
+        requested=original,
+        debited=debited,
+        shortfall=max(original - debited, 0),
+        balance=txn.balance_after,
+        debt=debt,
+    )
+
+
+def can_afford(*, user=None, wallet=None, credits: int) -> Affordability:
+    """Would a debit or hold of *credits* go through right now? Read-only.
+
+    No lock, no row written, nothing reserved — the pre-flight consumers
+    were previously forced to fake by taking a real :func:`hold` and
+    releasing it. That probe was not free: every probe fragmented the lots
+    (a release returns credits as a NEW ``hold_release`` lot), so a service
+    that checked affordability on each request grew its customers' lot
+    tables without bound and slowed down every subsequent spend.
+
+    Answers from the lots rather than ``Wallet.balance``: the lots are what
+    a debit will actually walk, and lots whose deadline has passed but
+    which the expiry sweep has not reached yet still count in the cached
+    balance. This is the same "available" number :func:`debit` measures its
+    refusal against.
+
+    Concurrency is the caller's to reason about: two callers can both be
+    told yes. That is inherent in a question asked without a lock — the
+    caller that needs the answer to stay true takes a hold.
+    """
+    if credits <= 0:
+        raise ValueError("credits must be positive")
+    if wallet is None:
+        if user is None:
+            raise ValueError("can_afford needs either user or wallet")
+        # Deliberately not get_or_create: a read must not write.
+        wallet = Wallet.objects.filter(user=user).first()
+    balance = _live_balance(wallet, now=timezone.now()) if wallet is not None else 0
+    return Affordability(
+        affordable=balance >= credits,
+        balance=balance,
+        requested=credits,
+        shortfall=max(credits - balance, 0),
     )
 
 
@@ -446,6 +808,13 @@ def hold(
     reserves once. *expires_at* defaults to
     ``STAPEL_BILLING["HOLD_DEFAULT_TTL_SECONDS"]`` from now — a pipeline that
     dies between hold and answer must not lock a customer's credits forever.
+
+    The short-circuit only covers a hold that is still ``held``. A key
+    whose hold has been captured, released or expired raises
+    :class:`HoldKeyResolvedError`: that hold reserves nothing, so returning
+    it would answer "reserved" with an empty reservation and push the
+    failure to the capture — after the work was done. See the exception's
+    docstring for what a caller does with it.
     """
     if credits <= 0:
         raise ValueError("credits must be positive")
@@ -457,6 +826,15 @@ def hold(
         wallet=wallet, idempotency_key=idempotency_key
     ).first()
     if existing is not None:
+        if existing.status != HoldStatus.HELD:
+            logger.warning(
+                "hold idempotency_key=%s belongs to hold %s, which is %s — "
+                "nothing is reserved under that key",
+                idempotency_key,
+                existing.id,
+                existing.status,
+            )
+            raise HoldKeyResolvedError(existing)
         logger.info(
             "hold short-circuited by idempotency_key=%s (hold %s)",
             idempotency_key,
@@ -610,6 +988,258 @@ def release(*, hold_id, expired: bool = False) -> CreditHold:
     _sync_balance(wallet, now=now)
     _settle(held, HoldStatus.EXPIRED if expired else HoldStatus.RELEASED, now=now)
     return held
+
+
+# ─── Plan bundles granted without a payment provider ────────
+#
+# Every credit this module granted before 0.11.0 came out of a Stripe
+# webhook. A plan whose bundle is not sold through Stripe — the free tier,
+# an invoiced enterprise agreement, a plan a host assigns from its own
+# admin — therefore never granted anything at all: its
+# ``monthly_credits_included`` was a number in a catalogue that no code
+# path read. The grant below is that missing path.
+
+
+#: How the default period key is spelled. Monthly, because
+#: ``monthly_credits_included`` is monthly; a host on another cadence
+#: passes its own *period_key* and *expires_at*.
+_PERIOD_KEY_FORMAT = "%Y-%m"
+
+
+def current_period_key(now=None) -> str:
+    """The key identifying the current bundle period (``"2026-08"``).
+
+    The period key is the idempotency unit: one bundle per (wallet, plan,
+    period), whatever the sweep's cadence or how many times it runs.
+    """
+    return (now or timezone.now()).strftime(_PERIOD_KEY_FORMAT)
+
+
+def _month_bounds(period_key: str):
+    """(start, end) of a ``YYYY-MM`` key, or (None, None) if it is not one.
+
+    A host with weekly or contract-shaped periods passes its own key and
+    its own ``expires_at``; guessing an end for a key we cannot parse would
+    be a fabricated deadline on real credits.
+    """
+    from datetime import datetime, timezone as _tz
+
+    try:
+        start = datetime.strptime(period_key, _PERIOD_KEY_FORMAT).replace(tzinfo=_tz.utc)
+    except (TypeError, ValueError):
+        return None, None
+    end = (
+        start.replace(year=start.year + 1, month=1)
+        if start.month == 12
+        else start.replace(month=start.month + 1)
+    )
+    return start, end
+
+
+@transaction.atomic
+def grant_plan_bundle(
+    *,
+    user=None,
+    user_id=None,
+    wallet=None,
+    plan_slug: str,
+    period_key: Optional[str] = None,
+    credits: Optional[int] = None,
+    expires_at=None,
+    type: str = TransactionType.SUBSCRIPTION_BONUS,
+    source: str = LotSource.SUBSCRIPTION,
+    description: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[Transaction]:
+    """Grant one period's plan bundle to a wallet, without a payment provider.
+
+    Idempotent per ``(wallet, plan, period)`` — two sweeps in one month,
+    an operator re-running the job by hand and a host that also grants at
+    signup all produce one bundle. The claim goes through the same unique
+    row as the Stripe grants (``ProviderGrant``, ``provider="local"``), so
+    the deduplication is a database constraint rather than a read-then-write
+    guard two workers can both pass.
+
+    The lot EXPIRES: a bundle that belongs to a period must die with it, or
+    a free tier quietly becomes a growing balance nobody sold. *expires_at*
+    defaults to the end of the ``YYYY-MM`` period the key names.
+
+    Returns the grant's :class:`~stapel_billing.models.Transaction`, or
+    ``None`` when there was nothing to grant — the plan bundles no credits,
+    the period is already granted, or the period is in the past.
+    """
+    entry = PLANS_BY_SLUG.get(plan_slug)
+    if credits is None:
+        if entry is None:
+            logger.error(
+                "grant_plan_bundle: plan %r is not in STAPEL_BILLING['PLANS'] "
+                "and no explicit credits were given — nothing granted",
+                plan_slug,
+            )
+            return None
+        credits = entry.monthly_credits_included
+    if not credits or credits <= 0:
+        return None
+    if user is None:
+        if user_id is None and wallet is not None:
+            user_id = wallet.user_id
+        if user_id is None:
+            raise ValueError("grant_plan_bundle needs user, user_id or wallet")
+        user = _get_user_model().objects.filter(pk=user_id).first()
+        if user is None:
+            logger.warning("grant_plan_bundle: no user %s", user_id)
+            return None
+    period_key = period_key or current_period_key()
+    if expires_at is None:
+        _, expires_at = _month_bounds(period_key)
+        if expires_at is None:
+            logger.error(
+                "grant_plan_bundle: period_key %r is not YYYY-MM and no "
+                "expires_at was given — refusing to grant credits with a "
+                "deadline nobody set",
+                period_key,
+            )
+            return None
+    if expires_at <= timezone.now():
+        logger.info(
+            "grant_plan_bundle: period %s of plan %s is already over — "
+            "nothing granted",
+            period_key,
+            plan_slug,
+        )
+        return None
+    if wallet is None:
+        wallet = get_or_create_wallet(user)
+    # The claim is per WALLET, not per user: the wallet is what the credits
+    # land in, and it is the identity that survives the owner's erasure.
+    if not claim_provider_object(
+        scope=ProviderGrant.SCOPE_PLAN_BUNDLE,
+        external_id=f"{wallet.id}:{plan_slug}:{period_key}",
+        provider="local",
+    ):
+        return None
+    return credit(
+        user=user,
+        credits=credits,
+        type=type,
+        source=source,
+        expires_at=expires_at,
+        description=description or f"Plan bundle: {plan_slug} ({period_key})",
+        metadata={
+            **(metadata or {}),
+            "plan": plan_slug,
+            "period_key": period_key,
+            "grant": "plan_bundle",
+        },
+        idempotency_key=f"plan-bundle:{plan_slug}:{period_key}",
+    )
+
+
+#: Statuses under which a local Subscription row speaks for its plan —
+#: the same grace window the entitlement check uses.
+_GRANTING_SUBSCRIPTION_STATUSES = frozenset(
+    {
+        SubscriptionStatus.ACTIVE,
+        SubscriptionStatus.TRIALING,
+        SubscriptionStatus.PAST_DUE,
+    }
+)
+
+#: How many wallets the default resolver holds in memory at a time.
+_ENTITLEMENT_CHUNK = 500
+
+
+def default_plan_bundle_entitlements() -> Iterable[dict]:
+    """Who gets a non-provider plan bundle — the default the seam falls back to.
+
+    Walks the wallets this deployment already has and yields the ones whose
+    effective plan bundles credits that nothing else grants:
+
+    * a wallet whose owner has a live ``Subscription`` row → that row's
+      plan, UNLESS the row carries a ``stripe_subscription_id``, in which
+      case the provider's invoices grant the bundle and granting again here
+      would double it;
+    * every other wallet → the ``Subscription.plan`` field default (the
+      free tier on a stock deployment), which is exactly the population
+      whose ``monthly_credits_included`` was dead code.
+
+    Wallets only: a user with no wallet row has never touched billing, and
+    walking the whole user table is not something a library gets to decide
+    for a host. A host that wants users pre-granted at signup calls
+    :func:`grant_plan_bundle` there, or replaces this resolver through
+    ``STAPEL_BILLING["PLAN_BUNDLE_ENTITLEMENTS"]`` — plan membership is
+    host knowledge, and this default is a guess that happens to be right
+    for hosts that keep the plan on the local Subscription row.
+    """
+    from itertools import islice
+
+    default_slug = Subscription._meta.get_field("plan").get_default()
+    rows = (
+        Wallet.objects.exclude(user=None)
+        .order_by("created_at", "id")
+        .values_list("id", "user_id")
+        .iterator(chunk_size=_ENTITLEMENT_CHUNK)
+    )
+    while True:
+        chunk = list(islice(rows, _ENTITLEMENT_CHUNK))
+        if not chunk:
+            return
+        subs = {
+            sub.user_id: sub
+            for sub in Subscription.objects.filter(
+                user_id__in=[user_id for _, user_id in chunk]
+            ).only("user_id", "plan", "status", "stripe_subscription_id")
+        }
+        for wallet_id, user_id in chunk:
+            sub = subs.get(user_id)
+            if sub is not None and sub.status in _GRANTING_SUBSCRIPTION_STATUSES:
+                if sub.stripe_subscription_id:
+                    continue  # the provider's invoices already grant this one
+                slug = sub.plan
+            else:
+                slug = default_slug
+            entry = PLANS_BY_SLUG.get(slug)
+            if entry is None or entry.monthly_credits_included <= 0:
+                continue
+            yield {"wallet_id": wallet_id, "user_id": user_id, "plan": slug}
+
+
+def plan_bundle_entitlements() -> Iterable[dict]:
+    """The configured "who is entitled" resolver, normalised.
+
+    The seam is ``STAPEL_BILLING["PLAN_BUNDLE_ENTITLEMENTS"]`` (a dotted
+    path, resolved through import_strings). It yields either mappings —
+    ``{"user_id": ..., "plan": ..., optionally "wallet_id", "credits",
+    "period_key", "expires_at"}`` — or ``(user_id, plan_slug)`` pairs.
+    Anything else is skipped with a log line rather than crashing the
+    sweep: one malformed row must not stop the month's grants.
+    """
+    from .conf import billing_settings
+
+    resolver = billing_settings.PLAN_BUNDLE_ENTITLEMENTS
+    if not callable(resolver):
+        logger.error(
+            "STAPEL_BILLING['PLAN_BUNDLE_ENTITLEMENTS'] is %r, which is not "
+            "callable — no plan bundles will be granted",
+            resolver,
+        )
+        return
+    for row in resolver():
+        if isinstance(row, dict):
+            if row.get("user_id") is None and row.get("wallet_id") is None:
+                logger.error("plan bundle entitlement without a subject: %r", row)
+                continue
+            if not row.get("plan"):
+                logger.error("plan bundle entitlement without a plan: %r", row)
+                continue
+            yield dict(row)
+            continue
+        try:
+            user_id, plan_slug = row
+        except (TypeError, ValueError):
+            logger.error("unusable plan bundle entitlement row: %r", row)
+            continue
+        yield {"user_id": user_id, "plan": plan_slug}
 
 
 def reconcile_wallet_balances() -> list[dict]:
@@ -997,6 +1627,11 @@ def handle_checkout_completed(event: dict) -> None:
             metadata={
                 "package": pkg.slug,
                 "stripe_session_id": obj.get("id"),
+                # The refund path knows the payment intent, never the
+                # session: `charge.refunded` carries the charge and its
+                # intent, so the intent is what makes the grant findable
+                # when the money is taken back (see _grant_transactions).
+                "stripe_payment_intent": obj.get("payment_intent"),
             },
         )
         _announce_payment(
@@ -1036,6 +1671,12 @@ def handle_checkout_completed(event: dict) -> None:
                 "stripe_subscription_id": obj.get("subscription"),
             },
         )
+        # Stripe does not promise event order: the subscription event that
+        # carries the billing period can land BEFORE this checkout. When it
+        # did, its period is parked under the subscription id — claim it
+        # now, before the grant below reads current_period_end, or the
+        # bundle is created undated and nothing ever dates it.
+        _apply_pending_period(sub)
         # Initial monthly credit grant for plans that bundle credits.
         monthly = plan_entry.monthly_credits_included
         if monthly:
@@ -1050,7 +1691,16 @@ def handle_checkout_completed(event: dict) -> None:
                 source=LotSource.SUBSCRIPTION,
                 expires_at=_future_or_none(sub.current_period_end),
                 description=f"Plan bonus: {plan_slug}",
-                metadata={"plan": plan_slug, "stripe_subscription_id": sub.stripe_subscription_id},
+                metadata={
+                    "plan": plan_slug,
+                    "stripe_subscription_id": sub.stripe_subscription_id,
+                    # The first period's invoice, when the session names it:
+                    # `invoice.paid` skips subscription_create, so without
+                    # this the opening bundle is the one grant a refund of
+                    # the first month could not find.
+                    "stripe_invoice_id": obj.get("invoice"),
+                    "stripe_session_id": obj.get("id"),
+                },
             )
             _announce_payment(
                 user=user,
@@ -1134,21 +1784,150 @@ def handle_invoice_paid(event: dict) -> None:
     )
 
 
+#: Provider status → local status. One table, read by every subscription
+#: handler: two copies of it drift the day a status is added.
+_STRIPE_STATUS_MAP = {
+    "active": SubscriptionStatus.ACTIVE,
+    "trialing": SubscriptionStatus.TRIALING,
+    "past_due": SubscriptionStatus.PAST_DUE,
+    "canceled": SubscriptionStatus.CANCELLED,
+    "incomplete": SubscriptionStatus.INCOMPLETE,
+}
+
+
+def _resolve_local_subscription(obj: dict) -> Optional[Subscription]:
+    """Find the local row a Stripe subscription object belongs to.
+
+    Three routes, because the row may not yet carry the subscription id
+    when the first subscription event arrives:
+
+    1. by ``stripe_subscription_id`` — the steady state;
+    2. by ``stripe_customer_id`` — a row created from a checkout that had
+       no subscription id yet, adopted here;
+    3. by ``metadata.user_id`` — what the host set on
+       ``subscription_data.metadata``, when it did.
+
+    ``None`` means the local row genuinely does not exist yet, and the
+    caller parks the period rather than dropping it.
+    """
+    sub_id = obj.get("id")
+    if sub_id:
+        sub = Subscription.objects.filter(stripe_subscription_id=sub_id).first()
+        if sub is not None:
+            return sub
+    customer_id = obj.get("customer")
+    if customer_id:
+        sub = Subscription.objects.filter(
+            stripe_customer_id=customer_id
+        ).first()
+        if sub is not None:
+            if sub_id and not sub.stripe_subscription_id:
+                sub.stripe_subscription_id = str(sub_id)
+                sub.save(update_fields=["stripe_subscription_id", "updated_at"])
+            return sub
+    user_id = (obj.get("metadata") or {}).get("user_id")
+    if user_id:
+        sub = Subscription.objects.filter(user_id=user_id).first()
+        if sub is not None:
+            changed = []
+            if sub_id and not sub.stripe_subscription_id:
+                sub.stripe_subscription_id = str(sub_id)
+                changed.append("stripe_subscription_id")
+            if customer_id and not sub.stripe_customer_id:
+                sub.stripe_customer_id = str(customer_id)
+                changed.append("stripe_customer_id")
+            if changed:
+                sub.save(update_fields=[*changed, "updated_at"])
+            return sub
+    return None
+
+
+def _stash_subscription_period(obj: dict) -> Optional[PendingSubscriptionPeriod]:
+    """Park a period whose local subscription has not been created yet.
+
+    The alternative — what this module did until 0.11.0 — is to return
+    silently. That loses the ONLY payload carrying the billing period,
+    permanently: the event is marked processed, the checkout that lands a
+    moment later grants an undated lot, and the bundle a cancelled
+    subscriber keeps is the one nothing can expire.
+    """
+    sub_id = obj.get("id")
+    if not sub_id:
+        return None
+    defaults = {
+        "stripe_customer_id": str(obj.get("customer") or ""),
+        "status": str(obj.get("status") or ""),
+    }
+    start = _epoch_to_datetime(obj.get("current_period_start"))
+    end = _epoch_to_datetime(obj.get("current_period_end"))
+    if start is not None:
+        defaults["current_period_start"] = start
+    if end is not None:
+        defaults["current_period_end"] = end
+    pending, _ = PendingSubscriptionPeriod.objects.update_or_create(
+        stripe_subscription_id=str(sub_id), defaults=defaults
+    )
+    logger.info(
+        "parked the billing period of subscription %s — no local row yet "
+        "(the checkout has not landed); it is applied when one appears",
+        sub_id,
+    )
+    return pending
+
+
+def _apply_pending_period(sub: Subscription) -> bool:
+    """Apply a parked period to *sub* and drop the stash. True if it changed.
+
+    Also stamps the subscription lots, because the grant this period
+    belongs to may already have been written undated.
+    """
+    if not sub.stripe_subscription_id:
+        return False
+    pending = PendingSubscriptionPeriod.objects.filter(
+        stripe_subscription_id=sub.stripe_subscription_id
+    ).first()
+    if pending is None:
+        return False
+    changed: list[str] = []
+    if (
+        pending.current_period_start is not None
+        and pending.current_period_start != sub.current_period_start
+    ):
+        sub.current_period_start = pending.current_period_start
+        changed.append("current_period_start")
+    if (
+        pending.current_period_end is not None
+        and pending.current_period_end != sub.current_period_end
+    ):
+        sub.current_period_end = pending.current_period_end
+        changed.append("current_period_end")
+    mapped = _STRIPE_STATUS_MAP.get(pending.status)
+    if mapped is not None and mapped != sub.status:
+        sub.status = mapped
+        changed.append("status")
+    if changed:
+        sub.save(update_fields=[*changed, "updated_at"])
+        _stamp_subscription_period(sub)
+    pending.delete()
+    logger.info(
+        "applied the parked billing period of subscription %s to the local "
+        "row (changed: %s)",
+        sub.stripe_subscription_id,
+        ", ".join(changed) or "nothing",
+    )
+    return bool(changed)
+
+
 def handle_subscription_updated(event: dict) -> None:
     obj = event["data"]["object"]
-    sub = Subscription.objects.filter(
-        stripe_subscription_id=obj.get("id")
-    ).first()
+    sub = _resolve_local_subscription(obj)
     if not sub:
+        # Not "nothing to do": this payload carries the billing period, and
+        # it is the only one that does. Park it for the checkout that has
+        # not landed yet (see _stash_subscription_period).
+        _stash_subscription_period(obj)
         return
-    status_map = {
-        "active": SubscriptionStatus.ACTIVE,
-        "trialing": SubscriptionStatus.TRIALING,
-        "past_due": SubscriptionStatus.PAST_DUE,
-        "canceled": SubscriptionStatus.CANCELLED,
-        "incomplete": SubscriptionStatus.INCOMPLETE,
-    }
-    sub.status = status_map.get(obj.get("status"), sub.status)
+    sub.status = _STRIPE_STATUS_MAP.get(obj.get("status"), sub.status)
     fields = ["status", "updated_at", *_apply_stripe_period(sub, obj)]
     sub.save(update_fields=fields)
     _stamp_subscription_period(sub)
@@ -1157,10 +1936,9 @@ def handle_subscription_updated(event: dict) -> None:
 
 def handle_subscription_deleted(event: dict) -> None:
     obj = event["data"]["object"]
-    sub = Subscription.objects.filter(
-        stripe_subscription_id=obj.get("id")
-    ).first()
+    sub = _resolve_local_subscription(obj)
     if not sub:
+        _stash_subscription_period(obj)
         return
     from django.utils import timezone
 
@@ -1168,4 +1946,235 @@ def handle_subscription_deleted(event: dict) -> None:
     sub.cancelled_at = timezone.now()
     fields = ["status", "cancelled_at", "updated_at", *_apply_stripe_period(sub, obj)]
     sub.save(update_fields=fields)
+    # The cancellation is the last event that carries a period, so it is the
+    # last chance to date a bundle granted before one was known. An undated
+    # subscription lot outlives the subscription itself.
+    _stamp_subscription_period(sub)
     _announce_subscription(sub)
+
+
+# ─── Clawback (refund, dispute, credit note) ────────────────
+
+
+def _grant_transactions(obj: dict) -> list[Transaction]:
+    """The grant rows a refund-shaped provider object refers to.
+
+    Resolution is by the provider ids the grant recorded on itself:
+    the invoice (renewals), the payment intent (one-off packages) and the
+    charge. A refund whose object names none of them cannot be matched to a
+    grant, and guessing — "the customer's most recent purchase" — would
+    claw back credits a different payment bought.
+    """
+    lookups = []
+    for key, field in (
+        ("invoice", "stripe_invoice_id"),
+        ("payment_intent", "stripe_payment_intent"),
+        ("charge", "stripe_charge_id"),
+    ):
+        value = obj.get(key)
+        if isinstance(value, str) and value:
+            lookups.append(Q(**{f"metadata__{field}": value}))
+    if not lookups:
+        return []
+    condition = lookups[0]
+    for extra in lookups[1:]:
+        condition |= extra
+    return list(
+        Transaction.objects.filter(condition, credits_delta__gt=0).order_by(
+            "created_at", "id"
+        )
+    )
+
+
+def _clawback_credits(obj: dict, txn: Transaction) -> int:
+    """How many of a grant's credits this object takes back.
+
+    A partial refund takes back a proportional part of the bundle: the
+    money and the credits were one transaction, so half the money back is
+    half the credits back. Anything that does not report both halves of the
+    ratio (a dispute, a credit note) is treated as the whole grant — the
+    conservative direction for the deployment, and the one a support agent
+    can undo with a manual credit.
+    """
+    granted = txn.credits_delta
+    refunded = obj.get("amount_refunded")
+    total = obj.get("amount")
+    if (
+        isinstance(refunded, int)
+        and not isinstance(refunded, bool)
+        and isinstance(total, int)
+        and not isinstance(total, bool)
+        and total > 0
+        and 0 < refunded < total
+    ):
+        return max(1, min(granted, round(granted * refunded / total)))
+    return granted
+
+
+@transaction.atomic
+def claw_back_grant(
+    *,
+    txn: Transaction,
+    credits: Optional[int] = None,
+    description: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> ClawbackResult:
+    """Take back credits a grant handed out, and record what is already gone.
+
+    Only the lots THIS grant created are touched. The alternative — taking
+    the shortfall out of whatever else the wallet holds — would pay a
+    refunded subscription back with the credits the customer bought for
+    cash, which is a second wrong on top of the first.
+
+    Three buckets, and the result names all three: ``reclaimed`` was still
+    in the grant's lots; ``forgiven`` had already expired unspent, so the
+    deployment took those credits back once already; ``outstanding`` was
+    spent, and becomes a :class:`~stapel_billing.models.CreditDebt` the
+    next top-up collects.
+    """
+    now = timezone.now()
+    requested = credits if credits is not None else txn.credits_delta
+    wallet = Wallet.objects.select_for_update().get(pk=txn.wallet_id)
+    _expire_due_lots(wallet, now=now)
+    granted_lots = list(
+        CreditLot.objects.select_for_update()
+        .filter(granting_transaction=txn)
+        .order_by("created_at", "id")
+    )
+    outstanding = requested
+    taken: list[tuple[CreditLot, int]] = []
+    for lot in granted_lots:
+        if outstanding <= 0:
+            break
+        amount = min(outstanding, lot.credits_remaining)
+        if amount <= 0:
+            continue
+        lot.credits_remaining -= amount
+        lot.save(update_fields=["credits_remaining"])
+        taken.append((lot, amount))
+        outstanding -= amount
+    reclaimed = requested - outstanding
+    forgiven = 0
+    if outstanding > 0 and granted_lots:
+        # Credits that died of old age are not credits the customer used.
+        # Billing them again would claw back the same credits twice.
+        expired = (
+            Transaction.objects.filter(
+                lot_id__in=[lot.id for lot in granted_lots],
+                type=TransactionType.EXPIRATION,
+            ).aggregate(total=Sum("credits_delta"))["total"]
+            or 0
+        )
+        forgiven = min(outstanding, -expired)
+        outstanding -= forgiven
+    balance = _sync_balance(wallet, now=now)
+    row_metadata = {
+        **_clean_metadata(metadata),
+        "clawback_of": str(txn.id),
+        "requested": requested,
+        "reclaimed": reclaimed,
+        "forgiven": forgiven,
+        "outstanding": outstanding,
+        "lots": _consumption_metadata(taken),
+    }
+    row = Transaction.objects.create(
+        wallet=wallet,
+        lot=_single_lot(taken),
+        type=TransactionType.REFUND,
+        amount_cents=None,
+        credits_delta=-reclaimed,
+        balance_after=balance,
+        description=description or f"Clawback of {txn.type}",
+        metadata=row_metadata,
+    )
+    debt = None
+    if outstanding > 0:
+        debt = _open_debt(
+            wallet,
+            credits=outstanding,
+            reason=DebtReason.CLAWBACK,
+            type=TransactionType.REFUND,
+            description=description or f"Clawback of {txn.type}",
+            metadata=row_metadata,
+        )
+        debt.transaction = row
+        debt.save(update_fields=["transaction"])
+        row.metadata["debt_id"] = str(debt.id)
+        row.save(update_fields=["metadata"])
+    logger.info(
+        "clawed back %s of %s credit(s) from grant %s (forgiven %s, owed %s)",
+        reclaimed,
+        requested,
+        txn.id,
+        forgiven,
+        outstanding,
+    )
+    return ClawbackResult(
+        transaction=row,
+        requested=requested,
+        reclaimed=reclaimed,
+        forgiven=forgiven,
+        outstanding=outstanding,
+        debt=debt,
+    )
+
+
+def _handle_clawback(event: dict, *, label: str) -> None:
+    """Shared body of the three money-back webhooks.
+
+    Idempotent per EVENT (``ProviderGrant``, scope ``clawback``): a
+    clawback is a spend, and at-least-once delivery must not spend twice.
+    The claim is per event rather than per charge on purpose — a partial
+    refund and a later second partial refund of the same charge are two
+    real clawbacks.
+    """
+    obj = event.get("data", {}).get("object") or {}
+    event_id = event.get("id")
+    grants = _grant_transactions(obj)
+    if not grants:
+        logger.warning(
+            "%s event %s does not name any grant this deployment made "
+            "(invoice=%r payment_intent=%r charge=%r) — nothing to claw back",
+            label,
+            event_id,
+            obj.get("invoice"),
+            obj.get("payment_intent"),
+            obj.get("charge"),
+        )
+        return
+    if not claim_provider_object(
+        scope=ProviderGrant.SCOPE_CLAWBACK, external_id=event_id
+    ):
+        return
+    for txn in grants:
+        claw_back_grant(
+            txn=txn,
+            credits=_clawback_credits(obj, txn),
+            description=f"{label}: {txn.description or txn.type}",
+            metadata={
+                "clawback_reason": label,
+                "stripe_event_id": event_id,
+                "stripe_object_id": obj.get("id"),
+            },
+        )
+
+
+def handle_charge_refunded(event: dict) -> None:
+    """``charge.refunded`` — the money went back, so the credits do too."""
+    _handle_clawback(event, label="refund")
+
+
+def handle_dispute_created(event: dict) -> None:
+    """``charge.dispute.created`` — the customer's bank took the money back.
+
+    Clawed back at the moment the dispute opens rather than when it is
+    resolved: the credits are spendable now, and a dispute that is later
+    won is one manual credit, while a dispute lost after the credits were
+    spent is unrecoverable.
+    """
+    _handle_clawback(event, label="dispute")
+
+
+def handle_credit_note_created(event: dict) -> None:
+    """``credit_note.created`` — an invoice was credited back, in part or whole."""
+    _handle_clawback(event, label="credit_note")

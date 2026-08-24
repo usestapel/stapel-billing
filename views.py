@@ -60,6 +60,7 @@ from .catalog import CREDIT_PACKAGES, PLANS
 from .dto import (
     CatalogResponse,
     CheckoutResponse,
+    CreditDebtResponse,
     CreditHoldResponse,
     CreditLotResponse,
     CreditOperationResponse,
@@ -188,6 +189,18 @@ def _hold_to_dto(h: CreditHold) -> CreditHoldResponse:
     )
 
 
+def _debt_to_dto(d) -> CreditDebtResponse:
+    return CreditDebtResponse(
+        id=d.id,
+        credits_outstanding=d.credits_outstanding,
+        credits_initial=d.credits_initial,
+        reason=d.reason,
+        type=d.type,
+        description=d.description,
+        created_at=d.created_at.isoformat(),
+    )
+
+
 def _wallet_to_dto(w: Wallet) -> WalletResponse:
     """The wallet snapshot: the balance *and* what it is made of.
 
@@ -196,9 +209,15 @@ def _wallet_to_dto(w: Wallet) -> WalletResponse:
     spent and ``expiring_soon`` is the first dated lot in that same list —
     the server answers "what expires next", instead of shipping an unordered
     set and letting every client re-derive the rule.
+
+    ``debts`` ships for the same reason: a wallet that owes credits will
+    see its next top-up partly disappear, and an owner told only the
+    balance has no way to find out why. They go out oldest-first, the order
+    they are actually collected in.
     """
     lots = list(services.live_lots(w))
     earliest = next((lot for lot in lots if lot.expires_at is not None), None)
+    debts = list(services.open_debts(w))
     return WalletResponse(
         user_id=w.user_id,
         balance=w.balance,
@@ -218,6 +237,8 @@ def _wallet_to_dto(w: Wallet) -> WalletResponse:
             if earliest is not None
             else None
         ),
+        debts=[_debt_to_dto(d) for d in debts],
+        debt_outstanding=sum(d.credits_outstanding for d in debts),
     )
 
 

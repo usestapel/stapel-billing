@@ -12,8 +12,8 @@ reporting periods. So nothing here is deleted:
   ``stapel_video.presence.pseudonymize_user`` and ``stapel_agent.gdpr``,
   down to the ``erased:`` prefix and the 32-hex truncation;
 * the free-text a caller supplied is scrubbed: ``description`` on every
-  transaction and hold, and ``metadata`` cut down to the accounting keys
-  this package writes itself (:data:`LEDGER_METADATA_KEYS`);
+  transaction, hold and debt, and ``metadata`` cut down to the accounting
+  keys this package writes itself (:data:`LEDGER_METADATA_KEYS`);
 * the processor's names for the person go too — the Stripe customer and
   subscription ids on :class:`~stapel_billing.models.Subscription`, and the
   raw webhook payloads that carry their email, address and card details;
@@ -48,7 +48,14 @@ class BillingGDPRProvider(GDPRProvider):
     section = 'billing'
 
     def export(self, user_id: int) -> dict:
-        from .models import CreditHold, CreditLot, Subscription, Transaction, Wallet
+        from .models import (
+            CreditDebt,
+            CreditHold,
+            CreditLot,
+            Subscription,
+            Transaction,
+            Wallet,
+        )
 
         try:
             wallet = Wallet.objects.get(user_id=user_id)
@@ -69,11 +76,19 @@ class BillingGDPRProvider(GDPRProvider):
                 'credits', 'type', 'description', 'status', 'expires_at',
                 'resolved_at', 'created_at',
             ))
+            # What the subject OWES is as much part of "what do you hold
+            # about me" as what they have — and an export that showed only
+            # the balance would describe a wallet that does not exist.
+            debts = list(CreditDebt.objects.filter(wallet=wallet).values(
+                'credits_initial', 'credits_outstanding', 'reason', 'type',
+                'description', 'settled_at', 'created_at',
+            ))
         except Wallet.DoesNotExist:
             wallet_data   = {}
             transactions  = []
             lots          = []
             holds         = []
+            debts         = []
 
         try:
             sub = Subscription.objects.get(user_id=user_id)
@@ -91,6 +106,7 @@ class BillingGDPRProvider(GDPRProvider):
             'wallet':       wallet_data,
             'credit_lots':  _serialize_dates(lots),
             'credit_holds': _serialize_dates(holds),
+            'credit_debts': _serialize_dates(debts),
             'transactions': _serialize_dates(transactions),
             'subscription': sub_data,
         }
@@ -158,6 +174,24 @@ LEDGER_METADATA_KEYS = frozenset({
     'package',
     'plan',
     'source',
+    # 0.11.0 accounting dimensions, all integers or enum values this
+    # package writes itself. They are what makes a partial charge, a debt
+    # settlement, a clawback or a non-provider bundle explainable after the
+    # person is gone — which is the half of the ledger erasure keeps.
+    'clawback_of',
+    'clawback_reason',
+    'debt_id',
+    'debt_reason',
+    'debt_settlement',
+    'forgiven',
+    'grant',
+    'outstanding',
+    'partial',
+    'period_key',
+    'reclaimed',
+    'requested',
+    'requested_credits',
+    'shortfall',
 })
 
 #: What a scrubbed webhook payload becomes. The row itself stays: its
@@ -277,7 +311,7 @@ def erase_subject(subject_type: str, subject_key, *, workspace_id=None) -> dict 
     hint for owners that need one, and narrowing by it here would leave the
     subject's rows in every other tenant.
     """
-    from .models import CreditHold, Subscription, Transaction, Wallet
+    from .models import CreditDebt, CreditHold, Subscription, Transaction, Wallet
 
     key = str(subject_key) if subject_key is not None else ''
     if not key or subject_type not in SUBJECT_TYPES:
@@ -288,6 +322,7 @@ def erase_subject(subject_type: str, subject_key, *, workspace_id=None) -> dict 
         'subscriptions': 0,
         'transactions': 0,
         'credit_holds': 0,
+        'credit_debts': 0,
         'webhook_events': 0,
     }
 
@@ -314,6 +349,9 @@ def erase_subject(subject_type: str, subject_key, *, workspace_id=None) -> dict 
     if wallet_ids:
         counts['transactions'] = _scrub_free_text(Transaction, wallet_ids)
         counts['credit_holds'] = _scrub_free_text(CreditHold, wallet_ids)
+        # Same free-text problem as a hold: a debt carries the debiting
+        # caller's description and its metadata verbatim.
+        counts['credit_debts'] = _scrub_free_text(CreditDebt, wallet_ids)
         counts['wallets'] = Wallet.objects.filter(pk__in=wallet_ids).update(
             user=None, user_pseudonym=pseudonymize(key)
         )

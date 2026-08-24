@@ -1,6 +1,6 @@
 {
   "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_billing/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code. `surface_roots` + `surface` are the usage layer (stapel_tools.surface): the symbols a product must CALL instead of writing its own ledger write, its own signature check or its own Stripe client. The roots select the symbols; every selected symbol MUST carry an intent line here or emission fails naming it.",
-  "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.",
+  "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "requires": [
     {
       "module": "stapel-core",
@@ -38,6 +38,11 @@
       "name": "serializer_seams",
       "kind": "class_override",
       "summary": "Every billing view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL."
+    },
+    {
+      "name": "PLAN_BUNDLE_ENTITLEMENTS",
+      "kind": "dotted_path",
+      "summary": "Decide who receives a plan bundle that no payment provider grants (the free tier, an invoiced agreement, a plan the host assigns itself). Point the setting at a callable yielding {user_id, plan} rows; the default reads the local Subscription row, which is only right for hosts that keep plan membership there."
     }
   ],
   "axes": {
@@ -84,6 +89,14 @@
         "stapel_billing.models.Wallet.balance"
       ]
     },
+    "can_afford": {
+      "kind": "gate_function",
+      "intent": "Ask whether a charge of N credits would go through — a pure read over the live lots: no lock, no hold, no row written. Use it for pre-flight refusals and for showing or hiding an action. Never probe with a real hold you then release: each probe returns the credits as a NEW lot, fragmenting the wallet without bound.",
+      "instead_of": [
+        "stapel_billing.services.hold",
+        "stapel_billing.models.Wallet.balance"
+      ]
+    },
     "hold": {
       "kind": "factory",
       "intent": "Reserve credits BEFORE work whose real cost is only known afterwards. The credits leave the lots immediately, so two concurrent requests cannot both spend the last one; nothing is billed until capture. Use it instead of debiting an estimate — a refund that never runs because the worker died is a charge for work nobody did.",
@@ -105,6 +118,20 @@
         "stapel_billing.services.credit"
       ]
     },
+    "grant_plan_bundle": {
+      "kind": "factory",
+      "intent": "Grant one period's plan bundle WITHOUT a payment provider — the free tier, an invoiced agreement, a plan a host assigns itself. Idempotent per (wallet, plan, period), and the lot expires with the period. Every other grant here runs off a Stripe webhook, so a plan not sold through Stripe granted nothing until you call this.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
+    },
+    "claw_back_grant": {
+      "kind": "gate_function",
+      "intent": "Take the credits of one grant back after a refund, dispute or credit note: consumes only that grant's lots, forgives what already expired unspent, records what was already spent as a debt the next top-up collects. The three refund webhooks call it; reach for it when money goes back some other way.",
+      "instead_of": [
+        "stapel_billing.services.debit"
+      ]
+    },
     "reconcile_wallet_balances": {
       "kind": "gate_function",
       "intent": "Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module."
@@ -121,6 +148,20 @@
       "intent": "The reservations still holding a wallet's credits (status=held) — the credits already gone from the spendable balance and not yet billed. Ask it what is outstanding rather than filtering CreditHold by hand: captured, released and expired holds are history, and counting them is how a product invents a second, wrong 'available balance'.",
       "instead_of": [
         "stapel_billing.models.CreditHold.objects.filter"
+      ]
+    },
+    "open_debts": {
+      "kind": "factory",
+      "intent": "One wallet's uncollected debts, oldest first — the order they are collected in. Read it to show an owner why their next top-up will partly disappear; the collection itself happens inside credit().",
+      "instead_of": [
+        "stapel_billing.models.CreditDebt.objects.filter"
+      ]
+    },
+    "outstanding_debt": {
+      "kind": "factory",
+      "intent": "Total credits a wallet owes, as one integer — what stands between its balance and what the owner can spend next period. 0 for almost every wallet.",
+      "instead_of": [
+        "stapel_billing.models.CreditDebt.objects.aggregate"
       ]
     },
     "get_provider": {
@@ -168,6 +209,18 @@
       "kind": "gate_function",
       "intent": "The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and claims the invoice through claim_provider_object, so the several distinct events Stripe sends for one paid invoice credit it exactly once. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings."
     },
+    "handle_charge_refunded": {
+      "kind": "gate_function",
+      "intent": "Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated when the refund was partial. Name it only to wrap or replace it."
+    },
+    "handle_dispute_created": {
+      "kind": "gate_function",
+      "intent": "Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a dispute won later is one manual credit, a dispute lost after the credits are spent is unrecoverable."
+    },
+    "handle_credit_note_created": {
+      "kind": "gate_function",
+      "intent": "Built-in handler for `credit_note.created`: an invoice credited back takes its bundle back too. Name it only to wrap or replace it."
+    },
     "claim_provider_object": {
       "kind": "gate_function",
       "intent": "Claim one provider object (a checkout session, an invoice) for a grant, returning False when someone already claimed it — the database-enforced answer to \"has this been paid out yet?\". Call it inside the transaction that grants, so claim and credit commit together; a read-then-credit check over ledger metadata cannot see a concurrent delivery of a DIFFERENT event describing the same invoice, and both of them pay.",
@@ -199,6 +252,27 @@
         "stapel_billing.catalog.DEFAULT_PLANS"
       ]
     },
+    "current_period_key": {
+      "kind": "factory",
+      "intent": "The key naming the current bundle period ('2026-08'). It is grant_plan_bundle's idempotency unit, so spell it with this rather than formatting a date: two spellings of one month are two bundles.",
+      "instead_of": [
+        "datetime.datetime.strftime"
+      ]
+    },
+    "default_plan_bundle_entitlements": {
+      "kind": "factory",
+      "intent": "The stock answer to 'who gets a non-provider bundle': every wallet whose plan bundles credits Stripe is not already granting. Wrap it when writing your own resolver instead of re-deriving the Stripe-vs-local rule that stops a subscriber being granted twice.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.objects.filter"
+      ]
+    },
+    "plan_bundle_entitlements": {
+      "kind": "factory",
+      "intent": "The configured entitlement resolver, normalised to {user_id, plan} rows and tolerant of one bad row. Call this, not the setting's callable, if you drive the grants from your own scheduler.",
+      "instead_of": [
+        "django.conf.settings.STAPEL_BILLING[\"PLAN_BUNDLE_ENTITLEMENTS\"]"
+      ]
+    },
     "expire_credit_lots": {
       "kind": "gate_function",
       "intent": "The task that makes credit expiry real: zeroes lots past expires_at, one EXPIRATION ledger row each. Wire it via get_billing_beat_schedule — nothing else enforces the deadline subscription credits are sold with (check stapel_billing.W105)."
@@ -210,6 +284,10 @@
     "reconcile_wallets": {
       "kind": "gate_function",
       "intent": "Daily task over reconcile_wallet_balances: logs at ERROR every wallet whose balance cache no longer matches its lots — how a deployment learns something wrote Wallet.balance directly."
+    },
+    "grant_plan_bundles": {
+      "kind": "gate_function",
+      "intent": "The worker that grants the current period's bundle to every entitled wallet — without it a free plan's monthly_credits_included is a number nothing reads. Idempotent per period; wire it via get_billing_beat_schedule()."
     },
     "get_billing_beat_schedule": {
       "kind": "factory",

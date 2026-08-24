@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.can_afford",
+  "description": "Payload for the billing.can_afford comm Function — would a debit or hold of `credits` succeed right now? A pure READ over the wallet's live credit lots (wrapper over stapel_billing.services.can_afford): no hold is taken, no lot is created, no allocation is written and no row is locked. It exists so consumers stop pre-flighting with a real hold they immediately release — every such probe returned the credits as a NEW hold_release lot, so an affordability check on each request grew the wallet's lot table without bound and slowed every later spend. Because nothing is locked, two callers can both be told yes: the caller that needs the answer to STAY true takes billing.hold instead. Returns {\"ok\": bool, \"affordable\": bool, \"balance\": int|null, \"shortfall\": int|null, \"reason\": str|null}; ok=false means the question could not be answered (reason user_not_found), while affordable=false with ok=true is the real answer 'no' (reason insufficient_credits).",
+  "type": "object",
+  "required": ["user_id", "credits"],
+  "properties": {
+    "user_id": { "type": "string", "format": "uuid" },
+    "credits": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

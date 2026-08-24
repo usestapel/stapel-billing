@@ -88,6 +88,19 @@ repeated release is a no-op. Refusing a hold is an expected outcome
 (``ok=False`` + ``reason``), and the caller is expected to render it rather
 than degrade silently.
 
+``billing.can_afford`` is the same question as ``billing.hold`` asked
+WITHOUT reserving anything — the read-only pre-flight::
+
+    call("billing.can_afford", {"user_id": str(user.id), "credits": 15})
+    # -> {"ok": bool, "affordable": bool, "balance": int | None,
+    #     "shortfall": int | None, "reason": str | None}
+
+Use it for "show the button / hide the button" and for refusing early.
+Do NOT use it to decide a charge is safe and then charge later: nothing is
+locked, so two callers can both be told yes. The caller that needs the
+answer to stay true takes a hold. What it replaces is the probe-with-a-real-
+hold pattern, which fragmented the wallet's lots on every check.
+
 ``billing.debit`` wraps :func:`stapel_billing.services.debit` (previously
 reachable only through the internal HTTP endpoint
 :class:`stapel_billing.views.InternalDebitView`) with the same idempotency
@@ -111,6 +124,7 @@ DEBIT = "billing.debit"
 HOLD = "billing.hold"
 CAPTURE = "billing.capture"
 RELEASE = "billing.release"
+CAN_AFFORD = "billing.can_afford"
 
 # Denial reasons (structural — mapped to error keys by the caller, e.g.
 # workspaces' error.402.entitlement_required / error.402.member_limit_reached).
@@ -122,6 +136,10 @@ REASON_UNKNOWN_KEY = "unknown_key"
 REASON_UNKNOWN_PLAN = "unknown_plan"
 REASON_HOLD_NOT_FOUND = "hold_not_found"
 REASON_HOLD_NOT_HELD = "hold_not_held"
+# The idempotency key names a hold that is over: captured, released or
+# expired. Nothing is reserved under it, so this is a refusal and not the
+# "already reserved" answer the caller used to get (audit major #4).
+REASON_HOLD_ALREADY_RESOLVED = "hold_already_resolved"
 
 # Single source of truth for the payload contracts: the committed schema
 # files (registered by the schemas/ autoloader too; passing them at
@@ -138,6 +156,7 @@ DEBIT_SCHEMA = _load_schema(DEBIT)
 HOLD_SCHEMA = _load_schema(HOLD)
 CAPTURE_SCHEMA = _load_schema(CAPTURE)
 RELEASE_SCHEMA = _load_schema(RELEASE)
+CAN_AFFORD_SCHEMA = _load_schema(CAN_AFFORD)
 
 def _granting_statuses() -> tuple:
     """Subscription statuses under which the subscribed plan's entitlements
@@ -255,9 +274,15 @@ def debit(payload: dict) -> dict:
 
     Payload: ``{"user_id": str, "credits": int, "idempotency_key": str,
     "metadata": dict = {}, "description": str = None,
-    "type": str = "adjustment"}``
+    "type": str = "adjustment", "allow_partial": bool = False}``
     Returns: ``{"ok": bool, "balance": int | None, "reason": str | None}``
     plus ``transaction_id`` on success.
+
+    With ``allow_partial`` the call charges what the wallet has and records
+    the rest as a debt: ``ok`` is True, and ``debited`` / ``shortfall`` /
+    ``debt_id`` say what actually happened. A consumer that has already
+    done the work uses this instead of choosing between refusing a
+    completed job and giving it away unrecorded.
     """
     from django.contrib.auth import get_user_model
 
@@ -268,14 +293,16 @@ def debit(payload: dict) -> dict:
     if user is None:
         return {"ok": False, "balance": None, "reason": REASON_USER_NOT_FOUND}
 
+    allow_partial = bool(payload.get("allow_partial"))
     try:
-        txn = services.debit(
+        result = services.debit(
             user=user,
             credits=payload["credits"],
             type=payload.get("type", TransactionType.ADJUSTMENT),
             description=payload.get("description"),
             metadata=payload.get("metadata") or {},
             idempotency_key=payload["idempotency_key"],
+            allow_partial=allow_partial,
         )
     except services.InsufficientCreditsError:
         wallet = services.get_or_create_wallet(user)
@@ -284,11 +311,59 @@ def debit(payload: dict) -> dict:
             "balance": wallet.balance,
             "reason": REASON_INSUFFICIENT_CREDITS,
         }
+    if not allow_partial:
+        return {
+            "ok": True,
+            "balance": result.balance_after,
+            "reason": None,
+            "transaction_id": str(result.id),
+        }
     return {
         "ok": True,
-        "balance": txn.balance_after,
+        "balance": result.balance,
         "reason": None,
-        "transaction_id": str(txn.id),
+        "transaction_id": str(result.transaction.id),
+        "requested": result.requested,
+        "debited": result.debited,
+        "shortfall": result.shortfall,
+        "debt_id": result.debt_id,
+    }
+
+
+def can_afford(payload: dict) -> dict:
+    """Provider for ``billing.can_afford``.
+
+    Payload: ``{"user_id": str, "credits": int}``
+    Returns: ``{"ok": bool, "affordable": bool, "balance": int | None,
+    "shortfall": int | None, "reason": str | None}``
+
+    A read, and only a read — no hold, no lot, no allocation. The pre-flight
+    consumers used to fake by taking a real hold and releasing it, which
+    fragmented the wallet's lots on every probe (a release returns credits
+    as a NEW lot) and slowed down every later spend.
+
+    ``ok`` is about the question, not the answer: a user this deployment
+    does not know is ``ok=False``; a user who simply cannot afford it is
+    ``ok=True, affordable=False``.
+    """
+    from . import services
+
+    user = _resolve_user(payload["user_id"])
+    if user is None:
+        return {
+            "ok": False,
+            "affordable": False,
+            "balance": None,
+            "shortfall": None,
+            "reason": REASON_USER_NOT_FOUND,
+        }
+    answer = services.can_afford(user=user, credits=payload["credits"])
+    return {
+        "ok": True,
+        "affordable": answer.affordable,
+        "balance": answer.balance,
+        "shortfall": answer.shortfall,
+        "reason": None if answer.affordable else REASON_INSUFFICIENT_CREDITS,
     }
 
 
@@ -306,6 +381,12 @@ def hold(payload: dict) -> dict:
     "metadata": dict = {}, "expires_in_seconds": int = None}``
     Returns: ``{"ok": bool, "hold_id": str | None, "balance": int | None,
     "reason": str | None}``
+
+    ``reason="hold_already_resolved"`` (plus ``status`` and the original
+    ``hold_id``) means the key belongs to a hold that is already captured,
+    released or expired: nothing is reserved under it. Propagate that — do
+    not treat it as a successful hold, which is what the 0.10.0 answer
+    made callers do right up until the capture failed.
     """
     from datetime import timedelta
 
@@ -329,6 +410,16 @@ def hold(payload: dict) -> dict:
             idempotency_key=payload["idempotency_key"],
             expires_at=timezone.now() + timedelta(seconds=ttl) if ttl else None,
         )
+    except services.HoldKeyResolvedError as exc:
+        # The key is spent. Answering ok=True with the resolved hold (what
+        # 0.10.0 did) reserves nothing and moves the failure to the capture.
+        return {
+            "ok": False,
+            "hold_id": str(exc.hold_id),
+            "balance": None,
+            "status": exc.status,
+            "reason": REASON_HOLD_ALREADY_RESOLVED,
+        }
     except services.InsufficientCreditsError:
         wallet = services.get_or_create_wallet(user)
         return {
@@ -417,3 +508,4 @@ def register() -> None:
     register_function(HOLD, hold, schema=HOLD_SCHEMA)
     register_function(CAPTURE, capture, schema=CAPTURE_SCHEMA)
     register_function(RELEASE, release, schema=RELEASE_SCHEMA)
+    register_function(CAN_AFFORD, can_afford, schema=CAN_AFFORD_SCHEMA)

@@ -16,7 +16,7 @@ overrides a built-in without forking::
     STAPEL_BILLING = {
         "STRIPE_WEBHOOK_HANDLERS": {
             # add an event the library does not carry
-            "charge.dispute.created": "myproject.billing.on_dispute",
+            "customer.updated": "myproject.billing.on_customer_updated",
             # override a built-in with your own reconciliation
             "checkout.session.completed": "myproject.billing.on_checkout",
             # or switch a built-in OFF: None means "ignore this type"
@@ -62,6 +62,13 @@ BUILTIN_STRIPE_HANDLERS: dict[str, str] = {
     "customer.subscription.created": "stapel_billing.services.handle_subscription_updated",
     "customer.subscription.updated": "stapel_billing.services.handle_subscription_updated",
     "customer.subscription.deleted": "stapel_billing.services.handle_subscription_deleted",
+    # Money going back the other way. Until 0.11.0 nothing here handled a
+    # refund at all: the card was refunded, the dispute was lost, the
+    # invoice was credited — and the credits those payments bought stayed
+    # spendable. Free credits by webhook silence.
+    "charge.refunded": "stapel_billing.services.handle_charge_refunded",
+    "charge.dispute.created": "stapel_billing.services.handle_dispute_created",
+    "credit_note.created": "stapel_billing.services.handle_credit_note_created",
 }
 
 

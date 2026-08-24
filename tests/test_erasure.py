@@ -154,6 +154,29 @@ class TestEraseSubject:
         assert held.status == HoldStatus.HELD  # a reservation is not resolved by erasure
         assert wallet.id == Wallet.objects.get().id  # nothing was deleted
 
+    def test_a_debts_free_text_goes_and_its_arithmetic_stays(self, user):
+        """A debt carries the debiting caller's description and metadata
+        verbatim — the same free-text problem as a hold, and the amount owed
+        is the same financial record as the rest of the ledger."""
+        from stapel_billing import services
+        from stapel_billing.models import CreditDebt
+
+        services.debit(
+            user=user,
+            credits=25,
+            type=TransactionType.AI_CHARGE,
+            description="Transcribe: Weekly 1:1 with Dana",
+            metadata={"meeting_title": "Weekly 1:1 with Dana"},
+            allow_partial=True,
+        )
+
+        erase_subject("account", user.id)
+
+        debt = CreditDebt.objects.get()
+        assert debt.description == ""
+        assert "meeting_title" not in debt.metadata
+        assert debt.credits_outstanding == 25  # the bill stays
+
     def test_stripe_webhook_payloads_are_erased(self, user):
         """By volume the largest store of a person's PII here: a Stripe
         payload carries their email, address and card details."""
@@ -204,7 +227,7 @@ class TestEraseSubject:
     def test_a_subject_with_nothing_here_receipts_zeroes(self, user):
         assert erase_subject("account", user.id) == {
             "wallets": 0, "subscriptions": 0, "transactions": 0,
-            "credit_holds": 0, "webhook_events": 0,
+            "credit_holds": 0, "credit_debts": 0, "webhook_events": 0,
         }
 
     def test_an_unclaimed_subject_returns_none(self, user):
@@ -246,7 +269,7 @@ class TestErasureRequested:
         assert payload["correlation_id"] == "corr-1"
         assert payload["counts"] == {
             "wallets": 1, "subscriptions": 1, "transactions": 2,
-            "credit_holds": 1, "webhook_events": 0,
+            "credit_holds": 1, "credit_debts": 0, "webhook_events": 0,
         }
         assert Wallet.objects.get().user_id is None
 
@@ -265,7 +288,7 @@ class TestErasureRequested:
         assert first["counts"]["wallets"] == 1
         assert second["counts"] == {
             "wallets": 0, "subscriptions": 0, "transactions": 0,
-            "credit_holds": 0, "webhook_events": 0,
+            "credit_holds": 0, "credit_debts": 0, "webhook_events": 0,
         }
         assert first["receipt_id"] == second["receipt_id"]
 

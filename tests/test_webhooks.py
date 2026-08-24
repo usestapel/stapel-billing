@@ -334,6 +334,145 @@ class TestSubscriptionLifecycleEvents:
         assert _post(api_client, event).status_code == 200
 
 
+# ─── Event ordering (audit minor #10) ───────────────────────
+#
+# Stripe does not promise event order. `customer.subscription.created` can
+# land BEFORE the checkout that creates the local row, and the handler used
+# to return silently when it found none — throwing away the only payload
+# that carries the billing period. The checkout then granted an UNDATED
+# subscription lot, the event that would have dated it was already marked
+# processed, and the bundle a cancelled subscriber kept never expired.
+
+
+def _subscription_event(event_id, type_, *, sub_id="sub_1", period_end=None, **obj):
+    body = {"id": sub_id, "customer": "cus_1", "status": "active", **obj}
+    if period_end is not None:
+        body["current_period_end"] = period_end
+    return {"id": event_id, "type": type_, "data": {"object": body}}
+
+
+@pytest.mark.django_db
+class TestSubscriptionEventOrdering:
+    #: A period end far enough out that it is a real future deadline.
+    PERIOD_END = 4102444800  # 2100-01-01T00:00:00Z
+
+    def test_a_period_that_arrives_before_the_checkout_is_not_lost(
+        self, api_client, user
+    ):
+        from stapel_billing.models import CreditLot, PendingSubscriptionPeriod
+
+        # 1. The subscription event lands FIRST, with no local row to update.
+        early = _subscription_event(
+            "evt_early", "customer.subscription.created", period_end=self.PERIOD_END
+        )
+        assert _post(api_client, early).status_code == 200
+        assert Subscription.objects.count() == 0
+        assert PendingSubscriptionPeriod.objects.count() == 1
+
+        # 2. The checkout lands second and claims the parked period.
+        assert _post(
+            api_client, _checkout_event(user, event_id="evt_co", plan="pro")
+        ).status_code == 200
+
+        sub = Subscription.objects.get()
+        assert sub.current_period_end is not None
+        assert sub.current_period_end.year == 2100
+        # The bundle it granted is DATED — the whole point.
+        lot = CreditLot.objects.get(wallet__user=user, source="subscription")
+        assert lot.expires_at == sub.current_period_end
+        # The stash is consumed, not left to be applied twice.
+        assert PendingSubscriptionPeriod.objects.count() == 0
+
+    def test_the_normal_order_still_works_and_stamps_the_lot(self, api_client, user):
+        from stapel_billing.models import CreditLot, PendingSubscriptionPeriod
+
+        assert _post(
+            api_client, _checkout_event(user, event_id="evt_co", plan="pro")
+        ).status_code == 200
+        # The checkout session carries no period, so the lot starts undated.
+        lot = CreditLot.objects.get(wallet__user=user, source="subscription")
+        assert lot.expires_at is None
+
+        assert _post(
+            api_client,
+            _subscription_event(
+                "evt_after",
+                "customer.subscription.updated",
+                period_end=self.PERIOD_END,
+            ),
+        ).status_code == 200
+
+        lot.refresh_from_db()
+        assert lot.expires_at is not None
+        assert PendingSubscriptionPeriod.objects.count() == 0
+
+    def test_a_row_created_by_checkout_without_a_subscription_id_is_adopted(
+        self, api_client, user
+    ):
+        sub = Subscription.objects.create(
+            user=user, plan="pro", status=SubscriptionStatus.ACTIVE,
+            stripe_customer_id="cus_1",
+        )
+        assert _post(
+            api_client,
+            _subscription_event(
+                "evt_adopt",
+                "customer.subscription.updated",
+                period_end=self.PERIOD_END,
+            ),
+        ).status_code == 200
+
+        sub.refresh_from_db()
+        assert sub.stripe_subscription_id == "sub_1"
+        assert sub.current_period_end is not None
+
+    def test_the_cancellation_stamps_the_period_onto_an_undated_bundle(
+        self, api_client, user
+    ):
+        from stapel_billing.models import CreditLot
+
+        assert _post(
+            api_client, _checkout_event(user, event_id="evt_co", plan="pro")
+        ).status_code == 200
+        lot = CreditLot.objects.get(wallet__user=user, source="subscription")
+        assert lot.expires_at is None
+
+        # No update event ever arrived — the cancellation is the last
+        # payload that carries a period, and the last chance to date the lot.
+        assert _post(
+            api_client,
+            _subscription_event(
+                "evt_del",
+                "customer.subscription.deleted",
+                period_end=self.PERIOD_END,
+                status="canceled",
+            ),
+        ).status_code == 200
+
+        lot.refresh_from_db()
+        assert lot.expires_at is not None
+        sub = Subscription.objects.get()
+        assert sub.status == SubscriptionStatus.CANCELLED
+
+    def test_a_deletion_for_an_unknown_subscription_parks_its_period_too(
+        self, api_client
+    ):
+        from stapel_billing.models import PendingSubscriptionPeriod
+
+        assert _post(
+            api_client,
+            _subscription_event(
+                "evt_del_ghost",
+                "customer.subscription.deleted",
+                sub_id="sub_ghost",
+                period_end=self.PERIOD_END,
+            ),
+        ).status_code == 200
+        assert PendingSubscriptionPeriod.objects.get().stripe_subscription_id == (
+            "sub_ghost"
+        )
+
+
 # ─── The routing seam ───────────────────────────────────────
 #
 # Routing used to be an if/elif chain inside StripeWebhookView.post: a host
@@ -379,7 +518,10 @@ class TestStripeHandlerRegistry:
         from stapel_billing.webhooks import registered_stripe_events
 
         assert registered_stripe_events() == [
+            "charge.dispute.created",
+            "charge.refunded",
             "checkout.session.completed",
+            "credit_note.created",
             "customer.subscription.created",
             "customer.subscription.deleted",
             "customer.subscription.updated",

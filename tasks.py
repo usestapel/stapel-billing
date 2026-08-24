@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 EXPIRE_LOTS_TASK_NAME = "stapel_billing.tasks.expire_credit_lots"
 EXPIRE_HOLDS_TASK_NAME = "stapel_billing.tasks.expire_holds"
 RECONCILE_TASK_NAME = "stapel_billing.tasks.reconcile_wallets"
+GRANT_PLAN_BUNDLES_TASK_NAME = "stapel_billing.tasks.grant_plan_bundles"
 
 
 def expire_credit_lots() -> int:
@@ -115,6 +116,62 @@ def reconcile_wallets() -> list[dict]:
     return drifted
 
 
+def grant_plan_bundles(period_key: str | None = None) -> int:
+    """Grant the current period's plan bundle to every entitled wallet.
+
+    The half of the two-pool design that had no worker: credits were only
+    ever granted by a Stripe webhook, so a plan whose bundle is not sold
+    through Stripe — the free tier above all — never granted anything, and
+    its ``monthly_credits_included`` was a number in a catalogue that no
+    code path read.
+
+    Safe to run as often as a host likes, and safe to run by hand: the
+    grant is idempotent per (wallet, plan, period) through the same unique
+    claim row the provider grants use, so a second run in the same period
+    grants nothing.
+
+    Who is entitled is a seam
+    (``STAPEL_BILLING["PLAN_BUNDLE_ENTITLEMENTS"]``) because plan
+    membership is host knowledge; the default resolver reads the local
+    Subscription row. Returns the number of bundles actually granted.
+    """
+    from .services import current_period_key, grant_plan_bundle, plan_bundle_entitlements
+
+    period = period_key or current_period_key()
+    granted = 0
+    seen = 0
+    for row in plan_bundle_entitlements():
+        seen += 1
+        try:
+            txn = grant_plan_bundle(
+                user_id=row.get("user_id"),
+                plan_slug=row["plan"],
+                period_key=row.get("period_key") or period,
+                credits=row.get("credits"),
+                expires_at=row.get("expires_at"),
+            )
+        except Exception:
+            # One wallet's failure is not the month's failure. The sweep is
+            # re-runnable and idempotent, so the honest response to a bad
+            # row is to log it and keep granting.
+            logger.exception(
+                "grant_plan_bundles: could not grant %s to %s",
+                row.get("plan"),
+                row.get("user_id"),
+            )
+            continue
+        if txn is not None:
+            granted += 1
+    logger.info(
+        "grant_plan_bundles: granted %s bundle(s) of %s entitled wallet(s) "
+        "for period %s",
+        granted,
+        seen,
+        period,
+    )
+    return granted
+
+
 def get_billing_beat_schedule() -> dict:
     """Add to ``CELERY_BEAT_SCHEDULE`` in your Django settings.
 
@@ -148,6 +205,14 @@ def get_billing_beat_schedule() -> dict:
             "task": RECONCILE_TASK_NAME,
             "schedule": crontab(hour=4, minute=40),  # daily at 04:40 UTC
         },
+        # Daily rather than monthly: the grant is idempotent per period, so
+        # running it every day costs one claim query per entitled wallet and
+        # buys the thing a monthly cron cannot — a wallet created on the
+        # 14th gets the period's bundle on the 14th, not next month.
+        "billing-grant-plan-bundles": {
+            "task": GRANT_PLAN_BUNDLES_TASK_NAME,
+            "schedule": crontab(hour=5, minute=10),  # daily at 05:10 UTC
+        },
     }
 
 
@@ -159,14 +224,19 @@ else:
     expire_credit_lots = shared_task(name=EXPIRE_LOTS_TASK_NAME)(expire_credit_lots)
     expire_holds = shared_task(name=EXPIRE_HOLDS_TASK_NAME)(expire_holds)
     reconcile_wallets = shared_task(name=RECONCILE_TASK_NAME)(reconcile_wallets)
+    grant_plan_bundles = shared_task(name=GRANT_PLAN_BUNDLES_TASK_NAME)(
+        grant_plan_bundles
+    )
 
 
 __all__ = [
     "EXPIRE_HOLDS_TASK_NAME",
     "EXPIRE_LOTS_TASK_NAME",
+    "GRANT_PLAN_BUNDLES_TASK_NAME",
     "RECONCILE_TASK_NAME",
     "expire_credit_lots",
     "expire_holds",
     "get_billing_beat_schedule",
+    "grant_plan_bundles",
     "reconcile_wallets",
 ]

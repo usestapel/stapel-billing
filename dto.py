@@ -57,6 +57,34 @@ class CreditHoldResponse:
 
 
 @dataclass
+class CreditDebtResponse:
+    """Credits this wallet owes — service given, or money taken back.
+
+    A debt is not a negative balance: the balance still counts the credits
+    that exist. It is collected automatically from the next credits that
+    arrive, oldest debt first, before they become spendable.
+
+    Attributes:
+        id: Debt UUID.
+        credits_outstanding: Credits still owed.
+        credits_initial: Credits the debt was opened for.
+        reason: partial_debit (work served without cover) or clawback
+            (a refund arrived after the credits were spent).
+        type: Transaction type the settlement is billed under.
+        description: What the uncovered charge was, or null.
+        created_at: ISO 8601.
+    """
+
+    id: UUID
+    credits_outstanding: int
+    credits_initial: int
+    reason: str
+    type: str
+    description: Optional[str]
+    created_at: str
+
+
+@dataclass
 class ExpiringCreditsResponse:
     """The wallet's nearest credit deadline.
 
@@ -85,6 +113,12 @@ class WalletResponse:
         lots: Live lots in spend order — expiring soonest, non-expiring last.
         holds: Open reservations (status=held); settled holds are history.
         expiring_soon: The earliest-expiring live lot; null if none expires.
+        debts: Open debts, oldest first — the order they are collected in.
+            Empty for the overwhelming majority of wallets.
+        debt_outstanding: Total credits owed. The next credits into this
+            wallet pay this down before they become spendable, so it is
+            what stands between `balance` and what the owner can spend
+            next month.
     """
 
     user_id: UUID
@@ -98,6 +132,8 @@ class WalletResponse:
     lots: List[CreditLotResponse] = field(default_factory=list)
     holds: List[CreditHoldResponse] = field(default_factory=list)
     expiring_soon: Optional[ExpiringCreditsResponse] = None
+    debts: List[CreditDebtResponse] = field(default_factory=list)
+    debt_outstanding: int = 0
 
 
 @dataclass

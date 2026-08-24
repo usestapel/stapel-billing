@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "billing.debit",
-  "description": "Payload for the billing.debit comm Function — service-to-service wallet debit (wrapper over stapel_billing.services.debit). idempotency_key is REQUIRED: comm delivery is at-least-once and a retry with the same key returns the original transaction instead of debiting twice. Returns {\"ok\": bool, \"balance\": int|null, \"reason\": str|null, \"transaction_id\"?: str}. type values mirror stapel_billing.models.TransactionType.",
+  "description": "Payload for the billing.debit comm Function — service-to-service wallet debit (wrapper over stapel_billing.services.debit). idempotency_key is REQUIRED: comm delivery is at-least-once and a retry with the same key returns the original transaction instead of debiting twice. Returns {\"ok\": bool, \"balance\": int|null, \"reason\": str|null, \"transaction_id\"?: str}. allow_partial (default false) switches the all-or-nothing charge for a partial one: the wallet is charged what it has, the uncovered remainder is recorded as a CreditDebt that the wallet's next top-up collects, and the answer carries requested/debited/shortfall/debt_id. It is for the consumer that has ALREADY done the work — without it the only options were refusing a completed job or giving it away with nothing recording that it was given away. type values mirror stapel_billing.models.TransactionType.",
   "type": "object",
   "required": ["user_id", "credits", "idempotency_key"],
   "properties": {
@@ -10,6 +10,7 @@
     "idempotency_key": { "type": "string", "minLength": 1 },
     "metadata":        { "type": "object" },
     "description":     { "type": "string" },
+    "allow_partial":   { "type": "boolean", "default": false },
     "type": {
       "type": "string",
       "enum": [

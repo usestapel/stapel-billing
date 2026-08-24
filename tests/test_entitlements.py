@@ -327,6 +327,110 @@ class TestDebitFunction:
             )
 
 
+# ─── billing.can_afford (0.11.0) ────────────────────────────
+
+
+@pytest.mark.django_db
+class TestCanAffordFunction:
+    """The read-only pre-flight that replaces probing with a real hold."""
+
+    def _fund(self, user, balance):
+        from stapel_billing.models import LotSource
+
+        services.credit(
+            user=user,
+            credits=balance,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
+
+    def test_yes_and_no_are_both_ok_answers(self, user):
+        self._fund(user, 20)
+
+        yes = call("billing.can_afford", {"user_id": str(user.pk), "credits": 20})
+        assert yes == {
+            "ok": True,
+            "affordable": True,
+            "balance": 20,
+            "shortfall": 0,
+            "reason": None,
+        }
+
+        no = call("billing.can_afford", {"user_id": str(user.pk), "credits": 21})
+        assert no["ok"] is True          # the question was answerable
+        assert no["affordable"] is False  # the answer is no
+        assert no["shortfall"] == 1
+        assert no["reason"] == "insufficient_credits"
+
+    def test_it_reserves_nothing(self, user):
+        from stapel_billing.models import CreditHold, CreditLot
+
+        self._fund(user, 20)
+        before = (CreditHold.objects.count(), CreditLot.objects.count())
+        call("billing.can_afford", {"user_id": str(user.pk), "credits": 5})
+        assert (CreditHold.objects.count(), CreditLot.objects.count()) == before
+
+    def test_an_unknown_user_is_a_failed_question_not_a_no(self, db):
+        import uuid
+
+        answer = call(
+            "billing.can_afford", {"user_id": str(uuid.uuid4()), "credits": 5}
+        )
+        assert answer["ok"] is False
+        assert answer["reason"] == "user_not_found"
+
+    def test_payload_schema_enforced_through_comm_call(self, user):
+        with pytest.raises(SchemaValidationError):
+            call("billing.can_afford", {"user_id": str(user.pk)})
+        with pytest.raises(SchemaValidationError):
+            call("billing.can_afford", {"user_id": str(user.pk), "credits": 0})
+
+
+# ─── billing.debit, partial mode (0.11.0) ───────────────────
+
+
+@pytest.mark.django_db
+class TestPartialDebitFunction:
+    def test_partial_charges_what_it_can_and_reports_the_debt(self, user):
+        from stapel_billing.models import LotSource
+
+        services.credit(
+            user=user,
+            credits=4,
+            type=TransactionType.CREDIT_PURCHASE,
+            source=LotSource.PURCHASE,
+        )
+        result = call(
+            "billing.debit",
+            {
+                "user_id": str(user.pk),
+                "credits": 10,
+                "idempotency_key": "job-partial-1",
+                "allow_partial": True,
+            },
+        )
+        assert result["ok"] is True
+        assert (result["requested"], result["debited"], result["shortfall"]) == (
+            10,
+            4,
+            6,
+        )
+        assert result["debt_id"]
+
+    def test_without_the_flag_the_refusal_is_unchanged(self, user):
+        result = call(
+            "billing.debit",
+            {
+                "user_id": str(user.pk),
+                "credits": 10,
+                "idempotency_key": "job-strict-1",
+            },
+        )
+        assert result["ok"] is False
+        assert result["reason"] == "insufficient_credits"
+        assert "shortfall" not in result
+
+
 # ─── Contract files ─────────────────────────────────────────
 
 
@@ -345,6 +449,10 @@ class TestFunctionSchemas:
         for name, schema in [
             (ent.CHECK_ENTITLEMENT, ent.CHECK_ENTITLEMENT_SCHEMA),
             (ent.DEBIT, ent.DEBIT_SCHEMA),
+            (ent.HOLD, ent.HOLD_SCHEMA),
+            (ent.CAPTURE, ent.CAPTURE_SCHEMA),
+            (ent.RELEASE, ent.RELEASE_SCHEMA),
+            (ent.CAN_AFFORD, ent.CAN_AFFORD_SCHEMA),
         ]:
             committed = json.loads((schemas_dir / f"{name}.json").read_text())
             assert schema == committed

@@ -498,6 +498,51 @@
           "user_id"
         ]
       },
+      "CreditDebtResponse": {
+        "type": "object",
+        "description": "Credits this wallet owes — service given, or money taken back.\n\nA debt is not a negative balance: the balance still counts the credits\nthat exist. It is collected automatically from the next credits that\narrive, oldest debt first, before they become spendable.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Debt UUID"
+          },
+          "credits_outstanding": {
+            "type": "integer",
+            "description": "Credits still owed"
+          },
+          "credits_initial": {
+            "type": "integer",
+            "description": "Credits the debt was opened for"
+          },
+          "reason": {
+            "type": "string",
+            "description": "partial_debit (work served without cover) or clawback"
+          },
+          "type": {
+            "type": "string",
+            "description": "Transaction type the settlement is billed under"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the uncovered charge was, or null"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "ISO 8601"
+          }
+        },
+        "required": [
+          "created_at",
+          "credits_initial",
+          "credits_outstanding",
+          "description",
+          "id",
+          "reason",
+          "type"
+        ]
+      },
       "CreditHoldResponse": {
         "type": "object",
         "description": "A reservation: credits already out of the spendable balance.\n\nA hold is a real withdrawal, not an overlay — its credits are gone from\n``balance`` from the moment it is created, and come back only if it is\nreleased or expires.",
@@ -907,6 +952,17 @@
             ],
             "nullable": true,
             "description": "The earliest-expiring live lot; null if none expires"
+          },
+          "debts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditDebtResponse"
+            },
+            "description": "Open debts, oldest first — the order they are collected in"
+          },
+          "debt_outstanding": {
+            "type": "integer",
+            "description": "Total credits owed. The next credits into this"
           }
         },
         "required": [

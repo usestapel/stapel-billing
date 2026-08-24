@@ -25,7 +25,15 @@ PYTHON ?= python3
 # and three scheduled workers — and the errors section (~700 tokens) is owned by
 # stapel-core, so a key added upstream would otherwise turn this release red for
 # reasons nothing in this repo can fix. Trim intents before raising it again.
-LLMS_BUDGET ?= 4400
+#
+# Raised again in 0.11.0, after trimming: the audit wave added twelve callable
+# entries — non-provider plan grants (3), debts and partial charges (2), the
+# read-only affordability check, the clawback primitive and the three refund
+# webhooks that drive it, plus the grant worker. Every one of them is a
+# mechanism a consumer must call instead of writing its own, which is exactly
+# what this file exists to tell an agent; the intents were cut to one or two
+# sentences first, and the remaining ~950 tokens are the surface itself.
+LLMS_BUDGET ?= 5400
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

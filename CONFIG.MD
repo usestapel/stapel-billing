@@ -42,11 +42,49 @@ only for `1` / `true` / `yes` / `on`, and the default-on
 | STRIPE_WEBHOOK_HANDLERS | env | extension point: Stripe event type → handler (callable, dotted path, or `None` to switch a built-in off), merged OVER `webhooks.BUILTIN_STRIPE_HANDLERS`, last-wins per type. A host reacts to a new event, or replaces a built-in reaction, without forking `StripeWebhookView`; signature, idempotency claim and processed mark stay the view's. An entry that does not resolve is boot check `E106`. | no | {} |
 | STRICT_CHECKOUT_RECONCILIATION | env | reconcile the processor's checkout object (mode, payment status, currency, amount vs. catalog price, buyer) before granting. Off takes the session's metadata on faith. | no | true |
 | HOLD_DEFAULT_TTL_SECONDS | env | how long a `services.hold()` reservation stays valid when the caller sets no deadline — the bound on how long a crashed pipeline can keep a customer's credits reserved. `expire_holds` releases holds past it. 0 (or None) = never sweep, which is a decision, not a default. | no | 3600 |
+| PLAN_BUNDLE_ENTITLEMENTS | env | seam: dotted path to a zero-argument callable yielding `{"user_id": ..., "plan": <slug>}` rows (or `(user_id, plan_slug)` pairs) — who receives a plan bundle that no payment provider grants. Driven by `tasks.grant_plan_bundles`. Never read from the environment: it decides who is handed free credits. Plan membership is HOST knowledge; the default only fits hosts that keep the plan on the local `Subscription` row. | no | stapel_billing.services.default_plan_bundle_entitlements |
+| LEGACY_IDEMPOTENCY_JSON_LOOKUP | env | keep answering the pre-0.11.0 spelling of the retry key (`metadata->>'idempotency_key'`, an unindexed scan of the wallet's whole transaction history) after the indexed `Transaction.idempotency_key` column misses. Turn it off ONLY after backfilling that column — before the backfill, every pre-0.11.0 key becomes a fresh charge. | no | true |
 
 ## Scheduling (not a settings key, but required configuration)
 
 `stapel_billing.tasks.get_billing_beat_schedule()` must be spread into the host's
-`CELERY_BEAT_SCHEDULE` (or its three plain callables run from cron). Credits are
+`CELERY_BEAT_SCHEDULE` (or its four plain callables run from cron). Credits are
 granted with an expiry that only becomes real because `expire_credit_lots` runs;
 abandoned reservations only come back because `expire_holds` runs. System check
 `stapel_billing.W105` reports a beat-driven host that schedules neither.
+
+Since 0.11.0 the schedule carries a fourth worker, `grant_plan_bundles`: the
+plan bundles that no payment provider sells. Every other grant path in this
+module runs off a Stripe webhook, so a free tier — which has no Stripe
+subscription — was handed nothing at all, however many credits its catalogue
+entry advertised. The grant is idempotent per (wallet, plan, period), so the
+worker is safe to run daily and safe to run by hand. System check
+`stapel_billing.W106` reports a beat-driven host whose default plan bundles
+credits with no worker scheduled to hand them over.
+
+### Host wiring for non-Stripe plans
+
+The "who is entitled" question is the seam, because plan membership is the
+host's fact, not this module's:
+
+```python
+STAPEL_BILLING = {
+    # Default: reads the local Subscription row, skipping anything with a
+    # stripe_subscription_id (the invoices already grant those).
+    "PLAN_BUNDLE_ENTITLEMENTS": "myproject.billing.who_gets_credits",
+}
+
+# myproject/billing.py
+def who_gets_credits():
+    for org in Organisation.objects.filter(contract__active=True):
+        yield {"user_id": org.owner_id, "plan": org.contract.plan_slug}
+```
+
+A host that assigns a plan at signup can also grant that period's bundle on
+the spot — the sweep will not grant it twice:
+
+```python
+from stapel_billing import services
+
+services.grant_plan_bundle(user=user, plan_slug="free")
+```

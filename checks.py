@@ -209,6 +209,58 @@ def check_expiry_is_scheduled(app_configs, **kwargs):
 
 
 @checks.register(checks.Tags.compatibility)
+def check_plan_bundle_grants_are_scheduled(app_configs, **kwargs):
+    """W106: a plan bundles credits that nothing hands over.
+
+    Credits used to enter a wallet only through a Stripe webhook, so a plan
+    whose bundle is not sold through Stripe granted nothing at all — its
+    ``monthly_credits_included`` was a number in a catalogue that no code
+    path read, and the customers on it started and stayed at zero. 0.11.0
+    adds the worker that grants it; a deployment that configures the
+    catalogue and not the worker is back in the old state, and the honest
+    moment to learn that is deploy.
+
+    Narrow on purpose. It fires only when the plan every user without a
+    subscription row falls back to bundles credits — the free-tier case
+    this exists for — and only for hosts that drive a beat schedule (a host
+    on its own cron runs callables this process cannot see, and must not be
+    second-guessed).
+    """
+    from django.conf import settings
+
+    from .catalog import PLANS_BY_SLUG
+    from .models import Subscription
+    from .tasks import GRANT_PLAN_BUNDLES_TASK_NAME
+
+    schedule = getattr(settings, "CELERY_BEAT_SCHEDULE", None)
+    if not schedule:
+        return []
+    scheduled = {(entry or {}).get("task") for entry in schedule.values()}
+    if GRANT_PLAN_BUNDLES_TASK_NAME in scheduled:
+        return []
+    slug = Subscription._meta.get_field("plan").get_default()
+    entry = PLANS_BY_SLUG.get(slug)
+    if entry is None or entry.monthly_credits_included <= 0:
+        return []
+    return [checks.Warning(
+        f"The default plan {slug!r} bundles {entry.monthly_credits_included} "
+        "credit(s) per period, but CELERY_BEAT_SCHEDULE has no entry for "
+        f"{GRANT_PLAN_BUNDLES_TASK_NAME}: nothing grants them. Every other "
+        "grant path in this module runs off a Stripe webhook, and a free "
+        "tier has no Stripe subscription — so those users sit at a zero "
+        "balance while the catalogue advertises credits.",
+        hint=(
+            "CELERY_BEAT_SCHEDULE = {**get_billing_beat_schedule(), ...} "
+            "(stapel_billing.tasks), run stapel_billing.tasks."
+            "grant_plan_bundles from your own scheduler, or call "
+            "stapel_billing.services.grant_plan_bundle where your host "
+            "assigns the plan."
+        ),
+        id="stapel_billing.W106",
+    )]
+
+
+@checks.register(checks.Tags.compatibility)
 def check_stripe_webhook_handlers(app_configs, **kwargs):
     """E106: every registered Stripe webhook handler must resolve.
 

@@ -86,6 +86,24 @@ DEFAULTS = {
     # forking StripeWebhookView; signature verification, the idempotency
     # claim and the processed mark stay the view's and wrap every handler.
     "STRIPE_WEBHOOK_HANDLERS": {},
+    # Who is entitled to a plan bundle that no payment provider grants —
+    # the free tier, an invoiced enterprise agreement, a plan the host
+    # assigns from its own admin. A dotted path to a zero-argument callable
+    # yielding {"user_id": ..., "plan": <slug>} mappings (or (user_id,
+    # plan_slug) pairs); driven by the stapel_billing.tasks.
+    # grant_plan_bundles worker. Plan membership is HOST knowledge — the
+    # default below is only right for hosts that keep the plan on the local
+    # Subscription row (see services.default_plan_bundle_entitlements).
+    "PLAN_BUNDLE_ENTITLEMENTS": (
+        "stapel_billing.services.default_plan_bundle_entitlements"
+    ),
+    # Keep answering the pre-0.11.0 spelling of the idempotency key
+    # (metadata->>'idempotency_key', an unindexed JSON scan over the
+    # wallet's whole transaction history) after the indexed column lookup
+    # misses. Expand-only: rows written before 0.11.0 have the key ONLY in
+    # metadata, so turning this off before backfilling
+    # Transaction.idempotency_key would make old keys re-charge.
+    "LEGACY_IDEMPOTENCY_JSON_LOOKUP": True,
     # Reconcile the provider's checkout object (mode, payment status,
     # currency, amount, owner) against the catalog before granting credits
     # or a plan. Off means the provider's metadata is taken on faith.
@@ -95,14 +113,17 @@ DEFAULTS = {
 billing_settings = AppSettings(
     "STAPEL_BILLING",
     defaults=DEFAULTS,
-    import_strings=("PAYMENT_PROVIDER",),
+    import_strings=("PAYMENT_PROVIDER", "PLAN_BUNDLE_ENTITLEMENTS"),
     # PAYMENT_PROVIDER decides which class handles money — checkout,
     # subscriptions, webhook verification. The name is generic enough that a
     # same-named env var in a shared pod or compose file could swap it
     # silently, so it resolves from the namespace dict, a flat Django setting
     # or the default only (the gateway and workspaces apply the same rule to
     # their own seams).
-    no_env=("PAYMENT_PROVIDER",),
+    # PLAN_BUNDLE_ENTITLEMENTS decides who is handed free credits every
+    # period, so it gets the same treatment for the same reason: a
+    # same-named env var in a shared pod must not be able to redirect it.
+    no_env=("PAYMENT_PROVIDER", "PLAN_BUNDLE_ENTITLEMENTS"),
 )
 
 #: Values an environment variable may spell "yes" with. AppSettings resolves
@@ -186,10 +207,21 @@ def strict_checkout_reconciliation() -> bool:
     return _closed_unless_denied("STRICT_CHECKOUT_RECONCILIATION")
 
 
+def legacy_idempotency_json_lookup() -> bool:
+    """``LEGACY_IDEMPOTENCY_JSON_LOOKUP`` as a bool (see :data:`_FALSY`).
+
+    Default-on: switching it off before the backfill turns every
+    pre-0.11.0 retry key into a fresh charge, so only an explicit "no"
+    closes it.
+    """
+    return _closed_unless_denied("LEGACY_IDEMPOTENCY_JSON_LOOKUP")
+
+
 __all__ = [
     "billing_settings",
     "allow_unconfigured_payment_provider",
     "hold_default_ttl_seconds",
+    "legacy_idempotency_json_lookup",
     "allow_unknown_entitlement_keys",
     "allow_unknown_plan_slugs",
     "allow_unvalidated_redirect_urls",

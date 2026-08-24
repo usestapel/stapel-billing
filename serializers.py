@@ -9,6 +9,7 @@ from .dto import (
     CheckoutRequest,
     CheckoutResponse,
     CreditDebitRequest,
+    CreditDebtResponse,
     CreditHoldResponse,
     CreditLotResponse,
     CreditOperationResponse,
@@ -38,6 +39,11 @@ class CreditLotResponseSerializer(StapelDataclassSerializer):
 class CreditHoldResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = CreditHoldResponse
+
+
+class CreditDebtResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = CreditDebtResponse
 
 
 class ExpiringCreditsResponseSerializer(StapelDataclassSerializer):

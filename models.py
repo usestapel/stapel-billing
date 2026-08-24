@@ -62,6 +62,23 @@ class TransactionType(models.TextChoices):
     EXPIRATION = "expiration", "Credit Expiration"
 
 
+class DebtReason(models.TextChoices):
+    """Why a wallet owes credits it never had.
+
+    The two ways a balance can legitimately go below zero are opposite in
+    time — one is service handed out before it was paid for, the other is
+    payment taken back after the credits were spent — and a support answer
+    ("why does this wallet owe 40") has to be able to tell them apart.
+    """
+
+    #: :func:`services.debit` was called with ``allow_partial=True`` and the
+    #: wallet could not cover the charge. The work was served anyway.
+    PARTIAL_DEBIT = "partial_debit", "Partial Debit"
+    #: A refund, dispute or credit note took back money whose credits were
+    #: already spent, so there was nothing left to claw back.
+    CLAWBACK = "clawback", "Clawback"
+
+
 class LotSource(models.TextChoices):
     """Why a lot of credits exists.
 
@@ -243,6 +260,18 @@ class Transaction(models.Model):
     balance_after = models.IntegerField()
     description = models.CharField(max_length=255, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=(
+            "The caller's retry key, mirrored out of metadata into an "
+            "indexed column. Empty when the caller supplied none. The "
+            "duplicate lookup in services.credit/debit reads this column; "
+            "metadata['idempotency_key'] stays the compatible spelling for "
+            "rows written before 0.11.0."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -251,6 +280,15 @@ class Transaction(models.Model):
         indexes = [
             models.Index(fields=["wallet", "-created_at"]),
             models.Index(fields=["type"]),
+            # The idempotency short-circuit, which every debit and credit
+            # runs before it moves a credit. Until 0.11.0 the only spelling
+            # of the key was ``metadata->>'idempotency_key'``, so the guard
+            # scanned the wallet's whole transaction history on each charge —
+            # an unbounded, ever-growing table for the busiest wallets.
+            models.Index(
+                fields=["wallet", "idempotency_key"],
+                name="billing_txn_wallet_idem_idx",
+            ),
         ]
 
     def __str__(self):
@@ -372,6 +410,86 @@ class HoldAllocation(models.Model):
         return f"HoldAllocation({self.hold_id}): {self.credits} from lot {self.lot_id}"
 
 
+class CreditDebt(models.Model):
+    """Credits a wallet owes: service already given, or money taken back.
+
+    A balance is a count of credits that exist, and credits that were spent
+    do not come back into existence because a charge failed — so "this
+    wallet is 40 credits short" cannot be expressed by driving the balance
+    negative without making every lot, every expiry and every
+    ``balance_after`` in the ledger a lie. The shortfall is its own row
+    instead: the lots stay a truthful record of what was alive, and the debt
+    stays a truthful record of what was consumed without cover.
+
+    Two writers create these (see :class:`DebtReason`): a partial debit,
+    where the consumer chose to serve the work rather than refuse it, and a
+    clawback, where a refund arrived after the granted credits were spent.
+
+    Debts are collected, not chased: the next :func:`services.credit` into
+    this wallet settles them oldest-first before the credits become
+    spendable, under the same row lock every other operation takes.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    #: PROTECT, like Transaction: an unpaid debt is not disposable data.
+    wallet = models.ForeignKey(Wallet, on_delete=models.PROTECT, related_name="debts")
+    credits_initial = models.IntegerField(help_text="Credits this debt was opened for.")
+    credits_outstanding = models.IntegerField(
+        help_text="Credits still owed. 0 once settled_at is set."
+    )
+    reason = models.CharField(
+        max_length=16,
+        choices=DebtReason.choices,
+        help_text="Why the wallet owes this (see DebtReason).",
+    )
+    type = models.CharField(
+        max_length=32,
+        choices=TransactionType.choices,
+        help_text=(
+            "Transaction type the settlement is billed under — the type the "
+            "uncovered charge would have carried."
+        ),
+    )
+    description = models.CharField(max_length=255, null=True, blank=True)
+    #: Caller context; carried onto the settlement rows.
+    metadata = models.JSONField(default=dict, blank=True)
+    idempotency_key = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="The debiting caller's retry key, when it supplied one.",
+    )
+    transaction = models.ForeignKey(
+        Transaction,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="debts",
+        help_text="The ledger row that recorded the uncovered part.",
+    )
+    settled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the last outstanding credit was collected. NULL = open.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "billing_credit_debt"
+        # Oldest first: the collection order, and the order a support answer
+        # reads them in.
+        ordering = ["created_at", "id"]
+        indexes = [
+            # The collection walk: one wallet's open debts, oldest first.
+            models.Index(fields=["wallet", "settled_at", "created_at"]),
+            models.Index(fields=["wallet", "idempotency_key"]),
+        ]
+
+    def __str__(self):
+        state = "settled" if self.settled_at else "open"
+        return f"CreditDebt({self.reason}, {state}): {self.credits_outstanding}/{self.credits_initial}"
+
+
 class Subscription(models.Model):
     """Stripe-backed subscription. One per User."""
 
@@ -454,6 +572,15 @@ class ProviderGrant(models.Model):
     #: the event that carried it.
     SCOPE_CHECKOUT_SESSION = "checkout_session"
     SCOPE_INVOICE = "invoice"
+    #: One provider event that takes money back (refund, dispute, credit
+    #: note). The clawback it drives is a spend, so a redelivery must not
+    #: run it twice.
+    SCOPE_CLAWBACK = "clawback"
+    #: One (wallet, plan, period) bundle granted without a provider —
+    #: :func:`services.grant_plan_bundle`. ``provider`` is ``"local"``
+    #: there: nothing external issued it, and the deduplication is the
+    #: same problem regardless.
+    SCOPE_PLAN_BUNDLE = "plan_bundle"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     provider = models.CharField(max_length=32, default="stripe")
@@ -472,6 +599,45 @@ class ProviderGrant(models.Model):
 
     def __str__(self):
         return f"{self.provider}:{self.scope}:{self.external_id}"
+
+
+@access.ops
+class PendingSubscriptionPeriod(models.Model):
+    """A billing period that arrived before the subscription it belongs to.
+
+    Stripe does not promise event order. ``customer.subscription.created``
+    can land before the ``checkout.session.completed`` that creates the
+    local row, and until 0.11.0 the handler simply returned when it found
+    no row — throwing away the only payload that carries the period. The
+    checkout then granted an UNDATED subscription lot, and the event that
+    would have dated it had already been consumed and marked processed, so
+    the bundle never expired: a cancelled subscriber kept it forever.
+
+    A stash is not a second source of truth — it is the same fact, parked
+    under the provider id it names, and deleted the moment the local
+    subscription claims it.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    stripe_subscription_id = models.CharField(max_length=255, unique=True)
+    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Provider-side status string, applied when the row lands.",
+    )
+    current_period_start = models.DateTimeField(null=True, blank=True)
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "billing_pending_subscription_period"
+        indexes = [models.Index(fields=["stripe_customer_id"])]
+
+    def __str__(self):
+        return f"PendingSubscriptionPeriod({self.stripe_subscription_id})"
 
 
 @access.ops

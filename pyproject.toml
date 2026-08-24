@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.10.0"
+version = "0.11.0"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }

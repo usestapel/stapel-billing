@@ -1,7 +1,7 @@
 {
   "module": "stapel-billing",
-  "version": "0.10.0",
-  "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, one-off credit packages and subscription plans, Stripe-backed checkout and customer portal, idempotent webhooks and a service-to-service debit endpoint.",
+  "version": "0.11.0",
+  "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
       "key": "PAYMENT_PROVIDER",
@@ -43,6 +43,11 @@
       "name": "serializer_seams",
       "kind": "class_override",
       "summary": "Every billing view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL."
+    },
+    {
+      "name": "PLAN_BUNDLE_ENTITLEMENTS",
+      "kind": "dotted_path",
+      "summary": "Decide who receives a plan bundle that no payment provider grants (the free tier, an invoiced agreement, a plan the host assigns itself). Point the setting at a callable yielding {user_id, plan} rows; the default reads the local Subscription row, which is only right for hosts that keep plan membership there."
     }
   ],
   "surface": [
@@ -64,6 +69,16 @@
       "instead_of": [
         "django.conf.settings.STAPEL_BILLING[\"PLANS\"]",
         "stapel_billing.catalog.DEFAULT_PLANS"
+      ]
+    },
+    {
+      "name": "can_afford",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.can_afford",
+      "intent": "Ask whether a charge of N credits would go through — a pure read over the live lots: no lock, no hold, no row written. Use it for pre-flight refusals and for showing or hiding an action. Never probe with a real hold you then release: each probe returns the credits as a NEW lot, fragmenting the wallet without bound.",
+      "instead_of": [
+        "stapel_billing.services.hold",
+        "stapel_billing.models.Wallet.balance"
       ]
     },
     {
@@ -91,6 +106,15 @@
       "intent": "Claim one provider object (a checkout session, an invoice) for a grant, returning False when someone already claimed it — the database-enforced answer to \"has this been paid out yet?\". Call it inside the transaction that grants, so claim and credit commit together; a read-then-credit check over ledger metadata cannot see a concurrent delivery of a DIFFERENT event describing the same invoice, and both of them pay.",
       "instead_of": [
         "stapel_billing.models.Transaction.objects.filter(metadata__stripe_invoice_id=...).exists"
+      ]
+    },
+    {
+      "name": "claw_back_grant",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.claw_back_grant",
+      "intent": "Take the credits of one grant back after a refund, dispute or credit note: consumes only that grant's lots, forgives what already expired unspent, records what was already spent as a debt the next top-up collects. The three refund webhooks call it; reach for it when money goes back some other way.",
+      "instead_of": [
+        "stapel_billing.services.debit"
       ]
     },
     {
@@ -122,6 +146,15 @@
       ]
     },
     {
+      "name": "current_period_key",
+      "kind": "factory",
+      "path": "stapel_billing.services.current_period_key",
+      "intent": "The key naming the current bundle period ('2026-08'). It is grant_plan_bundle's idempotency unit, so spell it with this rather than formatting a date: two spellings of one month are two bundles.",
+      "instead_of": [
+        "datetime.datetime.strftime"
+      ]
+    },
+    {
       "name": "debit",
       "kind": "factory",
       "path": "stapel_billing.services.debit",
@@ -129,6 +162,15 @@
       "instead_of": [
         "stapel_billing.models.Transaction.objects.create",
         "stapel_billing.models.Wallet.balance"
+      ]
+    },
+    {
+      "name": "default_plan_bundle_entitlements",
+      "kind": "factory",
+      "path": "stapel_billing.services.default_plan_bundle_entitlements",
+      "intent": "The stock answer to 'who gets a non-provider bundle': every wallet whose plan bundles credits Stripe is not already granting. Wrap it when writing your own resolver instead of re-deriving the Stripe-vs-local rule that stops a subscriber being granted twice.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.objects.filter"
       ]
     },
     {
@@ -151,10 +193,37 @@
       ]
     },
     {
+      "name": "grant_plan_bundle",
+      "kind": "factory",
+      "path": "stapel_billing.services.grant_plan_bundle",
+      "intent": "Grant one period's plan bundle WITHOUT a payment provider — the free tier, an invoiced agreement, a plan a host assigns itself. Idempotent per (wallet, plan, period), and the lot expires with the period. Every other grant here runs off a Stripe webhook, so a plan not sold through Stripe granted nothing until you call this.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
+    },
+    {
+      "name": "handle_charge_refunded",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.handle_charge_refunded",
+      "intent": "Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated when the refund was partial. Name it only to wrap or replace it."
+    },
+    {
       "name": "handle_checkout_completed",
       "kind": "gate_function",
       "path": "stapel_billing.services.handle_checkout_completed",
       "intent": "The exact reconciliation this module performs when checkout.session.completed fires: award the package's credits, or open/refresh the Subscription and grant the plan's first monthly bundle, each with its payment.completed / subscription.changed announcement. Read it before writing a parallel handler for the same event, and never call it outside StripeWebhookView's StripeWebhookEvent claim + row lock — at-least-once delivery double-grants otherwise."
+    },
+    {
+      "name": "handle_credit_note_created",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.handle_credit_note_created",
+      "intent": "Built-in handler for `credit_note.created`: an invoice credited back takes its bundle back too. Name it only to wrap or replace it."
+    },
+    {
+      "name": "handle_dispute_created",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.handle_dispute_created",
+      "intent": "Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a dispute won later is one manual credit, a dispute lost after the credits are spent is unrecoverable."
     },
     {
       "name": "handle_invoice_paid",
@@ -193,12 +262,39 @@
       ]
     },
     {
+      "name": "open_debts",
+      "kind": "factory",
+      "path": "stapel_billing.services.open_debts",
+      "intent": "One wallet's uncollected debts, oldest first — the order they are collected in. Read it to show an owner why their next top-up will partly disappear; the collection itself happens inside credit().",
+      "instead_of": [
+        "stapel_billing.models.CreditDebt.objects.filter"
+      ]
+    },
+    {
       "name": "open_holds",
       "kind": "factory",
       "path": "stapel_billing.services.open_holds",
       "intent": "The reservations still holding a wallet's credits (status=held) — the credits already gone from the spendable balance and not yet billed. Ask it what is outstanding rather than filtering CreditHold by hand: captured, released and expired holds are history, and counting them is how a product invents a second, wrong 'available balance'.",
       "instead_of": [
         "stapel_billing.models.CreditHold.objects.filter"
+      ]
+    },
+    {
+      "name": "outstanding_debt",
+      "kind": "factory",
+      "path": "stapel_billing.services.outstanding_debt",
+      "intent": "Total credits a wallet owes, as one integer — what stands between its balance and what the owner can spend next period. 0 for almost every wallet.",
+      "instead_of": [
+        "stapel_billing.models.CreditDebt.objects.aggregate"
+      ]
+    },
+    {
+      "name": "plan_bundle_entitlements",
+      "kind": "factory",
+      "path": "stapel_billing.services.plan_bundle_entitlements",
+      "intent": "The configured entitlement resolver, normalised to {user_id, plan} rows and tolerant of one bad row. Call this, not the setting's callable, if you drive the grants from your own scheduler.",
+      "instead_of": [
+        "django.conf.settings.STAPEL_BILLING[\"PLAN_BUNDLE_ENTITLEMENTS\"]"
       ]
     },
     {
@@ -243,6 +339,12 @@
       "kind": "factory",
       "path": "stapel_billing.tasks.get_billing_beat_schedule",
       "intent": "Spread `**get_billing_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all three billing workers at once (credit expiry, abandoned-hold release, reconciliation). Hand-authoring the entries is how expire_credit_lots gets silently dropped."
+    },
+    {
+      "name": "grant_plan_bundles",
+      "kind": "gate_function",
+      "path": "stapel_billing.tasks.grant_plan_bundles",
+      "intent": "The worker that grants the current period's bundle to every entitled wallet — without it a free plan's monthly_credits_included is a number nothing reads. Idempotent per period; wire it via get_billing_beat_schedule()."
     },
     {
       "name": "reconcile_wallets",

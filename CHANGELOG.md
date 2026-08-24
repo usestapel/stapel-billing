@@ -5,6 +5,152 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-24
+
+The production-audit wave. Seven findings, all of them the same shape: a
+mechanism that existed for one path and silently did nothing on every other
+one. Additive throughout — a host on 0.10.0 APIs needs no code change.
+
+### Added
+
+**Plan bundles that no payment provider sells.** Credits entered a wallet
+only through a Stripe webhook, so a plan not sold through Stripe granted
+nothing at all: a free tier's `monthly_credits_included` was a number in a
+catalogue that no code path read, and those users started and stayed at zero.
+
+`services.grant_plan_bundle(user=..., plan_slug=..., period_key=...)` grants
+one period's bundle as an **expiring** lot, idempotent per
+`(wallet, plan, period)` through the same unique `ProviderGrant` claim the
+provider grants use (`provider="local"`, scope `plan_bundle`). Two sweeps in a
+month, an operator re-running the job, and a host that also grants at signup
+all produce one bundle. `expires_at` defaults to the end of the `YYYY-MM`
+period the key names — a bundle that belongs to a period must die with it, or
+a free tier quietly becomes a growing balance nobody sold.
+
+`tasks.grant_plan_bundles` drives it (daily in `get_billing_beat_schedule()`),
+and **who is entitled is a seam**:
+`STAPEL_BILLING["PLAN_BUNDLE_ENTITLEMENTS"]`, because plan membership is host
+knowledge. The default reads the local `Subscription` row and skips anything
+carrying a `stripe_subscription_id` — those are granted by the provider's
+invoices, and granting again here would double them. New check
+**`stapel_billing.W106`** when the default plan bundles credits and a
+beat-driven host has no entry for the worker.
+
+**Partial charges and tracked debt.** `debit()` was all-or-nothing, so a
+consumer that had already done the work could only refuse a completed job or
+serve it and let the shortfall vanish. Free service that nothing records is
+indistinguishable from a bug.
+
+`debit(..., allow_partial=True)` charges what the wallet has, records the rest
+as a `CreditDebt` row, and returns a `DebitResult`
+(`debited` / `shortfall` / `debt_id` / `balance`). A debt is not a negative
+balance: the balance counts credits that exist, and credits already spent do
+not come back into existence because a charge failed — driving it below zero
+would make every lot, every expiry and every `balance_after` untrue. Debts are
+**collected automatically**: every `credit()` settles the wallet's outstanding
+debts oldest-first, inside the same row lock, before the new credits become
+spendable (`settle_debts=False` opts one grant out). The wallet endpoint
+publishes `debts[]` and `debt_outstanding`.
+
+**Refund / dispute / credit-note clawback.** Nothing handled money going the
+other way: the card was refunded, the dispute was lost, the invoice was
+credited — and the credits those payments bought stayed spendable. Three
+handlers join the 0.10.0 registry (`charge.refunded`,
+`charge.dispute.created`, `credit_note.created`) over a new primitive,
+`services.claw_back_grant()`, which splits the amount three ways: `reclaimed`
+(still in the lots that grant created), `forgiven` (already expired unspent —
+the deployment took those credits back once already) and `outstanding`
+(already spent, and now a `CreditDebt`). Only the refunded grant's own lots
+are touched: taking the shortfall out of the rest of the wallet would pay a
+refunded subscription back with credits the customer bought for cash.
+Idempotent per **event**, since two partial refunds of one charge are two real
+clawbacks.
+
+**Read-only affordability.** `services.can_afford()` / the new
+`billing.can_afford` comm Function answer "would a charge of N go through"
+without a lock, a hold, a lot or an allocation. Consumers were pre-flighting
+with a real `hold()` they immediately released, and every such probe returned
+the credits as a *new* `hold_release` lot — an affordability check per request
+grew the customer's lot table without bound and slowed every later spend. It
+answers from the lots, not the cached balance: a lot past its deadline that
+the sweep has not reached still counts in the cache, and a debit would refuse
+it.
+
+**Erasure covers the new rows.** `CreditDebt` joins the export
+(`credit_debts`) and the free-text scrub — a debt carries the debiting
+caller's `description` and `metadata` verbatim, the same problem a hold has —
+and the 0.11.0 accounting keys join `LEDGER_METADATA_KEYS`, so what a partial
+charge, a settlement or a clawback *was* stays explainable after the person is
+gone. The receipt's `counts` gains `credit_debts`.
+
+**Admin: an explicit grant action.** `WalletAdmin` gains "Grant credits",
+which goes through `services.credit()` with a required reason written onto the
+ledger row. `CreditDebt` gets a read-only admin.
+
+### Fixed
+
+**The phantom hold (`services.hold`).** The idempotency short-circuit matched
+an existing hold in ANY status, so re-using a key whose hold had been
+released, captured or expired answered "ok, reserved" with **nothing
+reserved** — and the capture that followed failed with `hold_not_held`, at the
+point where the work was already done and had to be given away. The
+short-circuit now covers only a hold that is still `held`; a resolved key
+raises `HoldKeyResolvedError` (carrying the hold and its status), and
+`billing.hold` answers `ok=False, reason="hold_already_resolved"` with that
+status so the caller can tell a finished retry from a new operation that needs
+a new key.
+
+**`WalletAdmin.balance` was editable.** It is a *cache* of the live lots: an
+edit wrote a number the lots do not support, no ledger row explained it, and
+the next operation — which recomputes the cache under the wallet's row lock —
+threw the edit away. Now read-only.
+
+**Subscription events are not ordered.** `customer.subscription.updated` with
+no local row returned silently, throwing away the only payload that carries
+the billing period: the checkout that landed a moment later granted an
+**undated** subscription lot, the event that would have dated it was already
+marked processed, and the bundle a cancelled subscriber kept never expired.
+The period is now parked in `PendingSubscriptionPeriod` under the provider's
+subscription id and claimed by the checkout before it reads
+`current_period_end`; a row created by checkout without a subscription id is
+adopted by customer id; and `handle_subscription_deleted` stamps the period
+too, since a cancellation is the last event that carries one.
+
+### Changed
+
+**The idempotency lookup has an index.** Every debit and credit ran its
+duplicate guard as `metadata->>'idempotency_key'` — an unindexed scan over the
+wallet's entire, ever-growing transaction history, on the charge path.
+`Transaction.idempotency_key` is now an indexed column, double-written
+alongside the metadata key. Expand-only: rows written before 0.11.0 carry the
+key only in `metadata`, so the JSON query stays as a fallback
+(`STAPEL_BILLING["LEGACY_IDEMPOTENCY_JSON_LOOKUP"]`, default on) until a host
+has backfilled the column.
+
+Checkout grants now also record `stripe_payment_intent` / `stripe_invoice_id`
+in their metadata — without them a refund names a payment this deployment
+cannot match to the grant it paid for.
+
+`llms.txt` budget raised 4400 → 5400 after trimming: the callable surface grew
+by twelve entries, and every one of them is a mechanism a consumer must call
+instead of writing its own.
+
+### Migrations
+
+`0005_credit_debt_and_idempotency_index` — expand-only, backfill-free: two new
+tables (`billing_credit_debt`, `billing_pending_subscription_period`), one new
+nullable-by-default column with its index
+(`billing_transaction.idempotency_key`). Nothing is dropped and no data moves;
+an 0.10.0 writer keeps working unchanged.
+
+### Contract
+
+`docs/schema.json` gains `CreditDebtResponse` and the wallet response's
+`debts` / `debt_outstanding` fields. **Follow-up (not done here):**
+`stapel-example-monolith`'s committed aggregate must be regenerated — its
+billing slice no longer matches, and `test_matches_monolith_billing_slice`
+(workspace-only; skipped in module CI) fails until it is.
+
 ## [0.10.0] — 2026-08-24
 
 ### Added

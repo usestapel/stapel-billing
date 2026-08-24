@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "gdpr.section.erased",
-  "description": "Receipt for one erasure, echoing the correlation_id of the gdpr.erasure.requested (or deprecated user.deleted) event that asked. This module sends {owner: \"billing\", subject_type: \"account\", subject_key, correlation_id, receipt_id, counts: {wallets, subscriptions, transactions, credit_holds, webhook_events}} in the same transaction as the erasure, so a rollback takes the receipt with it. The shape below is the ACTION's contract, not this emitter's subset: comm registers one schema per action name across the whole process, so it must keep accepting the older {user_id, service} spelling other owners still send (stapel-gdpr 0.5.0 accepts both).",
+  "description": "Receipt for one erasure, echoing the correlation_id of the gdpr.erasure.requested (or deprecated user.deleted) event that asked. This module sends {owner: \"billing\", subject_type: \"account\", subject_key, correlation_id, receipt_id, counts: {wallets, subscriptions, transactions, credit_holds, credit_debts, webhook_events}} in the same transaction as the erasure, so a rollback takes the receipt with it. The shape below is the ACTION's contract, not this emitter's subset: comm registers one schema per action name across the whole process, so it must keep accepting the older {user_id, service} spelling other owners still send (stapel-gdpr 0.5.0 accepts both).",
   "type": "object",
   "required": [
     "correlation_id"
