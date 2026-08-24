@@ -87,6 +87,7 @@ from .models import (
     Wallet,
 )
 from .providers.base import ProviderNotConfiguredError
+from .webhooks import get_stripe_handler
 from .serializers import (
     CatalogResponseSerializer,
     CheckoutRequestSerializer,
@@ -500,6 +501,18 @@ class SubscriptionCancelView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     },
 )
 class StripeWebhookView(SerializerSeamMixin, APIView):
+    """Verify, claim and dispatch one Stripe event.
+
+    Routing is a registry, not a chain: the effective map is
+    ``STAPEL_BILLING["STRIPE_WEBHOOK_HANDLERS"]`` merged over
+    ``stapel_billing.webhooks.BUILTIN_STRIPE_HANDLERS`` (last-wins per
+    event type), so a host adds an event type, replaces a built-in
+    reaction, or switches one off with ``None`` — no fork. Everything
+    around the handler stays here and cannot be opted out of: signature
+    verification, the idempotency claim, the row lock and the processed
+    mark. An event type with no handler is acknowledged and logged.
+    """
+
     # Not a user surface: Stripe does not authenticate, the signature does.
     stapel_anonymous_access = ANONYMOUS_ALLOWED
     permission_classes = [AllowAny]
@@ -539,17 +552,16 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
                     return StapelResponse(  # noqa: R006
                         {"status": "duplicate"}, status=status.HTTP_200_OK
                     )
-                if event_type == "checkout.session.completed":
-                    services.handle_checkout_completed(event)
-                elif event_type in ("invoice.paid", "invoice.payment_succeeded"):
-                    services.handle_invoice_paid(event)
-                elif event_type in (
-                    "customer.subscription.updated",
-                    "customer.subscription.created",
-                ):
-                    services.handle_subscription_updated(event)
-                elif event_type == "customer.subscription.deleted":
-                    services.handle_subscription_deleted(event)
+                # Routing is a registry, not an if/elif chain: a host adds
+                # or replaces one event type through
+                # STAPEL_BILLING["STRIPE_WEBHOOK_HANDLERS"] instead of
+                # forking this view. Everything around the call — signature,
+                # idempotency claim, lock, processed mark — stays here, so an
+                # override cannot opt out of the guarantees that keep a paid
+                # checkout from being credited twice.
+                handler = get_stripe_handler(event_type)
+                if handler is not None:
+                    handler(event)
                 else:
                     logger.info("Unhandled Stripe event %s", event_type)
                 locked.processed_at = timezone.now()

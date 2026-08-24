@@ -17,6 +17,10 @@ no Django code until an attribute is actually accessed):
     DEBIT                     — name of the ``billing.debit`` comm Function
     HOLD / CAPTURE / RELEASE  — names of the reservation comm Functions
     check_entitlement         — the ``billing.check_entitlement`` provider
+    get_stripe_handler        — the handler the Stripe webhook registry
+                                resolves for one event type
+    stripe_handlers           — the effective registry (settings merged
+                                over ``BUILTIN_STRIPE_HANDLERS``)
 
 (The ``billing.debit`` provider itself is ``entitlements.debit`` — not
 re-exported here because the package-level ``debit`` name is the service
@@ -39,8 +43,10 @@ __all__ = [
     "credit",
     "debit",
     "get_provider",
+    "get_stripe_handler",
     "hold",
     "release",
+    "stripe_handlers",
 ]
 
 # name -> (relative module, attribute)
@@ -62,6 +68,8 @@ _EXPORTS = {
     "CAPTURE": (".entitlements", "CAPTURE"),
     "RELEASE": (".entitlements", "RELEASE"),
     "check_entitlement": (".entitlements", "check_entitlement"),
+    "get_stripe_handler": (".webhooks", "get_stripe_handler"),
+    "stripe_handlers": (".webhooks", "stripe_handlers"),
 }
 
 

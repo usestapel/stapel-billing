@@ -5,6 +5,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-24
+
+### Added
+
+**Stripe webhook routing is a registry, not an if/elif chain.**
+`StripeWebhookView.post` used to branch over `event["type"]` inline, which
+meant a host that wanted to react to `charge.dispute.created`, or to run its
+own reconciliation on `checkout.session.completed`, had two options: fork the
+view, or subclass it and re-type the whole chain around one changed branch.
+Both make the host carry a copy of routing logic this library keeps changing.
+
+The effective map is now `STAPEL_BILLING["STRIPE_WEBHOOK_HANDLERS"]` merged
+**over** `stapel_billing.webhooks.BUILTIN_STRIPE_HANDLERS`, last-wins per
+event type — the same merge-over-builtins canon as
+`STAPEL_NOTIFICATIONS["TYPES"]`. A value is a callable taking the raw event
+dict, a dotted path to one, or `None` to switch a built-in off. Readers:
+`get_stripe_handler()`, `stripe_handlers()`, `registered_stripe_events()`
+(the first two are also package-level lazy exports).
+
+What the registry deliberately does **not** own is the point of it: signature
+verification, the idempotency claim, the `select_for_update` lock and the
+`processed_at` mark stay in the view and wrap every handler. A host overriding
+one event type cannot opt out of the guarantees that keep one paid checkout
+from being credited twice — pinned by
+`test_an_override_cannot_opt_out_of_the_idempotency_claim`.
+
+New boot check **`stapel_billing.E106`**: a registry entry that does not
+import is a payment event that arrives, matches, and cannot run — Stripe
+retries, the retry fails identically, and the customer is never credited. The
+honest moment to find that is deploy.
+
+Behaviour for a deployment that configures nothing is unchanged: the built-ins
+are exactly the six event types the chain carried.
+
+### Changed
+
+CI runs the Django floor (5.1, 5.2) the dependency graph declares, instead of
+latest only.
+
+### Note
+
+`CHECKOUT_SUCCESS_URL` / `CHECKOUT_CANCEL_URL` / `PORTAL_RETURN_URL` were
+already settings-namespace keys with no placeholder domain (0.7.x, `redirects.py`);
+the July backlog entry about hardcoded `example.com` fallbacks is stale.
+
 ## [0.9.1] — 2026-08-23
 
 ### Fixed

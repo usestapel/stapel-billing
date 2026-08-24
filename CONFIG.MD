@@ -39,6 +39,7 @@ only for `1` / `true` / `yes` / `on`, and the default-on
 | ALLOW_UNKNOWN_ENTITLEMENT_KEYS | env | escape hatch: allow an unrecognised entitlement key again (silences `E101`, reported by `W101`). | no | false |
 | ALLOW_UNKNOWN_PLAN_SLUGS | env | escape hatch: treat a plan slug missing from `PLANS` as "no ceilings" again instead of denying (silences `E102`). | no | false |
 | ALLOW_UNCONFIGURED_PAYMENT_PROVIDER | env | escape hatch for a developer's machine: let an unconfigured provider answer with dev placeholders instead of refusing (silences `E104`, reported by `W104`). | no | false |
+| STRIPE_WEBHOOK_HANDLERS | env | extension point: Stripe event type → handler (callable, dotted path, or `None` to switch a built-in off), merged OVER `webhooks.BUILTIN_STRIPE_HANDLERS`, last-wins per type. A host reacts to a new event, or replaces a built-in reaction, without forking `StripeWebhookView`; signature, idempotency claim and processed mark stay the view's. An entry that does not resolve is boot check `E106`. | no | {} |
 | STRICT_CHECKOUT_RECONCILIATION | env | reconcile the processor's checkout object (mode, payment status, currency, amount vs. catalog price, buyer) before granting. Off takes the session's metadata on faith. | no | true |
 | HOLD_DEFAULT_TTL_SECONDS | env | how long a `services.hold()` reservation stays valid when the caller sets no deadline — the bound on how long a crashed pipeline can keep a customer's credits reserved. `expire_holds` releases holds past it. 0 (or None) = never sweep, which is a decision, not a default. | no | 3600 |
 

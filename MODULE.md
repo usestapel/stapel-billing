@@ -135,6 +135,7 @@ Two rules the boolean keys and `PAYMENT_PROVIDER` add to that order:
 | `ALLOW_UNKNOWN_PLAN_SLUGS` | `False` | Escape hatch: let a plan slug that is **not** in `PLANS` (a renamed/retired plan still on a live subscription, or a default plan outside the host's ladder) be treated as "no ceilings" again instead of `reason="unknown_plan"` (and silence `E102`). |
 | `ALLOW_UNCONFIGURED_PAYMENT_PROVIDER` | `False` | Escape hatch for a developer's machine: let an unconfigured provider answer with dev placeholders (fake checkout session, portal link to nowhere, cancel that cancels nothing) instead of refusing. Silences `E104`, reported by `W104`. |
 | `HOLD_DEFAULT_TTL_SECONDS` | `3600` | How long a `services.hold()` reservation stays valid when the caller sets no deadline of its own — the bound on how long a crashed pipeline can keep a customer's credits reserved. `expire_holds` releases holds past it. `0` (or `None`) means "never sweep", which is a decision, not a default. |
+| `STRIPE_WEBHOOK_HANDLERS` | `{}` | Stripe event type → handler, merged **over** `webhooks.BUILTIN_STRIPE_HANDLERS` (last-wins per type — same canon as `STAPEL_NOTIFICATIONS["TYPES"]`). A value is a callable taking the event dict, a dotted path to one, or `None` to switch a built-in off. This is how a host adds `charge.dispute.created` or replaces what `checkout.session.completed` does — without forking the view. An entry that does not import is boot check `stapel_billing.E106`. |
 | `STRICT_CHECKOUT_RECONCILIATION` | `True` | Reconcile the provider's checkout session (mode, payment status, currency, amount vs. the catalog price, buyer) before granting credits or a plan. Off means the session's metadata is taken on faith. |
 
 ### Payment providers (dotted-path swap)
@@ -291,6 +292,12 @@ Sent via `stapel_core.signals` (in-process, host apps connect receivers freely):
 |---|---|---|---|
 | `payment_completed` | `Transaction` | `user`, `credits`, `transaction` | Alongside every `payment.completed` emit |
 | `subscription_changed` | `Subscription` | `subscription` | Alongside every `subscription.changed` emit |
+
+### Stripe webhook routing (registry seam)
+
+`StripeWebhookView` dispatches through `stapel_billing.webhooks`, not an if/elif chain: the effective map is `STAPEL_BILLING["STRIPE_WEBHOOK_HANDLERS"]` merged over `BUILTIN_STRIPE_HANDLERS` (last-wins per event type). A value is a callable taking the raw event dict, a dotted path to one, or `None` to disable a built-in; readers are `get_stripe_handler(event_type)`, `stripe_handlers()` and `registered_stripe_events()`. Built-ins are dotted paths resolved at dispatch, so replacing `services.handle_*` actually replaces what runs. An event type with no handler is acknowledged and logged, exactly as before.
+
+What the registry does **not** own is the point: signature verification, the idempotency claim, the row lock and the `processed_at` mark stay in the view and wrap every handler, so an override cannot opt out of the guarantees that keep one paid checkout from being credited twice.
 
 ### Webhook idempotency (contract, not a seam)
 

@@ -206,3 +206,38 @@ def check_expiry_is_scheduled(app_configs, **kwargs):
         ),
         id="stapel_billing.W105",
     )]
+
+
+@checks.register(checks.Tags.compatibility)
+def check_stripe_webhook_handlers(app_configs, **kwargs):
+    """E106: every registered Stripe webhook handler must resolve.
+
+    The registry is the seam that replaced the view's if/elif chain, so a
+    typo in it is not a typo in a log line — it is a payment event that
+    arrives, matches an entry, and cannot be run. Stripe retries, the retry
+    fails the same way, and the customer's checkout is never credited. The
+    honest moment to find a dotted path that does not import is deploy.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from .conf import billing_settings
+    from .webhooks import _resolve
+
+    errors = []
+    for event_type, value in (billing_settings.STRIPE_WEBHOOK_HANDLERS or {}).items():
+        try:
+            handler = _resolve(value)
+        except ImproperlyConfigured as exc:
+            errors.append(checks.Error(
+                str(exc),
+                hint=f"STAPEL_BILLING['STRIPE_WEBHOOK_HANDLERS']['{event_type}']",
+                id="stapel_billing.E106",
+            ))
+            continue
+        if handler is not None and not callable(handler):
+            errors.append(checks.Error(
+                f"STAPEL_BILLING['STRIPE_WEBHOOK_HANDLERS']['{event_type}'] "
+                f"resolves to {handler!r}, which is not callable.",
+                id="stapel_billing.E106",
+            ))
+    return errors

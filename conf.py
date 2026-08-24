@@ -78,6 +78,14 @@ DEFAULTS = {
     # credits for at most this long. 0 (or None) means "never sweep", which
     # is a decision, not a default.
     "HOLD_DEFAULT_TTL_SECONDS": 3600,
+    # Stripe webhook routing overlay, merged OVER
+    # webhooks.BUILTIN_STRIPE_HANDLERS (last-wins per event type — the same
+    # canon as STAPEL_NOTIFICATIONS["TYPES"]). {"<stripe event type>":
+    # callable | "dotted.path" | None}, where None switches a built-in off.
+    # A host adds an event type or replaces a built-in reaction without
+    # forking StripeWebhookView; signature verification, the idempotency
+    # claim and the processed mark stay the view's and wrap every handler.
+    "STRIPE_WEBHOOK_HANDLERS": {},
     # Reconcile the provider's checkout object (mode, payment status,
     # currency, amount, owner) against the catalog before granting credits
     # or a plan. Off means the provider's metadata is taken on faith.

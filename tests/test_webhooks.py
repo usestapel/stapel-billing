@@ -332,3 +332,179 @@ class TestSubscriptionLifecycleEvents:
             "data": {"object": {"id": "sub_ghost"}},
         }
         assert _post(api_client, event).status_code == 200
+
+
+# ─── The routing seam ───────────────────────────────────────
+#
+# Routing used to be an if/elif chain inside StripeWebhookView.post: a host
+# that wanted one more event type, or a different reaction to one it already
+# had, could only fork the view. These pin the registry that replaced it.
+
+_seen_events = []
+
+
+def _record_dispute(event):
+    _seen_events.append(event["id"])
+
+
+def _replacement_checkout(event):
+    _seen_events.append("replaced:" + event["id"])
+
+
+@pytest.fixture(autouse=True)
+def _clear_seen():
+    _seen_events.clear()
+    yield
+    _seen_events.clear()
+
+
+@pytest.fixture
+def _handlers(settings):
+    """Set STRIPE_WEBHOOK_HANDLERS while keeping the JSON test provider."""
+    def _apply(mapping):
+        settings.STAPEL_BILLING = {
+            "PAYMENT_PROVIDER": PROVIDER_PATH,
+            "STRIPE_WEBHOOK_HANDLERS": mapping,
+        }
+        billing_settings.reload()
+    yield _apply
+    billing_settings.reload()
+
+
+_HERE = __name__
+
+
+class TestStripeHandlerRegistry:
+    def test_builtins_are_the_types_the_chain_used_to_carry(self):
+        from stapel_billing.webhooks import registered_stripe_events
+
+        assert registered_stripe_events() == [
+            "checkout.session.completed",
+            "customer.subscription.created",
+            "customer.subscription.deleted",
+            "customer.subscription.updated",
+            "invoice.paid",
+            "invoice.payment_succeeded",
+        ]
+
+    def test_builtin_paths_all_resolve(self):
+        from stapel_billing.webhooks import stripe_handlers
+
+        assert all(callable(h) for h in stripe_handlers().values())
+
+    def test_settings_merge_over_builtins_they_do_not_replace_them(self, _handlers):
+        from stapel_billing.webhooks import stripe_handlers
+
+        _handlers({"charge.dispute.created": f"{_HERE}._record_dispute"})
+        handlers = stripe_handlers()
+
+        assert handlers["charge.dispute.created"] is _record_dispute
+        # The built-ins survive an overlay that never mentioned them.
+        assert callable(handlers["checkout.session.completed"])
+
+    def test_a_callable_is_accepted_as_well_as_a_dotted_path(self, _handlers):
+        from stapel_billing.webhooks import get_stripe_handler
+
+        _handlers({"charge.dispute.created": _record_dispute})
+        assert get_stripe_handler("charge.dispute.created") is _record_dispute
+
+    def test_none_switches_a_builtin_off(self, _handlers):
+        from stapel_billing.webhooks import (
+            get_stripe_handler,
+            registered_stripe_events,
+        )
+
+        _handlers({"customer.subscription.deleted": None})
+        assert get_stripe_handler("customer.subscription.deleted") is None
+        assert "customer.subscription.deleted" not in registered_stripe_events()
+
+    def test_unresolvable_path_refuses_rather_than_dropping_the_payment(
+        self, _handlers
+    ):
+        from django.core.exceptions import ImproperlyConfigured
+
+        from stapel_billing.webhooks import get_stripe_handler
+
+        _handlers({"charge.dispute.created": "myproject.nope.missing"})
+        with pytest.raises(ImproperlyConfigured):
+            get_stripe_handler("charge.dispute.created")
+
+    def test_bad_registry_entry_is_a_boot_error(self, _handlers):
+        from stapel_billing.checks import check_stripe_webhook_handlers
+
+        _handlers({"charge.dispute.created": "myproject.nope.missing"})
+        ids = [m.id for m in check_stripe_webhook_handlers(None)]
+        assert ids == ["stapel_billing.E106"]
+
+    def test_a_good_registry_passes_the_boot_check(self, _handlers):
+        from stapel_billing.checks import check_stripe_webhook_handlers
+
+        _handlers({"charge.dispute.created": f"{_HERE}._record_dispute"})
+        assert check_stripe_webhook_handlers(None) == []
+
+
+@pytest.mark.django_db
+class TestRegistryDrivesTheView:
+    """The seam is only real if the VIEW routes through it."""
+
+    def test_a_host_registered_type_is_handled_not_logged_as_unknown(
+        self, api_client, _handlers
+    ):
+        _handlers({"charge.dispute.created": f"{_HERE}._record_dispute"})
+        event = {
+            "id": "evt_dispute",
+            "type": "charge.dispute.created",
+            "data": {"object": {"id": "dp_1"}},
+        }
+
+        assert _post(api_client, event).status_code == 200
+        assert _seen_events == ["evt_dispute"]
+        assert StripeWebhookEvent.objects.get(
+            stripe_event_id="evt_dispute"
+        ).processed_at is not None
+
+    def test_an_override_replaces_the_builtin_reaction(
+        self, api_client, user, _handlers
+    ):
+        _handlers({
+            "checkout.session.completed": f"{_HERE}._replacement_checkout",
+        })
+        event = _checkout_event(user, package="starter", event_id="evt_override")
+
+        assert _post(api_client, event).status_code == 200
+        assert _seen_events == ["replaced:evt_override"]
+        # The built-in never ran, so no credits were granted.
+        assert not Wallet.objects.filter(user=user).exists()
+
+    def test_an_override_cannot_opt_out_of_the_idempotency_claim(
+        self, api_client, _handlers
+    ):
+        """The guarantees around the handler are the view's, not the host's."""
+        _handlers({"charge.dispute.created": f"{_HERE}._record_dispute"})
+        event = {
+            "id": "evt_dispute_dup",
+            "type": "charge.dispute.created",
+            "data": {"object": {"id": "dp_2"}},
+        }
+
+        assert _post(api_client, event).status_code == 200
+        assert _post(api_client, event).json()["status"] == "duplicate"
+        assert _seen_events == ["evt_dispute_dup"]  # ran exactly once
+
+    def test_a_disabled_builtin_is_acked_and_does_nothing(
+        self, api_client, user, _handlers
+    ):
+        _handlers({"customer.subscription.deleted": None})
+        sub = Subscription.objects.create(
+            user=user, plan="pro", stripe_subscription_id="sub_off",
+            status=SubscriptionStatus.ACTIVE,
+        )
+        event = {
+            "id": "evt_off",
+            "type": "customer.subscription.deleted",
+            "data": {"object": {"id": "sub_off"}},
+        }
+
+        assert _post(api_client, event).status_code == 200
+        sub.refresh_from_db()
+        assert sub.status == SubscriptionStatus.ACTIVE

@@ -25,6 +25,8 @@ def test_all_lists_the_public_api():
         "CAPTURE",
         "RELEASE",
         "check_entitlement",
+        "get_stripe_handler",
+        "stripe_handlers",
     }
 
 
@@ -50,6 +52,11 @@ def test_lazy_exports_resolve_to_canonical_objects():
     assert stapel_billing.CAPTURE == "billing.capture"
     assert stapel_billing.RELEASE == "billing.release"
     assert stapel_billing.check_entitlement is entitlements.check_entitlement
+
+    from stapel_billing import webhooks
+
+    assert stapel_billing.get_stripe_handler is webhooks.get_stripe_handler
+    assert stapel_billing.stripe_handlers is webhooks.stripe_handlers
 
 
 def test_dir_includes_public_api():
@@ -79,4 +86,4 @@ def test_package_import_pulls_no_django():
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "17"
+    assert proc.stdout.strip() == "19"
