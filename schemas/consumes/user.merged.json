@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.merged",
+  "description": "Two accounts became one (stapel-auth 0.30.0): from_user_id ceased to exist and every row that named it belongs to into_user_id now. This module moves the merged wallet's credit LOTS (never a summed integer — a lot carries its own expiry), its transactions, holds and debts onto the survivor's wallet, writes one explicit ADJUSTMENT ledger row for the balance change, and closes the merged wallet at zero with a merged_into stamp. Exactly once under at-least-once delivery: the ledger row carries a deterministic idempotency key derived from the pair of ids, so a redelivery credits nothing.",
+  "type": "object",
+  "required": ["from_user_id", "into_user_id"],
+  "properties": {
+    "from_user_id": { "type": "string", "format": "uuid" },
+    "into_user_id": { "type": "string", "format": "uuid" },
+    "reason":       { "type": "string" }
+  },
+  "additionalProperties": false
+}

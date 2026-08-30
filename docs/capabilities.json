@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -259,6 +259,21 @@
       "intent": "The wallet's live credit lots in the exact order debit() will spend them — expiring soonest, non-expiring last — read without taking the row lock. Report expiry through it (a \"3000 credits expire on the 28th\" banner, an admin screen) instead of querying CreditLot: a product that orders the lots itself has forked the consumption rule, and will show a deadline the charge does not honour.",
       "instead_of": [
         "stapel_billing.models.CreditLot.objects.filter"
+      ]
+    },
+    {
+      "name": "merge_idempotency_key",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.merge_idempotency_key",
+      "intent": "The deterministic ledger key merge_wallets writes for one pair of accounts. Recompute it to ask whether a merge has already been applied, or to find the row that explains a survivor's balance."
+    },
+    {
+      "name": "merge_wallets",
+      "kind": "factory",
+      "path": "stapel_billing.services.merge_wallets",
+      "intent": "Fold one account's wallet into another's when auth reports a user.merged. Moves the lots — never a summed balance, because a lot carries its own expiry and adding two turns an expiring bundle into cash forever — then the transactions, holds and debts, and writes one ADJUSTMENT row so the survivor's new balance is explained rather than appearing. Exactly once under at-least-once redelivery.",
+      "instead_of": [
+        "stapel_billing.services.credit"
       ]
     },
     {

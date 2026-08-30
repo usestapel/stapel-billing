@@ -5,6 +5,70 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-30
+
+### Added — a merged guest's credits reach the account they signed in to
+
+This module subscribed `user.deleted` and nothing else, so it had a silent,
+wrong answer for the opposite event. `user.merged` (stapel-auth 0.30.0)
+fires when a guest account is folded into an account that already exists on
+sign-in: `from_user_id` stops existing, and every row that named it belongs
+to `into_user_id` now. Nothing is erased. Until this release the guest's
+credits stayed in a wallet nobody can sign in to — money the customer paid
+for, invisible to them, and beyond the reach of any erasure they could later
+request, because nobody ever requests an erasure for an id nobody holds.
+
+The failure had no symptom at the seam: nothing raised, nothing retried,
+nothing was logged. `stapel_core.lifecycle.E001` (stapel-core 0.52.1)
+reports exactly that silence, and `tests/test_user_merged.py` keeps the
+check wired to this suite so the answer cannot go missing again.
+
+**Merge policy — the credits move and the ledger says so.** The new
+`services.merge_wallets` (reached by `actions.handle_user_merged`):
+
+* moves the merged wallet's **lots**, and the balance with them. Lots are
+  moved rather than summed into an integer because a lot is where the
+  credits came from and when they die — adding two balances would silently
+  convert a subscription bundle that was about to expire into non-expiring
+  cash the deployment can never reclaim;
+* moves the transactions, holds and debts, so the survivor's ledger explains
+  the survivor's balance without a gap. A hold key the survivor already uses
+  is renamed rather than colliding (`billing_credit_hold_unique_idempotency_key`
+  is per wallet) — an `IntegrityError` there would be a poison message;
+* writes **one explicit `ADJUSTMENT` row** on the survivor for the change.
+  The balance is never written silently: a wallet that gained credits with
+  no row saying why is a support answer nobody can give;
+* closes the merged wallet at zero and stamps the new `Wallet.merged_into`
+  (migration `0006`), keeping it as the record that those credits existed
+  and where they went rather than deleting it.
+
+`Subscription` is one per user, so the survivor's plan wins when it has one
+and the merged row is detached — not cancelled, because cancelling reaches
+into Stripe and a merge is not a decision about anybody's billing. A plan
+the survivor does not have moves across whole: something someone is paying
+for must not evaporate because they signed in.
+
+**Exactly once, provably.** Delivery is at-least-once, so the same event
+WILL arrive twice, and a second credit is money the deployment never
+received. The guard is a deterministic idempotency key derived from the pair
+of account ids (`services.merge_idempotency_key`, the same trick as the
+erasure receipt id): the second delivery computes the same key, finds the
+ledger row the first one wrote, and returns zeroes without touching a lot.
+The key is a digest and not `merge:<from>:<into>`, so the stored column does
+not become a second, unscrubbed copy of two account ids beside a `user_id`
+this package goes to some trouble to pseudonymize.
+
+Missing ids, an event naming one account twice, and ids no column can parse
+are logged and dropped — a raise would make the bus redeliver a payload that
+can never succeed. `ValidationError` is caught beside `ValueError` and
+`TypeError` on purpose: a UUID column rejects a malformed key with the
+former, which is not the latter. An `IntegrityError` is deliberately NOT
+swallowed: it means the surviving account is not known to this service yet,
+which is an event that is early rather than poison, and redelivery is
+exactly what at-least-once delivery is for.
+
+Contract: `schemas/consumes/user.merged.json`.
+
 ## [0.11.0] — 2026-08-24
 
 The production-audit wave. Seven findings, all of them the same shape: a

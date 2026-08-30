@@ -152,6 +152,20 @@ class Wallet(models.Model):
             "Keeps one subject's history one subject without naming them."
         ),
     )
+    merged_into = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="merged_wallets",
+        help_text=(
+            "The wallet this one's credits and ledger were moved into when "
+            "its owner was folded into another account (auth's user.merged). "
+            "Non-NULL means this wallet is CLOSED at zero: it is kept as the "
+            "record that the guest's credits existed and where they went, "
+            "not deleted. NULL for every live wallet."
+        ),
+    )
     balance = models.IntegerField(
         default=0,
         help_text=(

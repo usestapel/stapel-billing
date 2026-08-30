@@ -990,6 +990,191 @@ def release(*, hold_id, expired: bool = False) -> CreditHold:
     return held
 
 
+# ─── Account merge ──────────────────────────────────────────
+#
+# A merge is the opposite of an erasure: nothing goes away, the rows change
+# owner. It lives here rather than in ``actions.py`` for the same reason
+# ``erase_subject`` lives in ``gdpr.py`` — a balance is written only through
+# this module, and a handler that moved credits on its own would be a second
+# implementation of the wallet's invariants, free to drift from this one.
+
+
+def merge_idempotency_key(from_user_id, into_user_id) -> str:
+    """The deterministic ledger key for one merge of one pair of accounts.
+
+    Derived from the pair rather than minted, so a redelivery of an
+    at-least-once event computes the SAME key, finds the row the first
+    delivery wrote and credits nothing — the one guard that makes the
+    transfer provably once. Same idea as the erasure receipt id in
+    :mod:`stapel_billing.actions`.
+
+    Digested rather than concatenated because the value is stored: a
+    readable ``merge:<from>:<into>`` would make ``idempotency_key`` a second
+    copy of two account ids in a column erasure does not scrub, next to a
+    ``user_id`` this package goes to some trouble to pseudonymize.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(
+        f"{from_user_id}:{into_user_id}".encode()
+    ).hexdigest()[:32]
+    return f"merge:{digest}"
+
+
+@transaction.atomic
+def merge_wallets(*, from_user_id, into_user_id) -> dict[str, int]:
+    """Fold one account's wallet into another's — the credit half of a merge.
+
+    Auth's ``user.merged`` says ``from_user_id`` ceased to exist and every
+    row that named it belongs to ``into_user_id`` now. Here that means:
+
+    * the merged wallet's **lots move**, and with them the balance. Lots are
+      moved rather than summed into a number because a lot is where the
+      credits came from and when they die — a subscription bundle that was
+      about to expire must not become non-expiring cash by changing owner,
+      which is exactly what adding two integers would do;
+    * transactions, holds and debts move with them, so the survivor's ledger
+      explains the survivor's balance without a gap;
+    * the survivor gets one **explicit ledger row** for the change
+      (``TransactionType.ADJUSTMENT``). The balance is never written
+      silently: a wallet that gained credits with no row saying why is a
+      support answer nobody can give;
+    * the merged wallet is closed at zero and stamped ``merged_into``, so a
+      redelivery cannot find it and credit a second time.
+
+    Returns the counts of what moved, so a redelivery's zeroes are visible
+    rather than assumed. An account this module holds no wallet for is not
+    an error: it moves nothing and says so.
+
+    The survivor's wallet is created if it does not exist. That is a foreign
+    key to a user this service must already know about — ``into_user_id`` is
+    announced by its own projection event ahead of the merge — and if it
+    does not yet, the resulting ``IntegrityError`` is deliberately NOT
+    caught: the event is not poison, it is early, and redelivery is what
+    at-least-once delivery is for.
+    """
+    counts = {
+        "wallets": 0,
+        "credits": 0,
+        "credit_lots": 0,
+        "transactions": 0,
+        "credit_holds": 0,
+        "credit_debts": 0,
+        "subscriptions": 0,
+    }
+    key = merge_idempotency_key(from_user_id, into_user_id)
+    if Transaction.objects.filter(idempotency_key=key).exists():
+        # This merge already wrote its ledger row. Nothing below may run
+        # again — the credit is the part that must happen exactly once.
+        logger.info("wallet merge %s already applied — nothing to do", key)
+        return counts
+
+    merged = Wallet.objects.filter(user_id=from_user_id).first()
+    if merged is None:
+        counts["subscriptions"] = _merge_subscription(from_user_id, into_user_id)
+        return counts
+
+    survivor, _ = Wallet.objects.get_or_create(
+        user_id=into_user_id, defaults={"currency": merged.currency}
+    )
+    # Locked in primary-key order, not in "merged then survivor" order: two
+    # guests merging into one account concurrently would otherwise take the
+    # same two rows in opposite orders and deadlock.
+    locked = {
+        w.pk: w
+        for w in Wallet.objects.select_for_update()
+        .filter(pk__in=[merged.pk, survivor.pk])
+        .order_by("pk")
+    }
+    merged = locked[merged.pk]
+    survivor = locked[survivor.pk]
+
+    now = timezone.now()
+    # Before counting: credits that died of old age must not travel as live
+    # ones, and the EXPIRATION rows belong on the wallet that held them.
+    _expire_due_lots(merged, now=now)
+    moved_credits = _live_balance(merged, now=now)
+
+    # A hold's idempotency key is unique per wallet, so two accounts that
+    # happened to receive the same caller key cannot land on one wallet.
+    # Vanishingly rare, and an IntegrityError here would be a poison
+    # message: rename the arriving row instead of failing the merge.
+    taken = set(
+        CreditHold.objects.filter(wallet=survivor).values_list(
+            "idempotency_key", flat=True
+        )
+    )
+    if taken:
+        for clash in CreditHold.objects.filter(
+            wallet=merged, idempotency_key__in=taken
+        ):
+            clash.idempotency_key = f"{clash.idempotency_key}:merged:{merged.pk}"
+            clash.save(update_fields=["idempotency_key"])
+
+    counts["credit_lots"] = CreditLot.objects.filter(wallet=merged).update(
+        wallet=survivor
+    )
+    counts["transactions"] = Transaction.objects.filter(wallet=merged).update(
+        wallet=survivor
+    )
+    counts["credit_holds"] = CreditHold.objects.filter(wallet=merged).update(
+        wallet=survivor
+    )
+    counts["credit_debts"] = CreditDebt.objects.filter(wallet=merged).update(
+        wallet=survivor
+    )
+
+    merged.balance = 0
+    merged.user = None
+    merged.merged_into = survivor
+    merged.save(update_fields=["balance", "user", "merged_into", "updated_at"])
+    counts["wallets"] = 1
+    counts["credits"] = moved_credits
+
+    # Derived from the lots that just arrived, not incremented — the same
+    # rule every other operation here follows. Expiry first, as everywhere
+    # else: a ``balance_after`` counting credits the customer can no longer
+    # spend is a ledger row that lies.
+    _expire_due_lots(survivor, now=now)
+    balance = _sync_balance(survivor, now=now)
+    Transaction.objects.create(
+        wallet=survivor,
+        type=TransactionType.ADJUSTMENT,
+        credits_delta=moved_credits,
+        balance_after=balance,
+        description="Credits merged from a folded account",
+        metadata={"merge": True, "merged_wallet_id": str(merged.pk),
+                  "idempotency_key": key},
+        idempotency_key=key,
+    )
+    counts["subscriptions"] = _merge_subscription(from_user_id, into_user_id)
+    # After the merge row, so the ledger reads in the order it happened: the
+    # credits arrived, then any debt the survivor carries took its share.
+    _settle_debts(survivor, now=now)
+    return counts
+
+
+def _merge_subscription(from_user_id, into_user_id) -> int:
+    """Move or detach the merged account's subscription. Returns rows touched.
+
+    ``Subscription`` is one per user, so the survivor's plan wins whenever
+    it has one: the merged row is detached rather than cancelled, because
+    cancelling reaches into Stripe and a merge is not a decision about
+    anybody's billing. When the survivor has NO subscription the row moves
+    to it whole — a plan someone is paying for must not evaporate because
+    they signed in.
+    """
+    merged = Subscription.objects.filter(user_id=from_user_id).first()
+    if merged is None:
+        return 0
+    if Subscription.objects.filter(user_id=into_user_id).exists():
+        merged.user = None
+    else:
+        merged.user_id = into_user_id
+    merged.save(update_fields=["user", "updated_at"])
+    return 1
+
+
 # ─── Plan bundles granted without a payment provider ────────
 #
 # Every credit this module granted before 0.11.0 came out of a Stripe

@@ -1,8 +1,8 @@
-# stapel-billing 0.11.0
+# stapel-billing 0.12.0
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 37 · extension points 6 · operations 10 · error codes 55.
+Contract: axes 1 · surface 39 · extension points 6 · operations 10 · error codes 55.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -45,6 +45,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The terminal cancellation on customer.subscription.deleted: marks the local Subscription cancelled with its timestamp and announces it. Read it before letting a product decide on its own what a deleted provider subscription means locally; call it only under the webhook claim protocol.
 - handle_subscription_updated — stapel_billing.services.handle_subscription_updated
   The status reconciliation on customer.subscription.updated: maps the processor's lifecycle (active / trialing / past_due / canceled / incomplete) onto SubscriptionStatus, refreshes the billing period and announces the change. That mapping is the module's contract — anything deciding what "past_due" means locally must read it here rather than invent a second answer.
+- merge_idempotency_key — stapel_billing.services.merge_idempotency_key
+  The deterministic ledger key merge_wallets writes for one pair of accounts. Recompute it to ask whether a merge has already been applied, or to find the row that explains a survivor's balance.
 - reconcile_wallet_balances — stapel_billing.services.reconcile_wallet_balances
   Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module.
 - reconcile_wallets — stapel_billing.tasks.reconcile_wallets
@@ -97,6 +99,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - live_lots — stapel_billing.services.live_lots
   instead of: stapel_billing.models.CreditLot.objects.filter
   The wallet's live credit lots in the exact order debit() will spend them — expiring soonest, non-expiring last — read without taking the row lock. Report expiry through it (a "3000 credits expire on the 28th" banner, an admin screen) instead of querying CreditLot: a product that orders the lots itself has forked the consumption rule, and will show a deadline the charge does not honour.
+- merge_wallets — stapel_billing.services.merge_wallets
+  instead of: stapel_billing.services.credit
+  Fold one account's wallet into another's when auth reports a user.merged. Moves the lots — never a summed balance, because a lot carries its own expiry and adding two turns an expiring bundle into cash forever — then the transactions, holds and debts, and writes one ADJUSTMENT row so the survivor's new balance is explained rather than appearing. Exactly once under at-least-once redelivery.
 - open_debts — stapel_billing.services.open_debts
   instead of: stapel_billing.models.CreditDebt.objects.filter
   One wallet's uncollected debts, oldest first — the order they are collected in. Read it to show an owner why their next top-up will partly disappear; the collection itself happens inside credit().

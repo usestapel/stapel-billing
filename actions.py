@@ -9,7 +9,7 @@ in ``DATA_OWNERS`` that never answered the request the orchestrator
 actually sends, discoverable only by waiting thirty days for the part to
 time out.
 
-Three handlers, one module, on purpose:
+Four handlers, one module, on purpose:
 
 * ``gdpr.erasure.requested`` — erase the subject (person out, bill kept —
   see :func:`stapel_billing.gdpr.erase_subject`), reply
@@ -21,6 +21,12 @@ Three handlers, one module, on purpose:
 * ``user.deleted`` — the pre-0.5.0 account signal, which stapel-gdpr
   keeps emitting for one minor. Routed through the same erase call, so
   there is no second erasure implementation to drift.
+* ``user.merged`` — the other half of an account's life cycle. A merge
+  MOVES credits to the surviving account instead of erasing them, and an
+  owner that subscribed only to the deletion half has a silent, wrong
+  answer for the other (``stapel_core.lifecycle.E001``). Routed through
+  ``services.merge_wallets``, so the wallet's invariants have one
+  implementation here too.
 
 Handlers are idempotent — delivery is at-least-once (outbox retries,
 broker redelivery) — and a redelivery reports the ``0`` rows it touched
@@ -159,8 +165,87 @@ def handle_user_deleted(event):
     )
 
 
+@on_action("user.merged")
+def handle_user_merged(event):
+    """Fold a merged account's wallet into the survivor's.
+
+    ``user.merged`` (stapel-auth 0.30.0) is the opposite of the signal
+    above: a guest account was folded into an account that already existed,
+    ``from_user_id`` stops existing, and every row that named it belongs to
+    ``into_user_id`` now. Nothing is erased. An owner that answered only the
+    deletion half would leave the guest's credits in a wallet nobody can
+    sign in to — money the customer paid for, invisible to them, and beyond
+    the reach of any erasure they could later request
+    (``stapel_core.lifecycle.E001``).
+
+    **Merge policy — the credits move and the ledger says so.**
+    :func:`stapel_billing.services.merge_wallets` moves the merged wallet's
+    lots (not a summed integer: a lot carries its own expiry, and adding two
+    balances would silently turn an expiring subscription bundle into
+    non-expiring cash), moves the transactions, holds and debts with them,
+    writes ONE explicit ``ADJUSTMENT`` row on the survivor for the change,
+    and closes the merged wallet at zero with a ``merged_into`` stamp. A
+    balance is never written silently here — a wallet that gained credits
+    with no row saying why is a support answer nobody can give.
+
+    **Exactly once, provably.** Delivery is at-least-once, so the same event
+    WILL arrive twice, and a second credit is money the deployment did not
+    receive. The guard is a deterministic idempotency key derived from the
+    pair of account ids (:func:`~stapel_billing.services.merge_idempotency_key`,
+    the same trick as ``_receipt_id`` above): the second delivery computes
+    the same key, finds the ledger row the first one wrote, and returns
+    zeroes without touching a lot.
+
+    Malformed or missing ids are logged and dropped rather than raised on —
+    a raise makes the bus redeliver a payload that can never succeed. An
+    ``IntegrityError`` is deliberately NOT swallowed: it means the surviving
+    account is not known to this service yet, which is an event that is
+    early rather than poison, and redelivery is what fixes it.
+    """
+    from django.core.exceptions import ValidationError
+
+    from .services import merge_wallets
+
+    payload = event.payload or {}
+    from_user_id = payload.get("from_user_id")
+    into_user_id = payload.get("into_user_id")
+    if not from_user_id or not into_user_id:
+        logger.error(
+            "user.merged event without both account ids: %s",
+            getattr(event, "event_id", "?"),
+        )
+        return
+    if str(from_user_id) == str(into_user_id):
+        logger.error(
+            "user.merged names one account twice (%s): %s",
+            from_user_id, getattr(event, "event_id", "?"),
+        )
+        return
+
+    try:
+        counts = merge_wallets(
+            from_user_id=str(from_user_id), into_user_id=str(into_user_id)
+        )
+    except (TypeError, ValueError, ValidationError):
+        # ValidationError is in the list on purpose: a UUID column rejects a
+        # malformed key with ValidationError, which is NOT a ValueError, and
+        # a handler that caught only the latter would raise into the bus.
+        logger.error(
+            "user.merged with unusable ids (from=%r into=%r): %s",
+            from_user_id, into_user_id, getattr(event, "event_id", "?"),
+        )
+        return
+    logger.info(
+        "billing merged %s credit(s) from user %s into %s (%s lot(s), "
+        "%s transaction(s), %s hold(s), %s debt(s))",
+        counts["credits"], from_user_id, into_user_id, counts["credit_lots"],
+        counts["transactions"], counts["credit_holds"], counts["credit_debts"],
+    )
+
+
 __all__ = [
     "handle_erasure_requested",
     "handle_owner_probe",
     "handle_user_deleted",
+    "handle_user_merged",
 ]

@@ -33,7 +33,13 @@ PYTHON ?= python3
 # mechanism a consumer must call instead of writing its own, which is exactly
 # what this file exists to tell an agent; the intents were cut to one or two
 # sentences first, and the remaining ~950 tokens are the surface itself.
-LLMS_BUDGET ?= 5400
+#
+# Raised again in 0.12.0, by the two entries the account merge adds
+# (`merge_wallets`, `merge_idempotency_key`). Both are mechanisms a consumer
+# must call instead of writing its own — moving credits by hand is how an
+# expiring bundle silently becomes non-expiring cash — so neither belongs
+# outside this file. Their intents were written short before the ceiling moved.
+LLMS_BUDGET ?= 5600
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

@@ -118,6 +118,17 @@
         "stapel_billing.services.credit"
       ]
     },
+    "merge_wallets": {
+      "kind": "factory",
+      "intent": "Fold one account's wallet into another's when auth reports a user.merged. Moves the lots — never a summed balance, because a lot carries its own expiry and adding two turns an expiring bundle into cash forever — then the transactions, holds and debts, and writes one ADJUSTMENT row so the survivor's new balance is explained rather than appearing. Exactly once under at-least-once redelivery.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
+    },
+    "merge_idempotency_key": {
+      "kind": "gate_function",
+      "intent": "The deterministic ledger key merge_wallets writes for one pair of accounts. Recompute it to ask whether a merge has already been applied, or to find the row that explains a survivor's balance."
+    },
     "grant_plan_bundle": {
       "kind": "factory",
       "intent": "Grant one period's plan bundle WITHOUT a payment provider — the free tier, an invoiced agreement, a plan a host assigns itself. Idempotent per (wallet, plan, period), and the lot expires with the period. Every other grant here runs off a Stripe webhook, so a plan not sold through Stripe granted nothing until you call this.",
