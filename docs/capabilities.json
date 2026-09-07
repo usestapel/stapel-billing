@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {

@@ -136,9 +136,9 @@ REASON_UNKNOWN_KEY = "unknown_key"
 REASON_UNKNOWN_PLAN = "unknown_plan"
 REASON_HOLD_NOT_FOUND = "hold_not_found"
 REASON_HOLD_NOT_HELD = "hold_not_held"
-# The idempotency key names a hold that is over: captured, released or
-# expired. Nothing is reserved under it, so this is a refusal and not the
-# "already reserved" answer the caller used to get (audit major #4).
+# The idempotency key names a hold that was captured: billed and delivered,
+# so the key is spent. A released or expired hold is re-armed under the same
+# key instead (0.12.1) — nothing was charged, nothing delivered.
 REASON_HOLD_ALREADY_RESOLVED = "hold_already_resolved"
 
 # Single source of truth for the payload contracts: the committed schema
@@ -383,10 +383,11 @@ def hold(payload: dict) -> dict:
     "reason": str | None}``
 
     ``reason="hold_already_resolved"`` (plus ``status`` and the original
-    ``hold_id``) means the key belongs to a hold that is already captured,
-    released or expired: nothing is reserved under it. Propagate that — do
-    not treat it as a successful hold, which is what the 0.10.0 answer
-    made callers do right up until the capture failed.
+    ``hold_id``) means the key belongs to a hold that is already captured:
+    billed, delivered, spent. Propagate that — do not treat it as a
+    successful hold. A key whose hold was released or expired is re-armed
+    by :func:`services.hold` and answers ``ok=True`` with the same
+    ``hold_id`` holding fresh credits.
     """
     from datetime import timedelta
 
@@ -411,8 +412,8 @@ def hold(payload: dict) -> dict:
             expires_at=timezone.now() + timedelta(seconds=ttl) if ttl else None,
         )
     except services.HoldKeyResolvedError as exc:
-        # The key is spent. Answering ok=True with the resolved hold (what
-        # 0.10.0 did) reserves nothing and moves the failure to the capture.
+        # The key is spent: answering ok=True with a captured hold would
+        # reserve nothing and move the failure to the capture.
         return {
             "ok": False,
             "hold_id": str(exc.hold_id),

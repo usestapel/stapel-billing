@@ -18,7 +18,7 @@ no Django code until an attribute is actually accessed):
     PaymentProvider           — base class for custom payment backends
     InsufficientCreditsError  — raised by ``debit`` on insufficient balance
     HoldKeyResolvedError      — raised by ``hold`` when the idempotency key
-                                names a hold that is already over
+                                names a hold that was already captured
     CHECK_ENTITLEMENT         — name of the ``billing.check_entitlement``
                                 comm Function (call via stapel_core.comm.call)
     DEBIT                     — name of the ``billing.debit`` comm Function

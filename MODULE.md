@@ -92,14 +92,17 @@ hold(credits=15, idempotency_key=...)      # lots decremented NOW; no ledger row
 * **Idempotency**: `hold()` needs `idempotency_key` (unique per wallet). `capture()` /
   `release()` do not — `hold_id` already is one. A repeated capture returns the original
   charge; a repeated release is a no-op.
-* **A resolved key is a refusal, not a hold (0.11.0).** The short-circuit only covers a
-  hold that is still `held`. Until 0.11.0 it matched **any** status, so re-using a key
-  whose hold had been released, captured or expired answered "reserved" with nothing
-  reserved — and the capture that followed failed with `hold_not_held`, at the point
-  where the work was already done and had to be given away. `hold()` now raises
-  `HoldKeyResolvedError` (carrying the hold and its status), and `billing.hold` answers
-  `ok=False, reason="hold_already_resolved"` with that `status`. A genuine retry of a
-  finished operation has nothing left to do; a NEW operation needs a new key.
+* **What a key's existing hold does (0.12.1).** `held` → the short-circuit returns the
+  open hold, nothing new is reserved. `released` / `expired` → nothing was charged and
+  nothing delivered, so the key is not spent: the same row is **re-armed** in place
+  (fresh allocations out of the live lots, fresh `expires_at`, `held` again, same
+  `hold_id`), so reserve → fail → release → reserve again under one key works. `captured`
+  → billed and delivered: `hold()` raises `HoldKeyResolvedError` (carrying the hold and
+  its status) and `billing.hold` answers `ok=False, reason="hold_already_resolved"` —
+  handing back a captured hold would answer "reserved" with nothing reserved and push
+  the failure to the capture. A genuine retry of a finished operation has nothing left
+  to do; a NEW operation needs a new key. Every branch is decided under the wallet's row
+  lock, so two re-arms racing on one released row serialise.
 * `expires_at` defaults to `STAPEL_BILLING["HOLD_DEFAULT_TTL_SECONDS"]` from now, and
   `expire_holds` is the crash-safety net: a worker that dies between hold and answer
   must not lock a customer's credits forever.
@@ -351,7 +354,7 @@ contracts in `schemas/functions/`):
 | `billing.check_entitlement` | `user_id`, `key` (+ `quantity`=1 — the prospective total; billing tracks no usage) | `{allowed, limit, reason}` — checks `key` against the effective plan's `PlanCatalogEntry.entitlements`. `bool` value = feature switch, `int` = ceiling (`quantity <= value`), key absent from *this plan* but part of the deployment's vocabulary = **allowed, no limit** (how the upper plans say "unlimited"), key outside the vocabulary = **denied** with `reason="unknown_key"` (see `ENTITLEMENT_KEYS`). No/cancelled/incomplete subscription resolves to the default plan (`free`). |
 | `billing.debit` | `user_id`, `credits`, `idempotency_key` (required — comm is at-least-once; + optional `type`/`description`/`metadata`/`allow_partial`) | `{ok, balance, reason, transaction_id?}` — wrapper over `services.debit` with its idempotency contract; failures are structural (`ok=false` + `insufficient_credits` / `user_not_found`), never exceptions. With `allow_partial=true` the wallet is charged what it has and the answer also carries `requested` / `debited` / `shortfall` / `debt_id`. |
 | `billing.can_afford` | `user_id`, `credits` | `{ok, affordable, balance, shortfall, reason}` — a pure read: no lock, no hold, no lot. `ok=false` means the question was unanswerable (`user_not_found`); `ok=true, affordable=false` is the real answer "no" (`insufficient_credits`). Nothing is reserved, so two callers can both be told yes. |
-| `billing.hold` | `user_id`, `credits`, `idempotency_key` (required, unique per wallet; + optional `type`/`description`/`metadata`/`expires_in_seconds`) | `{ok, hold_id, balance, reason}` — reserves the credits out of the lots; `reason` is `insufficient_credits` / `user_not_found` / `hold_already_resolved` (the key names a hold that is captured, released or expired — the answer carries that hold's `hold_id` and `status`, and **nothing is reserved**). |
+| `billing.hold` | `user_id`, `credits`, `idempotency_key` (required, unique per wallet; + optional `type`/`description`/`metadata`/`expires_in_seconds`) | `{ok, hold_id, balance, reason}` — reserves the credits out of the lots; `reason` is `insufficient_credits` / `user_not_found` / `hold_already_resolved` (the key names a hold that is **captured** — the answer carries that hold's `hold_id` and `status`, and **nothing is reserved**; a released or expired hold is re-armed instead and answers `ok=true` with the same `hold_id`). |
 | `billing.capture` | `hold_id` (+ optional `actual_credits`/`description`/`metadata`) | `{ok, balance, transaction_id, reason}` — bills the hold and writes the ledger row; `reason` is `hold_not_found` / `hold_not_held` / `insufficient_credits` (the last leaves the hold *held*, so the caller may capture at the reserved amount instead). |
 | `billing.release` | `hold_id` | `{ok, balance, status, reason}` — gives the credits back with their original expiry; a hold that is already resolved is a no-op. `reason` is `hold_not_found`. |
 
@@ -582,9 +585,10 @@ then commit `docs/{schema,flows,errors}.json`.
   `hold_release` lot, so probing on each request fragments the wallet's lots without
   bound and slows every later spend.
 - **Don't re-use a `hold()` idempotency key for a new operation.** A key belongs to one
-  reservation for the life of the wallet; once its hold is captured, released or
-  expired, `hold()` refuses (`HoldKeyResolvedError` / `hold_already_resolved`) instead
-  of handing back a hold that reserves nothing.
+  operation for the life of the wallet; once its hold is captured, `hold()` refuses
+  (`HoldKeyResolvedError` / `hold_already_resolved`) instead of handing back a hold that
+  reserves nothing. Re-using the key for a *retry* of the same operation after a release
+  or expiry is the intended path — the hold is re-armed.
 - **Don't hand out work for free when the wallet is short.** Either refuse (the default
   `debit()`), or serve it with `allow_partial=True` so the shortfall becomes a
   `CreditDebt` the next top-up collects. Unrecorded free service is indistinguishable

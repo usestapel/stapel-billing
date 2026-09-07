@@ -250,36 +250,87 @@ class TestHold:
         assert first.id == second.id
         assert Wallet.objects.get(user=user).balance == 85
 
-    def test_a_released_key_refuses_instead_of_answering_ok_with_nothing_held(
-        self, user
-    ):
-        """audit major #4: the phantom hold.
+    def test_a_released_key_re_arms_the_same_hold(self, user):
+        """reserve -> fail before settling -> release -> reserve again.
 
-        The short-circuit used to match a hold in ANY status, so re-using a
-        key whose hold had been released answered "reserved" with zero
-        credits actually reserved — and the capture that followed failed
-        with hold_not_held, at the point where the work was already done.
+        Nothing was charged and nothing delivered, so the key is not spent.
+        Until 0.12.1 the released row stayed terminal under the unique
+        (wallet, key) and every retry under that key was refused; a host
+        had to re-key (`<key>:after:<hold_id>`) to reserve at all.
         """
         _fund(user, 100)
         first = services.hold(
             user=user, credits=15, type=TransactionType.AI_CHARGE,
             idempotency_key="mic:1",
         )
+        stale_allocation_ids = set(
+            HoldAllocation.objects.filter(hold=first).values_list("id", flat=True)
+        )
         services.release(hold_id=first.id)
+        assert Wallet.objects.get(user=user).balance == 100
 
-        with pytest.raises(services.HoldKeyResolvedError) as exc:
+        again = services.hold(
+            user=user, credits=20, type=TransactionType.TRANSCRIPTION_CHARGE,
+            idempotency_key="mic:1", description="second attempt",
+        )
+        # Same row, re-armed: the unique constraint stands, the id is stable.
+        assert again.id == first.id
+        assert again.status == HoldStatus.HELD
+        assert again.resolved_at is None
+        assert again.expires_at is not None
+        assert again.credits == 20
+        assert again.type == TransactionType.TRANSCRIPTION_CHARGE
+        assert again.description == "second attempt"
+        assert CreditHold.objects.filter(wallet__user=user).count() == 1
+        # Fresh allocations out of the live lots; the refunded ones are gone.
+        allocations = list(HoldAllocation.objects.filter(hold=again))
+        assert [a.credits for a in allocations] == [20]
+        assert not stale_allocation_ids & {a.id for a in allocations}
+        assert Wallet.objects.get(user=user).balance == 80
+        # And it captures — the sequence that used to end in a dead key.
+        txn = services.capture(hold_id=again.id)
+        assert txn.credits_delta == -20
+        assert Wallet.objects.get(user=user).balance == 80
+
+    def test_an_expired_key_re_arms_too(self, user):
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.release(hold_id=first.id, expired=True)
+        assert CreditHold.objects.get(pk=first.id).status == HoldStatus.EXPIRED
+
+        again = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        assert again.id == first.id
+        assert again.status == HoldStatus.HELD
+        assert again.resolved_at is None
+        assert Wallet.objects.get(user=user).balance == 85
+        assert HoldAllocation.objects.filter(hold=again).count() == 1
+
+    def test_a_re_arm_is_refused_when_the_lots_are_short(self, user):
+        """A re-arm reserves like a first hold: short lots refuse it, and
+        the released row stays released — nothing is half-armed."""
+        _fund(user, 20)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.release(hold_id=first.id)
+        with pytest.raises(services.InsufficientCreditsError):
             services.hold(
-                user=user, credits=15, type=TransactionType.AI_CHARGE,
+                user=user, credits=25, type=TransactionType.AI_CHARGE,
                 idempotency_key="mic:1",
             )
-        # The refusal is structured: which hold, and what became of it.
-        assert exc.value.hold_id == first.id
-        assert exc.value.status == HoldStatus.RELEASED
-        # Nothing was reserved, and nothing was taken.
-        assert Wallet.objects.get(user=user).balance == 100
-        assert CreditHold.objects.filter(wallet__user=user).count() == 1
+        first.refresh_from_db()
+        assert first.status == HoldStatus.RELEASED
+        assert Wallet.objects.get(user=user).balance == 20
 
-    def test_a_captured_key_refuses_too(self, user):
+    def test_a_captured_key_refuses(self, user):
+        """A captured hold was billed and delivered: the key is spent."""
         _fund(user, 100)
         first = services.hold(
             user=user, credits=15, type=TransactionType.AI_CHARGE,
@@ -292,27 +343,58 @@ class TestHold:
                 user=user, credits=15, type=TransactionType.AI_CHARGE,
                 idempotency_key="mic:1",
             )
+        # The refusal is structured: which hold, and what became of it.
+        assert exc.value.hold_id == first.id
         assert exc.value.status == HoldStatus.CAPTURED
         # The capture stands; the refused re-hold reserved nothing on top.
         assert Wallet.objects.get(user=user).balance == 85
+        assert CreditHold.objects.filter(wallet__user=user).count() == 1
 
-    def test_an_expired_key_refuses_too(self, user):
+    def test_two_re_arms_racing_on_one_released_row_allocate_once(
+        self, user, monkeypatch
+    ):
+        """The re-arm decision is made under the wallet's row lock.
+
+        Deterministic stand-in for the race: the moment the loser acquires
+        the lock, the winner's re-arm has already committed. The loser must
+        then see ``held`` and short-circuit — no second set of allocations,
+        no second decrement of the lots.
+        """
         _fund(user, 100)
         first = services.hold(
             user=user, credits=15, type=TransactionType.AI_CHARGE,
             idempotency_key="mic:1",
         )
-        services.release(hold_id=first.id, expired=True)
+        services.release(hold_id=first.id)
 
-        with pytest.raises(services.HoldKeyResolvedError) as exc:
-            services.hold(
-                user=user, credits=15, type=TransactionType.AI_CHARGE,
-                idempotency_key="mic:1",
-            )
-        assert exc.value.status == HoldStatus.EXPIRED
+        real_lock = services._lock_wallet
+        state = {"winner_ran": False}
+
+        def lock_then_let_the_winner_through(u):
+            wallet = real_lock(u)
+            if not state["winner_ran"]:
+                state["winner_ran"] = True
+                services.hold(
+                    user=u, credits=15, type=TransactionType.AI_CHARGE,
+                    idempotency_key="mic:1",
+                )
+            return wallet
+
+        monkeypatch.setattr(services, "_lock_wallet", lock_then_let_the_winner_through)
+        loser = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        assert loser.id == first.id
+        assert loser.status == HoldStatus.HELD
+        assert HoldAllocation.objects.filter(hold=first).count() == 1
+        assert Wallet.objects.get(user=user).balance == 85
+        assert sum(
+            lot.credits_remaining
+            for lot in CreditLot.objects.filter(wallet__user=user)
+        ) == 85
 
     def test_a_fresh_key_reserves_normally_after_a_release(self, user):
-        """The refusal is about the KEY, not about the wallet."""
         _fund(user, 100)
         first = services.hold(
             user=user, credits=15, type=TransactionType.AI_CHARGE,
@@ -324,13 +406,13 @@ class TestHold:
             user=user, credits=15, type=TransactionType.AI_CHARGE,
             idempotency_key="mic:2",
         )
+        assert second.id != first.id
         assert second.status == HoldStatus.HELD
         assert Wallet.objects.get(user=user).balance == 85
-        # And it captures — the sequence that used to end in hold_not_held.
         txn = services.capture(hold_id=second.id)
         assert txn.credits_delta == -15
 
-    def test_the_comm_function_propagates_the_refusal(self, user):
+    def test_the_comm_function_re_arms_a_released_key(self, user):
         from stapel_billing import entitlements
 
         _fund(user, 100)
@@ -343,9 +425,27 @@ class TestHold:
         answer = entitlements.hold(
             {"user_id": str(user.id), "credits": 15, "idempotency_key": "mic:1"}
         )
+        assert answer["ok"] is True
+        assert answer["hold_id"] == str(first.id)
+        assert answer["balance"] == 85
+        assert answer["reason"] is None
+
+    def test_the_comm_function_propagates_the_captured_refusal(self, user):
+        from stapel_billing import entitlements
+
+        _fund(user, 100)
+        first = services.hold(
+            user=user, credits=15, type=TransactionType.AI_CHARGE,
+            idempotency_key="mic:1",
+        )
+        services.capture(hold_id=first.id)
+
+        answer = entitlements.hold(
+            {"user_id": str(user.id), "credits": 15, "idempotency_key": "mic:1"}
+        )
         assert answer["ok"] is False
         assert answer["reason"] == entitlements.REASON_HOLD_ALREADY_RESOLVED
-        assert answer["status"] == HoldStatus.RELEASED
+        assert answer["status"] == HoldStatus.CAPTURED
         assert answer["hold_id"] == str(first.id)
 
     def test_hold_refuses_when_the_lots_are_short(self, user):

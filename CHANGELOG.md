@@ -5,6 +5,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-09-07
+
+### Fixed — a released or expired hold no longer kills its idempotency key
+
+`services.hold` treated every finished hold under `(wallet, idempotency_key)`
+as spent — `captured`, `released` and `expired` alike — because the unique
+row stays in its terminal status forever. A host that reserves, fails
+between reserve and settle, gives the credits back and retries could never
+reserve again under that key: nothing had been charged and nothing
+delivered, yet the key was dead. The host worked around it by re-keying
+(`<key>:after:<hold_id>`, bounded hops); every other host carried the same
+trap.
+
+The three statuses now mean three different things to `hold()`:
+
+* `held` — the short-circuit, unchanged: the open hold comes back.
+* `released` / `expired` — the key is **not** spent. The same row is
+  re-armed in place: fresh allocations out of the live lots, a fresh
+  `expires_at`, `resolved_at` cleared, `held` again, same `hold_id`. The
+  unique constraint stands, and the stale zero-credit allocations are
+  replaced rather than appended to. A re-arm reserves like a first hold, so
+  short lots refuse it with `InsufficientCreditsError` and the row stays
+  released.
+* `captured` — billed and delivered, the key is spent: `HoldKeyResolvedError`
+  / `billing.hold` → `ok=False, reason="hold_already_resolved"`, exactly as
+  before.
+
+Every branch is decided under the wallet's row lock — the lock `capture` and
+`release` already take — so two re-arms racing on one released row
+serialise: the second sees `held` and short-circuits without a second set of
+allocations. `tests/test_lots_and_holds.py` carries the reproduction (hold →
+release → hold under one key, hold → capture → hold still refused, the
+expired case, and the race).
+
+The HTTP contract is untouched: `hold_already_resolved` is a comm-Function
+reason, not an error key in `docs/errors.json`. The `billing.hold` payload
+schema description, `MODULE.md` and the docstrings now say "captured only".
+
 ## [0.12.0] — 2026-08-30
 
 ### Added — a merged guest's credits reach the account they signed in to

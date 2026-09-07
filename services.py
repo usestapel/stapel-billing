@@ -72,18 +72,17 @@ class HoldStateError(Exception):
 
 
 class HoldKeyResolvedError(HoldStateError):
-    """This wallet has used that idempotency key, and that hold is over.
+    """This wallet has used that idempotency key, and that hold was captured.
 
     Raised by :func:`hold` instead of handing back a hold that reserves
-    nothing. Until 0.11.0 the idempotency short-circuit matched a hold in
-    ANY status, so re-using a key whose hold had been released, captured or
-    expired answered "ok, reserved" with zero credits actually held — and
-    the capture that followed failed with ``hold_not_held``, at the point
-    where the work was already done and had to be given away.
+    nothing: a captured hold has been billed and its work delivered, so the
+    key is spent. A released or expired hold is not — nothing was charged
+    and nothing delivered — and :func:`hold` re-arms it under the same key
+    instead of raising.
 
-    Carries the resolved hold so the caller can decide: a genuine retry
-    of an already-finished operation is done (nothing more to do), while a
-    NEW operation that happens to reuse the key needs a new key.
+    Carries the captured hold so the caller can decide: a genuine retry of
+    an already-finished operation is done (nothing more to do), while a NEW
+    operation that happens to reuse the key needs a new key.
     """
 
     def __init__(self, hold: "CreditHold"):
@@ -809,12 +808,22 @@ def hold(
     ``STAPEL_BILLING["HOLD_DEFAULT_TTL_SECONDS"]`` from now — a pipeline that
     dies between hold and answer must not lock a customer's credits forever.
 
-    The short-circuit only covers a hold that is still ``held``. A key
-    whose hold has been captured, released or expired raises
-    :class:`HoldKeyResolvedError`: that hold reserves nothing, so returning
-    it would answer "reserved" with an empty reservation and push the
-    failure to the capture — after the work was done. See the exception's
-    docstring for what a caller does with it.
+    What the key's existing hold does depends on its status:
+
+    * ``held`` — the short-circuit: the open hold is returned, nothing new
+      is reserved.
+    * ``released`` / ``expired`` — nothing was charged and nothing delivered,
+      so the key is not spent. The row is re-armed in place: fresh
+      allocations out of the live lots, a fresh deadline, ``held`` again.
+      A host that reserves, fails before settling, gives the credits back
+      and retries would otherwise find its key dead forever.
+    * ``captured`` — billed and delivered; raises
+      :class:`HoldKeyResolvedError` rather than answering "reserved" with an
+      empty reservation and pushing the failure to the capture.
+
+    Every branch is decided under the wallet's row lock, the same lock
+    :func:`capture` and :func:`release` take, so two re-arms racing on one
+    released row serialise: the second sees ``held`` and short-circuits.
     """
     if credits <= 0:
         raise ValueError("credits must be positive")
@@ -826,21 +835,21 @@ def hold(
         wallet=wallet, idempotency_key=idempotency_key
     ).first()
     if existing is not None:
-        if existing.status != HoldStatus.HELD:
+        if existing.status == HoldStatus.CAPTURED:
             logger.warning(
-                "hold idempotency_key=%s belongs to hold %s, which is %s — "
-                "nothing is reserved under that key",
+                "hold idempotency_key=%s belongs to hold %s, which is captured — "
+                "the key is spent",
                 idempotency_key,
                 existing.id,
-                existing.status,
             )
             raise HoldKeyResolvedError(existing)
-        logger.info(
-            "hold short-circuited by idempotency_key=%s (hold %s)",
-            idempotency_key,
-            existing.id,
-        )
-        return existing
+        if existing.status == HoldStatus.HELD:
+            logger.info(
+                "hold short-circuited by idempotency_key=%s (hold %s)",
+                idempotency_key,
+                existing.id,
+            )
+            return existing
     if expires_at is None:
         from .conf import hold_default_ttl_seconds
 
@@ -848,16 +857,42 @@ def hold(
         expires_at = now + timedelta(seconds=ttl) if ttl else None
     _expire_due_lots(wallet, now=now)
     taken = _consume_lots(wallet, credits, now=now)
-    held = CreditHold.objects.create(
-        wallet=wallet,
-        credits=credits,
-        type=type,
-        description=description,
-        metadata=metadata or {},
-        idempotency_key=idempotency_key,
-        status=HoldStatus.HELD,
-        expires_at=expires_at,
-    )
+    if existing is not None:
+        # released / expired: re-arm the same row so the unique key stands.
+        # Its allocations were refunded down to zero on release; they are
+        # replaced, not appended to, so the hold describes this reservation.
+        logger.info(
+            "hold re-armed by idempotency_key=%s (hold %s was %s)",
+            idempotency_key,
+            existing.id,
+            existing.status,
+        )
+        existing.allocations.all().delete()
+        existing.credits = credits
+        existing.type = type
+        existing.description = description
+        existing.metadata = metadata or {}
+        existing.status = HoldStatus.HELD
+        existing.expires_at = expires_at
+        existing.resolved_at = None
+        existing.save(
+            update_fields=[
+                "credits", "type", "description", "metadata",
+                "status", "expires_at", "resolved_at",
+            ]
+        )
+        held = existing
+    else:
+        held = CreditHold.objects.create(
+            wallet=wallet,
+            credits=credits,
+            type=type,
+            description=description,
+            metadata=metadata or {},
+            idempotency_key=idempotency_key,
+            status=HoldStatus.HELD,
+            expires_at=expires_at,
+        )
     HoldAllocation.objects.bulk_create(
         [
             HoldAllocation(hold=held, lot=lot, credits=amount)
