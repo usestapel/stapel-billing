@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -310,6 +310,15 @@
       "intent": "The configured entitlement resolver, normalised to {user_id, plan} rows and tolerant of one bad row. Call this, not the setting's callable, if you drive the grants from your own scheduler.",
       "instead_of": [
         "django.conf.settings.STAPEL_BILLING[\"PLAN_BUNDLE_ENTITLEMENTS\"]"
+      ]
+    },
+    {
+      "name": "reconcile_subscriptions",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.reconcile_subscriptions",
+      "intent": "Re-read every provider-backed Subscription and repair status, billing period, cancel_at_period_end and cancelled_at from the provider. Reach for it after a release that changes how a provider payload is read, or a delivery gap: a webhook that was processed green but wrote the wrong value is never retried by anything. Idempotent; dry_run=True first. Never hand-fix rows in a shell — that writes one field and leaves the rest disagreeing with the provider.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.objects.update"
       ]
     },
     {

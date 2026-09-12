@@ -1,6 +1,6 @@
 # Errors — English
 
-`55` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.en.json`.
+`56` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.en.json`.
 
 | Code | Status | Params | Remediation | Text |
 |---|---|---|---|---|
@@ -49,6 +49,7 @@
 | `error.408.request_timeout` | 408 | — | `retry` | Request timeout |
 | `error.409.conflict` | 409 | — | `fix_input` | Resource already exists |
 | `error.409.duplicate_webhook_event` | 409 | — | `retry` | Stripe event already processed |
+| `error.409.subscription_not_paid` | 409 | — | `verify` | There is no paid subscription to cancel |
 | `error.410.gone` | 410 | — | `retry` | Resource has been permanently removed |
 | `error.413.payload_too_large` | 413 | — | `retry` | Request body is too large |
 | `error.415.unsupported_media_type` | 415 | — | `retry` | Unsupported media type |

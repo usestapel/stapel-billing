@@ -11,5 +11,6 @@
   "error.404.subscription_not_found": "Suscripción no encontrada",
   "error.404.transaction_not_found": "Transacción no encontrada",
   "error.404.wallet_not_found": "Monedero no encontrado",
-  "error.409.duplicate_webhook_event": "El evento de Stripe ya se ha procesado"
+  "error.409.duplicate_webhook_event": "El evento de Stripe ya se ha procesado",
+  "error.409.subscription_not_paid": "No hay ninguna suscripción de pago que cancelar"
 }

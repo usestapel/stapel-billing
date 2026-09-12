@@ -79,6 +79,7 @@ from .errors import (
     ERR_402_INSUFFICIENT_CREDITS,
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
+    ERR_409_SUBSCRIPTION_NOT_PAID,
 )
 from .models import (
     CreditHold,
@@ -267,6 +268,12 @@ def _sub_to_dto(s: Subscription) -> SubscriptionResponse:
         if s.current_period_end
         else None,
         cancelled_at=s.cancelled_at.isoformat() if s.cancelled_at else None,
+        cancel_at_period_end=s.cancel_at_period_end,
+        # Computed here, not left to the client: is_active compares the
+        # period end against the clock, and the only clock that decides
+        # whether a customer is still entitled is the server's.
+        is_paid=s.is_paid,
+        is_active=s.is_active,
     )
 
 
@@ -457,14 +464,20 @@ class SubscriptionCancelView(SerializerSeamMixin, GuestDeniedMixin, APIView):
 
     @extend_schema(
         description=(
-            "Cancel the authenticated user's subscription. Cancels the "
-            "subscription at the Stripe provider (when one exists) and marks "
-            "it cancelled locally. Takes no request body."
+            "Cancel the authenticated user's subscription at the provider. "
+            "The subscription stays active until the end of the period "
+            "already paid for: the response carries "
+            "`cancel_at_period_end: true` and the `current_period_end` it "
+            "runs to. Refused with `error.409.subscription_not_paid` when "
+            "there is no paid subscription (`is_paid: false`) — the free "
+            "plan is not a subscription and has nothing to cancel. Takes no "
+            "request body."
         ),
         request=None,
         responses={
             200: SubscriptionResponseSerializer,
             404: StapelErrorSerializer,
+            409: StapelErrorSerializer,
             502: OpenApiTypes.OBJECT,
         },
     )
@@ -472,21 +485,39 @@ class SubscriptionCancelView(SerializerSeamMixin, GuestDeniedMixin, APIView):
         sub = Subscription.objects.filter(user=request.user).first()
         if not sub:
             return StapelErrorResponse(404, ERR_404_SUBSCRIPTION_NOT_FOUND)
-        if sub.stripe_subscription_id:
-            try:
-                services.cancel_provider_subscription(sub.stripe_subscription_id)
-            except Exception:
-                # Do NOT mark cancelled locally: the user would believe
-                # the subscription is off while the provider keeps charging.
-                # An unconfigured provider raises here too (it used to return
-                # quietly, which produced exactly that lie).
-                logger.exception("Provider subscription cancel failed")
-                return StapelResponse(  # noqa: R006
-                    {"status": "error"},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
+        if not sub.is_paid:
+            # A free-plan row exists for everybody — GET /subscription
+            # creates one on first read — so "a row was found" is not
+            # "there is a subscription". Without this gate the endpoint
+            # answered 200 and stamped `cancelled_at` on an account that
+            # had never paid, which is what let a client believe the free
+            # plan was a cancellable thing.
+            return StapelErrorResponse(409, ERR_409_SUBSCRIPTION_NOT_PAID)
+        # `is_paid` guarantees a provider id, so this call is unconditional
+        # now: there is no "cancel locally only" branch left to take.
+        try:
+            services.cancel_provider_subscription(sub.stripe_subscription_id)
+        except Exception:
+            # Do NOT mark cancelled locally: the user would believe
+            # the subscription is off while the provider keeps charging.
+            # An unconfigured provider raises here too (it used to return
+            # quietly, which produced exactly that lie).
+            logger.exception("Provider subscription cancel failed")
+            return StapelResponse(  # noqa: R006
+                {"status": "error"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        # The provider cancels AT PERIOD END, so the local row must say the
+        # same: the status stays whatever it was (the customer is still
+        # entitled to the period they paid for) and the flag is what has
+        # changed. Writing `status=cancelled` here instead — which is what
+        # "marks it cancelled locally" used to mean — would cut a paying
+        # customer off from service they have already bought. The webhook
+        # confirms the same two fields a moment later; this write is so the
+        # RESPONSE to the click already tells the truth.
         sub.cancelled_at = timezone.now()
-        sub.save(update_fields=["cancelled_at", "updated_at"])
+        sub.cancel_at_period_end = True
+        sub.save(update_fields=["cancelled_at", "cancel_at_period_end", "updated_at"])
         response_cls = self.get_response_serializer_class()
         return StapelResponse(response_cls(_sub_to_dto(sub)))
 

@@ -13,6 +13,7 @@ both the log and ``manage.py check`` (W104).
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional, Tuple
 
@@ -187,6 +188,32 @@ class StripeProvider(PaymentProvider):
             # whole truth.
             return
         stripe.Subscription.modify(subscription_id, cancel_at_period_end=True)
+
+    def fetch_subscription(self, subscription_id: str) -> Optional[dict]:
+        """Re-read a Stripe subscription. ``None`` when it no longer exists.
+
+        Refuses on an unconfigured provider rather than answering "there is
+        no such subscription": a reconciliation that reads nothing and
+        reports every row clean is the failure mode this exists to catch.
+        """
+        stripe = self._configured_stripe()
+        if not stripe:
+            raise ProviderNotConfiguredError(
+                "Stripe is not configured, so a subscription cannot be "
+                "re-read for reconciliation."
+            )
+        if not subscription_id:
+            return None
+        try:
+            sub = stripe.Subscription.retrieve(subscription_id)
+        except Exception as exc:  # stripe.error.InvalidRequestError et al.
+            if getattr(exc, "http_status", None) == 404:
+                return None
+            raise
+        # The SDK returns a dict subclass; `dict(...)` is not enough — the
+        # nested `items.data` entries stay StripeObjects, and the period
+        # this whole reconciliation is about now lives inside them.
+        return json.loads(json.dumps(sub, default=dict))
 
     # ── webhooks ───────────────────────────────────────────
 

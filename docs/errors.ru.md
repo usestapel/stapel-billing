@@ -1,6 +1,6 @@
 # Errors — Русский
 
-`55` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.ru.json`.
+`56` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.ru.json`.
 
 | Код | Статус | Параметры | Действие | Текст |
 |---|---|---|---|---|
@@ -49,6 +49,7 @@
 | `error.408.request_timeout` | 408 | — | `retry` | Время ожидания запроса истекло |
 | `error.409.conflict` | 409 | — | `fix_input` | Ресурс уже существует |
 | `error.409.duplicate_webhook_event` | 409 | — | `retry` | Событие Stripe уже обработано |
+| `error.409.subscription_not_paid` | 409 | — | `verify` | Нет платной подписки, которую можно отменить |
 | `error.410.gone` | 410 | — | `retry` | Ресурс был безвозвратно удалён |
 | `error.413.payload_too_large` | 413 | — | `retry` | Тело запроса слишком большое |
 | `error.415.unsupported_media_type` | 415 | — | `retry` | Неподдерживаемый тип данных |

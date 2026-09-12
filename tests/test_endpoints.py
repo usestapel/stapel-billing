@@ -215,13 +215,19 @@ class TestSubscriptionCancelEndpoint:
         resp = authed_client.post("/billing/api/subscription/cancel")
         assert resp.status_code == 404
 
-    def test_cancel_local_subscription(self, authed_client, user):
+    def test_cancel_of_a_row_with_no_provider_object_is_refused(
+        self, authed_client, user
+    ):
+        # Was: a 200 that stamped `cancelled_at` on a row nothing was ever
+        # billing. "Cancelled" is a claim about a provider subscription, and
+        # there is none here — a row on a paid plan with no
+        # stripe_subscription_id is a checkout that never completed, not a
+        # subscription to end. Full coverage in test_subscription_state.py.
         sub = Subscription.objects.create(user=user, plan="pro")
         resp = authed_client.post("/billing/api/subscription/cancel")
-        assert resp.status_code == 200
-        assert resp.json()["cancelled_at"] is not None
+        assert resp.status_code == 409
         sub.refresh_from_db()
-        assert sub.cancelled_at is not None
+        assert sub.cancelled_at is None
 
     def test_cancel_with_provider_no_op_when_unconfigured(
         self, authed_client, user, stripe_placeholders_allowed

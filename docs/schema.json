@@ -178,7 +178,7 @@
     "/billing/api/v1/subscription/cancel": {
       "post": {
         "operationId": "billing_api_v1_subscription_cancel_create",
-        "description": "Cancel the authenticated user's subscription. Cancels the subscription at the Stripe provider (when one exists) and marks it cancelled locally. Takes no request body.\n\n**Permissions:** `IsAuthenticated`",
+        "description": "Cancel the authenticated user's subscription at the provider. The subscription stays active until the end of the period already paid for: the response carries `cancel_at_period_end: true` and the `current_period_end` it runs to. Refused with `error.409.subscription_not_paid` when there is no paid subscription (`is_paid: false`) — the free plan is not a subscription and has nothing to cancel. Takes no request body.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Subscription"
         ],
@@ -199,6 +199,16 @@
             "description": ""
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -785,7 +795,7 @@
           },
           "error_language": {
             "type": "string",
-            "description": "Active Django locale `error` was rendered in (e.g"
+            "description": "The language `error` is written in (e.g. 'en', 'ru'),"
           }
         },
         "required": [
@@ -795,29 +805,47 @@
       },
       "SubscriptionResponse": {
         "type": "object",
-        "description": "SubscriptionResponse(plan: str, status: str, stripe_subscription_id: Optional[str], current_period_start: Optional[str], current_period_end: Optional[str], cancelled_at: Optional[str])",
+        "description": "The caller's subscription, including the users who have none.\n\n``GET /subscription`` answers for every authenticated user, so this\nshape has to be able to say \"there is no subscription here\" — which is\nwhat ``is_paid: false`` means. ``plan``/``status`` cannot say it: a\nfree-plan row reads ``plan=\"free\", status=\"active\"``, and a client\nthat decides from those offers a cancel button to somebody who never\npaid.\n\nThe three booleans are the whole decision, and they are computed\nserver-side on purpose: ``is_active`` compares ``current_period_end``\nagainst the clock, and a client's clock is not the one that bills.",
         "properties": {
           "plan": {
-            "type": "string"
+            "type": "string",
+            "description": "Plan slug. ``free`` for an account that never subscribed"
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "description": "The provider's status, mirrored"
           },
           "stripe_subscription_id": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "The provider object, or null"
           },
           "current_period_start": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "ISO-8601, or null when unknown"
           },
           "current_period_end": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "ISO-8601 renewal/expiry moment, or null"
           },
           "cancelled_at": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "ISO-8601 moment the cancellation was requested"
+          },
+          "cancel_at_period_end": {
+            "type": "boolean",
+            "description": "The subscriber has cancelled and service"
+          },
+          "is_paid": {
+            "type": "boolean",
+            "description": "There is a provider subscription behind this row (plan is"
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "The subscription entitles the user right now — an"
           }
         },
         "required": [

@@ -5,6 +5,118 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-12
+
+### Fixed — the billing period Stripe moved, and the reader that never found it
+
+Stripe removed `current_period_start` / `current_period_end` from the
+subscription object and put them on each subscription **item** (API version
+`2025-03-31.basil` onward). `_apply_stripe_period` read the old place only.
+That does not fail — it finds nothing, every time, silently, and leaves the
+period NULL while every webhook is received, processed and logged green.
+
+Measured on a live deployment before this release (Stripe `api_version`
+`2026-06-24.dahlia`): 21 subscription/invoice events delivered, all
+processed, none errored, and all three paid subscriptions carrying
+`current_period_start = current_period_end = NULL`. The consequence is not
+cosmetic — `current_period_end` is what dates a plan's credit bundle
+(`_stamp_subscription_period`), so the bundle a cancelled subscriber keeps
+had nothing to expire it, and `is_active` had no clock to check.
+
+`services._stripe_period()` now reads both places, newest first. With
+several items the **widest** window wins: the subscription is owed service
+until its last item's period ends. The parked-period path
+(`_stash_subscription_period`) had the same blind spot and is fixed with it.
+Deployments pinned either side of Stripe's change are served by one reader.
+
+### Added — `cancel_at_period_end`, and an API that can say "leaving"
+
+A subscriber who cancels stays `status = "active"` at Stripe for the whole
+remainder they paid for; only `cancel_at_period_end` distinguishes them. The
+local row had no such column, so two cancelled subscriptions on the live
+deployment were byte-identical to subscriptions nobody had touched — and the
+only local trace, `cancelled_at`, was written by our own cancel endpoint and
+by nothing else.
+
+* `Subscription.cancel_at_period_end` (new column) and `cancelled_at` are
+  mirrored from `customer.subscription.updated` / `.deleted`, including the
+  provider's own `canceled_at` timestamp. Undoing a cancellation at Stripe
+  clears both again.
+* `customer.subscription.deleted` uses the provider's `canceled_at` rather
+  than "whenever the worker got to it", and clears `cancel_at_period_end` —
+  a pending cancellation that has already happened is not pending.
+
+### Added — `is_paid` / `is_active` on the subscription response
+
+`GET /subscription` creates a free-plan row for every user who has never
+paid, and that row reads `plan="free", status="active"` — the free tier is
+not a subscription in the provider's sense, but nothing in the payload said
+so. Every client that decided from `plan`/`status` got it wrong the same
+way; on the live deployment that meant a "Cancel subscription" button
+offered to 111 accounts with nothing to cancel.
+
+`SubscriptionResponse` now carries three booleans, computed server-side:
+
+* `is_paid` — plan is not free **AND** a `stripe_subscription_id` exists.
+  Both halves: a paid plan with no provider object is a checkout that never
+  completed, and a provider id on a free plan is a subscription that ended.
+* `is_active` — the status entitles (`active` / `trialing`) and, when a
+  `current_period_end` is known, it has not passed. The clock that decides
+  entitlement is the server's, not the browser's.
+* `cancel_at_period_end` — see above.
+
+`Subscription.is_paid` / `.is_active` are the same rule as model properties,
+and `models.ENTITLING_SUBSCRIPTION_STATUSES` is the one list they read.
+
+### Changed — cancelling nothing is refused by name
+
+`POST /subscription/cancel` answered **200** for a row with no provider
+subscription and stamped `cancelled_at` on it — including every free-plan
+row. It now refuses with `error.409.subscription_not_paid` (remediation
+`verify`: re-read `GET /subscription`) unless `is_paid`, and a real cancel
+writes `cancel_at_period_end = true` **without** moving `status`: the
+provider cancels at period end, and marking the row `cancelled` would cut a
+customer off from a period they have already paid for.
+
+### Added — `manage.py billing_reconcile_subscriptions`
+
+The repair path for rows a webhook wrote wrongly. Nothing retries an event
+the provider already considers delivered, so a reader that misparsed a
+payload leaves damage no other mechanism can reach.
+
+`services.reconcile_subscriptions(dry_run=..., stripe_subscription_ids=...)`
+re-reads each provider-backed subscription through the new
+`PaymentProvider.fetch_subscription()` and repairs status, both period
+bounds, `cancel_at_period_end` and `cancelled_at` — through the **same**
+helpers the webhook path uses, so the two cannot disagree about what a
+payload means. Idempotent (it compares against the provider rather than
+accumulating), reports per-row before/after, re-stamps the credit lots a
+NULL period had left undated, and leaves free-plan rows alone. A
+subscription that is gone at the provider is reported, never guessed at; one
+unreadable row does not abandon the rest, and the command exits non-zero if
+any row could not be read.
+
+`PaymentProvider.fetch_subscription()` is concrete on the base class and
+raises `NotImplementedError` — a provider that cannot re-read is a missing
+capability, reported per row, not a false all-clear. `StripeProvider`
+implements it.
+
+### Changed — every Stripe status has a local name
+
+`SubscriptionStatus` gains `incomplete_expired`, `unpaid` and `paused`;
+`status` widens to 32 chars to hold `incomplete_expired`. An unmapped status
+used to leave the row at whatever it already held — so a subscription that
+went `unpaid` went on reading `active` and nothing said so. Keeping the
+value is still the only safe action, but it is logged at WARNING now.
+
+### Contract
+
+`docs/schema.json` moves: `SubscriptionResponse` gains `cancel_at_period_end`,
+`is_paid` and `is_active`, and `POST /subscription/cancel` gains a 409
+response. `docs/errors.json` gains `error.409.subscription_not_paid` (ru/es
+translations included). Migration `0007` is expand-only (one nullable-free
+boolean with a default, one column widening).
+
 ## [0.12.1] — 2026-09-07
 
 ### Fixed — a released or expired hold no longer kills its idempotency key

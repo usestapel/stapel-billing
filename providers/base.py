@@ -77,6 +77,28 @@ class PaymentProvider(ABC):
         no longer being billed.
         """
 
+    def fetch_subscription(self, subscription_id: str) -> Optional[dict]:
+        """Re-read one provider subscription, as a plain dict.
+
+        Used by ``services.reconcile_subscriptions()`` to repair rows that
+        drifted because a webhook was missed, mis-parsed, or arrived in a
+        payload shape this deployment did not understand. The shape
+        returned is the provider's own subscription object — the same one
+        its webhooks carry — because the repair path must read it with the
+        SAME code the webhook path does, or the two disagree and the
+        reconciliation becomes a second source of truth.
+
+        Not abstract: a provider that cannot read a subscription back is a
+        provider that cannot be reconciled, which is a missing capability
+        and not a broken implementation. Raise
+        :class:`NotImplementedError` — the caller reports it per row and
+        goes on.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot re-read a subscription, so "
+            "subscriptions on this provider cannot be reconciled."
+        )
+
     @abstractmethod
     def verify_webhook(self, payload: bytes, signature: str) -> dict:
         """Parse + verify an incoming webhook. Returns the event dict.

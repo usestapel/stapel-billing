@@ -1,6 +1,6 @@
 # Errors — Español
 
-`55` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.es.json`.
+`56` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.es.json`.
 
 | Código | Estado | Parámetros | Acción | Texto |
 |---|---|---|---|---|
@@ -49,6 +49,7 @@
 | `error.408.request_timeout` | 408 | — | `retry` | Tiempo de espera de la solicitud agotado |
 | `error.409.conflict` | 409 | — | `fix_input` | El recurso ya existe |
 | `error.409.duplicate_webhook_event` | 409 | — | `retry` | El evento de Stripe ya se ha procesado |
+| `error.409.subscription_not_paid` | 409 | — | `verify` | No hay ninguna suscripción de pago que cancelar |
 | `error.410.gone` | 410 | — | `retry` | El recurso se ha eliminado permanentemente |
 | `error.413.payload_too_large` | 413 | — | `retry` | El cuerpo de la solicitud es demasiado grande |
 | `error.415.unsupported_media_type` | 415 | — | `retry` | Tipo de contenido no compatible |

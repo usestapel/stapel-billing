@@ -11,5 +11,6 @@
   "error.404.subscription_not_found": "Подписка не найдена",
   "error.404.transaction_not_found": "Транзакция не найдена",
   "error.404.wallet_not_found": "Кошелёк не найден",
-  "error.409.duplicate_webhook_event": "Событие Stripe уже обработано"
+  "error.409.duplicate_webhook_event": "Событие Stripe уже обработано",
+  "error.409.subscription_not_paid": "Нет платной подписки, которую можно отменить"
 }

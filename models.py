@@ -40,11 +40,42 @@ class Plan(models.TextChoices):
 
 
 class SubscriptionStatus(models.TextChoices):
+    """The provider's subscription lifecycle, mirrored locally.
+
+    Every Stripe status has a member here. A status the map cannot place
+    used to leave the local row at whatever it held before — so a
+    subscription that went ``unpaid`` or ``incomplete_expired`` at the
+    provider kept reading ``active`` here, and nothing said so.
+
+    ``CANCELLED`` keeps the British spelling it was born with even though
+    Stripe writes ``canceled``: the value is in the database of every
+    deployment that already runs this app, and renaming it would need a
+    data migration to buy nothing. The translation lives in one place
+    (``services._map_stripe_status``).
+    """
+
     ACTIVE = "active", "Active"
     TRIALING = "trialing", "Trialing"
     PAST_DUE = "past_due", "Past Due"
     CANCELLED = "cancelled", "Cancelled"
     INCOMPLETE = "incomplete", "Incomplete"
+    #: The first invoice was never paid and the window closed. Terminal.
+    INCOMPLETE_EXPIRED = "incomplete_expired", "Incomplete Expired"
+    #: Retries are exhausted; the provider has stopped collecting. Not
+    #: cancelled — the subscription still exists and can be recovered.
+    UNPAID = "unpaid", "Unpaid"
+    #: Collection is paused (a paused trial, or a pause_collection
+    #: schedule). Service is not owed while it lasts.
+    PAUSED = "paused", "Paused"
+
+
+#: Statuses that entitle the subscriber to the plan right now. Read by
+#: ``Subscription.is_active`` and by every host that asks "may this user
+#: have the plan" — one list, because two copies disagree the day a status
+#: is added.
+ENTITLING_SUBSCRIPTION_STATUSES = frozenset(
+    {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING}
+)
 
 
 class TransactionType(models.TextChoices):
@@ -505,7 +536,24 @@ class CreditDebt(models.Model):
 
 
 class Subscription(models.Model):
-    """Stripe-backed subscription. One per User."""
+    """Stripe-backed subscription. One per User.
+
+    A row exists for every user the API has ever been asked about,
+    including the ones who never paid: ``GET /subscription`` creates the
+    free-plan row on first read. That row is NOT a subscription in the
+    provider's sense — it has no ``stripe_subscription_id``, no period and
+    no money behind it — and ``status`` says ``active`` only because
+    "active" is the default of a column that mirrors a provider object
+    this row does not have.
+
+    So ``status`` alone cannot answer the two questions every caller
+    actually asks. :attr:`is_paid` ("is there a provider subscription
+    behind this at all") and :attr:`is_active` ("does it entitle the user
+    right now") do, and they are the fields the API publishes. A client
+    that reasons from ``plan``/``status`` reinvents them, and gets the free
+    plan wrong — which is how a "Cancel subscription" button came to be
+    offered to 111 accounts that had nothing to cancel.
+    """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(
@@ -528,12 +576,30 @@ class Subscription(models.Model):
     )
     plan = models.CharField(max_length=16, choices=Plan.choices, default=Plan.FREE)
     status = models.CharField(
-        max_length=16, choices=SubscriptionStatus.choices, default=SubscriptionStatus.ACTIVE
+        max_length=32,
+        choices=SubscriptionStatus.choices,
+        default=SubscriptionStatus.ACTIVE,
+        help_text=(
+            "Mirrors the provider's subscription status. 32 chars because "
+            "'incomplete_expired' is 18 — the old 16 could not hold it."
+        ),
     )
     stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
     stripe_customer_id = models.CharField(max_length=255, null=True, blank=True)
     current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
+    cancel_at_period_end = models.BooleanField(
+        default=False,
+        help_text=(
+            "The subscriber asked to stop and the provider will not renew. "
+            "Stripe keeps `status` at 'active' for the whole paid-for "
+            "remainder — service is owed until current_period_end — so this "
+            "flag is the ONLY thing that distinguishes 'subscribed' from "
+            "'leaving on the 30th'. Without it a UI must either keep "
+            "offering Cancel to someone who already cancelled, or cut off a "
+            "period the customer paid for."
+        ),
+    )
     cancelled_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -567,6 +633,35 @@ class Subscription(models.Model):
 
     def __str__(self):
         return f"{self.user_id}: {self.plan} ({self.status})"
+
+    @property
+    def is_paid(self) -> bool:
+        """Is there a provider subscription behind this row at all?
+
+        Both halves are required. ``plan != free`` alone admits a row a
+        failed checkout left on a paid plan with no provider object; a
+        Stripe id alone admits a row whose plan was moved back to free.
+        Neither is something to offer a cancel button for.
+        """
+        return bool(self.plan != Plan.FREE and self.stripe_subscription_id)
+
+    @property
+    def is_active(self) -> bool:
+        """Does this subscription entitle the user *right now*?
+
+        Status first, then the clock: a row whose period ended and whose
+        renewal never arrived reads ``active`` forever otherwise, and
+        that is the exact shape of a webhook this deployment missed. A
+        row with no period end is trusted on its status alone — that is
+        the honest answer when nothing told us when it runs out.
+        """
+        if self.status not in ENTITLING_SUBSCRIPTION_STATUSES:
+            return False
+        if self.current_period_end is not None:
+            from django.utils import timezone
+
+            return self.current_period_end > timezone.now()
+        return True
 
 
 @access.ops

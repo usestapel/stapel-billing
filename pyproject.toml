@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.12.1"
+version = "0.13.0"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -47,7 +47,13 @@ all = ["stapel-billing[stripe,celery]"]
 
 [tool.setuptools]
 package-dir = {"stapel_billing" = "."}
-packages = ["stapel_billing", "stapel_billing.migrations", "stapel_billing.providers"]
+packages = [
+    "stapel_billing",
+    "stapel_billing.migrations",
+    "stapel_billing.providers",
+    "stapel_billing.management",
+    "stapel_billing.management.commands",
+]
 
 [tool.setuptools.package-data]
 stapel_billing = ["py.typed", "migrations/*.py", "schemas/**/*.json", "translations/*.json", "migrations/**/*.py", "docs/capabilities.json", "docs/llms.txt", "docs/flows.json", "docs/errors.json", "CONFIG.MD"]

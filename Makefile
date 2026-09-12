@@ -39,7 +39,13 @@ PYTHON ?= python3
 # must call instead of writing its own — moving credits by hand is how an
 # expiring bundle silently becomes non-expiring cash — so neither belongs
 # outside this file. Their intents were written short before the ceiling moved.
-LLMS_BUDGET ?= 5600
+#
+# Raised again in 0.13.0, by one entry: `reconcile_subscriptions`. It is the
+# repair path for subscription rows a webhook wrote wrongly, and an agent that
+# does not know it exists writes a shell loop that fixes one column — which is
+# the failure this release was opened on. Its intent was cut to six lines
+# before the ceiling moved.
+LLMS_BUDGET ?= 5800
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

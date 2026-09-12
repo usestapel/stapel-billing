@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from django.db import IntegrityError, transaction
@@ -1627,6 +1627,41 @@ def _stamp_subscription_period(sub: Subscription) -> int:
     ).update(expires_at=sub.current_period_end)
 
 
+def _stripe_period(obj: dict) -> tuple[Optional[datetime], Optional[datetime]]:
+    """``(current_period_start, current_period_end)`` of a Stripe
+    subscription object, wherever this API version keeps them.
+
+    Stripe MOVED these two fields. Up to ``2025-03-31.basil`` they sat on
+    the subscription; from it they live on each subscription ITEM, because
+    a subscription with several items can bill them on different cycles.
+    A reader that only knows the old place does not fail — it finds
+    nothing, every time, and writes NULL periods forever while the webhook
+    log shows every event received and processed. That is what this
+    deployment had: three paid subscriptions, twenty-one events, zero
+    errors, and no period on any row (Stripe ``api_version``
+    ``2026-06-24.dahlia``).
+
+    Both places are read, newest-first, because one library serves
+    deployments pinned to either side of that change. With several items
+    the WIDEST window wins: the subscription is owed service until its
+    last item's period ends, and the credits it granted must not expire
+    before then.
+    """
+    start = _epoch_to_datetime(obj.get("current_period_start"))
+    end = _epoch_to_datetime(obj.get("current_period_end"))
+    items = (obj.get("items") or {}).get("data") or []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_start = _epoch_to_datetime(item.get("current_period_start"))
+        if item_start is not None and (start is None or item_start < start):
+            start = item_start
+        item_end = _epoch_to_datetime(item.get("current_period_end"))
+        if item_end is not None and (end is None or item_end > end):
+            end = item_end
+    return start, end
+
+
 def _apply_stripe_period(sub: Subscription, obj: dict) -> list[str]:
     """Populate ``current_period_{start,end}`` on *sub* from a Stripe
     subscription object. Returns the names of the fields that actually
@@ -1636,14 +1671,43 @@ def _apply_stripe_period(sub: Subscription, obj: dict) -> list[str]:
     missing period leaves the prior value intact rather than nulling it.
     """
     changed: list[str] = []
-    start = _epoch_to_datetime(obj.get("current_period_start"))
+    start, end = _stripe_period(obj)
     if start is not None and start != sub.current_period_start:
         sub.current_period_start = start
         changed.append("current_period_start")
-    end = _epoch_to_datetime(obj.get("current_period_end"))
     if end is not None and end != sub.current_period_end:
         sub.current_period_end = end
         changed.append("current_period_end")
+    return changed
+
+
+def _apply_stripe_cancellation(sub: Subscription, obj: dict) -> list[str]:
+    """Mirror the provider's cancellation intent onto *sub*.
+
+    ``cancel_at_period_end`` is the fact that has no local equivalent: a
+    subscriber who cancels stays ``status='active'`` at Stripe for the
+    whole remaining period, so without this flag the local row is
+    indistinguishable from one nobody touched. ``canceled_at`` is Stripe's
+    own timestamp for when the cancellation was REQUESTED, which is what
+    ``cancelled_at`` has always meant here.
+
+    A payload that says nothing about cancellation leaves both alone.
+    """
+    changed: list[str] = []
+    flag = obj.get("cancel_at_period_end")
+    if isinstance(flag, bool) and flag != sub.cancel_at_period_end:
+        sub.cancel_at_period_end = flag
+        changed.append("cancel_at_period_end")
+    cancelled = _epoch_to_datetime(obj.get("canceled_at"))
+    if cancelled is not None and cancelled != sub.cancelled_at:
+        sub.cancelled_at = cancelled
+        changed.append("cancelled_at")
+    elif cancelled is None and flag is False and sub.cancelled_at is not None:
+        # The subscriber changed their mind at the provider (Stripe clears
+        # canceled_at when a cancel_at_period_end is undone). Leaving the
+        # local timestamp behind marks a live subscription cancelled.
+        sub.cancelled_at = None
+        changed.append("cancelled_at")
     return changed
 
 
@@ -2012,7 +2076,34 @@ _STRIPE_STATUS_MAP = {
     "past_due": SubscriptionStatus.PAST_DUE,
     "canceled": SubscriptionStatus.CANCELLED,
     "incomplete": SubscriptionStatus.INCOMPLETE,
+    "incomplete_expired": SubscriptionStatus.INCOMPLETE_EXPIRED,
+    "unpaid": SubscriptionStatus.UNPAID,
+    "paused": SubscriptionStatus.PAUSED,
 }
+
+
+def _map_stripe_status(raw, current=None):
+    """Translate a provider status into the local one.
+
+    Every Stripe status is in the table above, so an unmapped value means
+    the provider grew one we do not know. The old behaviour — keep
+    whatever the row already held — is the worst available: a subscription
+    that moved to a status we cannot name goes on reading ``active``, and
+    nothing anywhere says so. Keeping the value is still the only safe
+    *action* (inventing a status is worse), but it is LOGGED now, so the
+    condition is discoverable instead of silent.
+    """
+    mapped = _STRIPE_STATUS_MAP.get(raw)
+    if mapped is not None:
+        return mapped
+    if raw:
+        logger.warning(
+            "unknown Stripe subscription status %r — the local row keeps %r. "
+            "stapel_billing.services._STRIPE_STATUS_MAP needs an entry.",
+            raw,
+            current,
+        )
+    return current
 
 
 def _resolve_local_subscription(obj: dict) -> Optional[Subscription]:
@@ -2078,8 +2169,7 @@ def _stash_subscription_period(obj: dict) -> Optional[PendingSubscriptionPeriod]
         "stripe_customer_id": str(obj.get("customer") or ""),
         "status": str(obj.get("status") or ""),
     }
-    start = _epoch_to_datetime(obj.get("current_period_start"))
-    end = _epoch_to_datetime(obj.get("current_period_end"))
+    start, end = _stripe_period(obj)
     if start is not None:
         defaults["current_period_start"] = start
     if end is not None:
@@ -2121,7 +2211,7 @@ def _apply_pending_period(sub: Subscription) -> bool:
     ):
         sub.current_period_end = pending.current_period_end
         changed.append("current_period_end")
-    mapped = _STRIPE_STATUS_MAP.get(pending.status)
+    mapped = _map_stripe_status(pending.status, sub.status)
     if mapped is not None and mapped != sub.status:
         sub.status = mapped
         changed.append("status")
@@ -2147,8 +2237,13 @@ def handle_subscription_updated(event: dict) -> None:
         # not landed yet (see _stash_subscription_period).
         _stash_subscription_period(obj)
         return
-    sub.status = _STRIPE_STATUS_MAP.get(obj.get("status"), sub.status)
-    fields = ["status", "updated_at", *_apply_stripe_period(sub, obj)]
+    sub.status = _map_stripe_status(obj.get("status"), sub.status)
+    fields = [
+        "status",
+        "updated_at",
+        *_apply_stripe_period(sub, obj),
+        *_apply_stripe_cancellation(sub, obj),
+    ]
     sub.save(update_fields=fields)
     _stamp_subscription_period(sub)
     _announce_subscription(sub)
@@ -2163,14 +2258,166 @@ def handle_subscription_deleted(event: dict) -> None:
     from django.utils import timezone
 
     sub.status = SubscriptionStatus.CANCELLED
-    sub.cancelled_at = timezone.now()
-    fields = ["status", "cancelled_at", "updated_at", *_apply_stripe_period(sub, obj)]
+    # The provider's own timestamp when it has one: "when did this end" is a
+    # question about the subscription, not about when our worker got to it.
+    sub.cancelled_at = _epoch_to_datetime(obj.get("canceled_at")) or timezone.now()
+    # It HAS ended. A pending cancellation is no longer pending, and a row
+    # that says both is a row a UI cannot render.
+    sub.cancel_at_period_end = False
+    fields = [
+        "status",
+        "cancelled_at",
+        "cancel_at_period_end",
+        "updated_at",
+        *_apply_stripe_period(sub, obj),
+    ]
     sub.save(update_fields=fields)
     # The cancellation is the last event that carries a period, so it is the
     # last chance to date a bundle granted before one was known. An undated
     # subscription lot outlives the subscription itself.
     _stamp_subscription_period(sub)
     _announce_subscription(sub)
+
+
+# ─── Reconciliation against the provider ───────────────────
+
+
+#: The fields a reconciliation may repair. Named, not derived, because the
+#: report has to be able to say what it changed and a dry run has to be able
+#: to say what it WOULD change — from the same list, or the two disagree.
+RECONCILED_FIELDS = (
+    "status",
+    "current_period_start",
+    "current_period_end",
+    "cancel_at_period_end",
+    "cancelled_at",
+)
+
+
+@dataclass
+class SubscriptionReconciliation:
+    """What re-reading one subscription at the provider found.
+
+    Attributes:
+        subscription_id: The local row's primary key.
+        stripe_subscription_id: The provider object that was re-read.
+        before: ``{field: value}`` as the local row stood.
+        after: ``{field: value}`` the provider says it should be.
+        changed: The subset of :data:`RECONCILED_FIELDS` that differ.
+        applied: Whether the repair was written (False under ``dry_run``).
+        missing: The provider has no such subscription any more.
+        error: The provider call failed; the row was left untouched.
+    """
+
+    subscription_id: str
+    stripe_subscription_id: str
+    before: dict
+    after: dict
+    changed: tuple = ()
+    applied: bool = False
+    missing: bool = False
+    error: Optional[str] = None
+
+
+def _reconcilable_subscriptions(stripe_subscription_ids=None):
+    qs = Subscription.objects.exclude(stripe_subscription_id=None).exclude(
+        stripe_subscription_id=""
+    )
+    if stripe_subscription_ids:
+        qs = qs.filter(stripe_subscription_id__in=list(stripe_subscription_ids))
+    return qs.order_by("created_at", "id")
+
+
+def reconcile_subscriptions(
+    *, dry_run: bool = False, stripe_subscription_ids=None
+) -> list[SubscriptionReconciliation]:
+    """Re-read every provider-backed subscription and repair what drifted.
+
+    Webhooks are the normal path and this is not a replacement for them:
+    it is what closes the window in which they were wrong. A delivery can
+    be missed, retried past its window, or — the case this was written for
+    — parsed by a reader that did not know where the provider had moved a
+    field, in which case every event is received, processed and marked
+    green while the local row keeps a value nothing will ever correct.
+
+    The repair reads the provider object through the SAME helpers the
+    webhook path uses (:func:`_apply_stripe_period`,
+    :func:`_apply_stripe_cancellation`, :func:`_map_stripe_status`), so the
+    two cannot disagree about what a payload means.
+
+    Idempotent by construction: a second run finds nothing to change,
+    because it compares against the provider rather than accumulating.
+    Free-plan rows are not touched — there is no provider object to ask
+    about, so "reconciled" would be a claim about nothing.
+
+    Args:
+        dry_run: Compute and report, write nothing.
+        stripe_subscription_ids: Restrict to these provider ids. Default:
+            every row that has one.
+
+    Returns:
+        One :class:`SubscriptionReconciliation` per row examined, in
+        creation order — including the rows that were already correct, so
+        the caller can print a complete before/after ledger.
+    """
+    provider = get_provider()
+    results: list[SubscriptionReconciliation] = []
+    for sub in _reconcilable_subscriptions(stripe_subscription_ids):
+        before = {field: getattr(sub, field) for field in RECONCILED_FIELDS}
+        result = SubscriptionReconciliation(
+            subscription_id=str(sub.id),
+            stripe_subscription_id=sub.stripe_subscription_id or "",
+            before=before,
+            after=dict(before),
+        )
+        try:
+            obj = provider.fetch_subscription(sub.stripe_subscription_id)
+        except Exception as exc:
+            # One unreachable subscription must not abandon the rest: the
+            # sweep exists to repair a drifted fleet, and stopping at the
+            # first failure leaves every row after it drifted AND unreported.
+            result.error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "reconcile: could not re-read subscription %s — %s",
+                sub.stripe_subscription_id,
+                result.error,
+            )
+            results.append(result)
+            continue
+        if obj is None:
+            # Gone at the provider. Cancelling it locally on that basis
+            # alone would be guessing at WHY (deleted by an operator? a
+            # test-mode id in a live deployment?), so it is reported and
+            # left for a human.
+            result.missing = True
+            logger.warning(
+                "reconcile: subscription %s does not exist at the provider "
+                "— left untouched",
+                sub.stripe_subscription_id,
+            )
+            results.append(result)
+            continue
+        sub.status = _map_stripe_status(obj.get("status"), sub.status)
+        touched = {
+            "status",
+            *_apply_stripe_period(sub, obj),
+            *_apply_stripe_cancellation(sub, obj),
+        }
+        result.after = {field: getattr(sub, field) for field in RECONCILED_FIELDS}
+        result.changed = tuple(
+            field
+            for field in RECONCILED_FIELDS
+            if field in touched and result.after[field] != before[field]
+        )
+        if result.changed and not dry_run:
+            sub.save(update_fields=[*result.changed, "updated_at"])
+            # A period that was NULL until now is a bundle nothing could
+            # expire. Stamping is the whole point of repairing the dates.
+            _stamp_subscription_period(sub)
+            _announce_subscription(sub)
+            result.applied = True
+        results.append(result)
+    return results
 
 
 # ─── Clawback (refund, dispute, credit note) ────────────────

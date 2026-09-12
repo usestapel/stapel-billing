@@ -214,12 +214,45 @@ class CheckoutResponse:  # noqa: R004
 
 @dataclass
 class SubscriptionResponse:  # noqa: R004
+    """The caller's subscription, including the users who have none.
+
+    ``GET /subscription`` answers for every authenticated user, so this
+    shape has to be able to say "there is no subscription here" — which is
+    what ``is_paid: false`` means. ``plan``/``status`` cannot say it: a
+    free-plan row reads ``plan="free", status="active"``, and a client
+    that decides from those offers a cancel button to somebody who never
+    paid.
+
+    The three booleans are the whole decision, and they are computed
+    server-side on purpose: ``is_active`` compares ``current_period_end``
+    against the clock, and a client's clock is not the one that bills.
+
+    Attributes:
+        plan: Plan slug. ``free`` for an account that never subscribed.
+        status: The provider's status, mirrored.
+        stripe_subscription_id: The provider object, or null.
+        current_period_start: ISO-8601, or null when unknown.
+        current_period_end: ISO-8601 renewal/expiry moment, or null.
+        cancel_at_period_end: The subscriber has cancelled and service
+            runs out at ``current_period_end``. The plan is still owed
+            until then — this is not "cancelled", it is "leaving".
+        cancelled_at: ISO-8601 moment the cancellation was requested.
+        is_paid: There is a provider subscription behind this row (plan is
+            not free AND a provider id exists). False for every free
+            account. A cancel affordance requires this.
+        is_active: The subscription entitles the user right now — an
+            entitling status, and not past ``current_period_end``.
+    """
+
     plan: str
     status: str
     stripe_subscription_id: Optional[str]
     current_period_start: Optional[str]
     current_period_end: Optional[str]
     cancelled_at: Optional[str]
+    cancel_at_period_end: bool = False
+    is_paid: bool = False
+    is_active: bool = False
 
 
 @dataclass

@@ -303,6 +303,13 @@
     "get_billing_beat_schedule": {
       "kind": "factory",
       "intent": "Spread `**get_billing_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all three billing workers at once (credit expiry, abandoned-hold release, reconciliation). Hand-authoring the entries is how expire_credit_lots gets silently dropped."
+    },
+    "reconcile_subscriptions": {
+      "kind": "gate_function",
+      "intent": "Re-read every provider-backed Subscription and repair status, billing period, cancel_at_period_end and cancelled_at from the provider. Reach for it after a release that changes how a provider payload is read, or a delivery gap: a webhook that was processed green but wrote the wrong value is never retried by anything. Idempotent; dry_run=True first. Never hand-fix rows in a shell — that writes one field and leaves the rest disagreeing with the provider.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.objects.update"
+      ]
     }
   }
 }

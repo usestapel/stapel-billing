@@ -1,8 +1,8 @@
-# stapel-billing 0.12.1
+# stapel-billing 0.13.0
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 39 · extension points 6 · operations 10 · error codes 55.
+Contract: axes 1 · surface 40 · extension points 6 · operations 10 · error codes 56.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -47,6 +47,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The status reconciliation on customer.subscription.updated: maps the processor's lifecycle (active / trialing / past_due / canceled / incomplete) onto SubscriptionStatus, refreshes the billing period and announces the change. That mapping is the module's contract — anything deciding what "past_due" means locally must read it here rather than invent a second answer.
 - merge_idempotency_key — stapel_billing.services.merge_idempotency_key
   The deterministic ledger key merge_wallets writes for one pair of accounts. Recompute it to ask whether a merge has already been applied, or to find the row that explains a survivor's balance.
+- reconcile_subscriptions — stapel_billing.services.reconcile_subscriptions
+  instead of: stapel_billing.models.Subscription.objects.update
+  Re-read every provider-backed Subscription and repair status, billing period, cancel_at_period_end and cancelled_at from the provider. Reach for it after a release that changes how a provider payload is read, or a delivery gap: a webhook that was processed green but wrote the wrong value is never retried by anything. Idempotent; dry_run=True first. Never hand-fix rows in a shell — that writes one field and leaves the rest disagreeing with the provider.
 - reconcile_wallet_balances — stapel_billing.services.reconcile_wallet_balances
   Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module.
 - reconcile_wallets — stapel_billing.tasks.reconcile_wallets
@@ -155,7 +158,7 @@ Paths are relative to `/billing/api/v1/`.
 ### Webhooks
 - POST /webhooks/stripe — billing_api_v1_webhooks_stripe_create
 
-## Error codes (55) — the StapelError envelope
+## Error codes (56) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.amount_invalid [400] fix_input
 - error.400.bad_request [400] fix_input
@@ -202,6 +205,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.408.request_timeout [408] retry
 - error.409.conflict [409] fix_input
 - error.409.duplicate_webhook_event [409] retry
+- error.409.subscription_not_paid [409] verify
 - error.410.gone [410] retry
 - error.413.payload_too_large [413] retry
 - error.415.unsupported_media_type [415] retry

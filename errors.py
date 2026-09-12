@@ -15,6 +15,7 @@ ERR_400_REDIRECT_URL_NOT_ALLOWED = "error.400.redirect_url_not_allowed"
 ERR_400_INVALID_WEBHOOK_PAYLOAD = "error.400.invalid_webhook_payload"
 ERR_403_FORBIDDEN_BILLING = "error.403.forbidden_billing"
 ERR_409_DUPLICATE_WEBHOOK = "error.409.duplicate_webhook_event"
+ERR_409_SUBSCRIPTION_NOT_PAID = "error.409.subscription_not_paid"
 
 BILLING_ERRORS = {
     ERR_404_WALLET_NOT_FOUND: "Wallet not found",
@@ -34,6 +35,7 @@ BILLING_ERRORS = {
     ERR_400_INVALID_WEBHOOK_PAYLOAD: "Invalid Stripe webhook payload",
     ERR_403_FORBIDDEN_BILLING: "Forbidden: cannot manage this billing account",
     ERR_409_DUPLICATE_WEBHOOK: "Stripe event already processed",
+    ERR_409_SUBSCRIPTION_NOT_PAID: "There is no paid subscription to cancel",
 }
 
 # Machine-readable recovery hints (remediation) — the canonical "what to do"
@@ -76,6 +78,13 @@ BILLING_ERRORS = {
 #     re-delivered Stripe event is a benign idempotency signal the service
 #     already no-ops; fix_input would falsely flag a field. retry marks it as
 #     transient/safe (the actual handler returns 200 for duplicates).
+#   * 409 subscription_not_paid → verify, NOT the heuristic's fix_input. There
+#     is no input: the cancel endpoint takes no body. The client asked to
+#     cancel something that is not there, which means its copy of the
+#     subscription disagrees with the server's — re-read GET /subscription and
+#     render from `is_paid`. `verify` is the "your state is stale, go look
+#     again" signal; fix_input would point the user at a field that does not
+#     exist, and retry would loop a request that cannot start succeeding.
 BILLING_REMEDIATION = {
     ERR_404_WALLET_NOT_FOUND: "fix_input",
     ERR_404_SUBSCRIPTION_NOT_FOUND: "fix_input",
@@ -90,6 +99,7 @@ BILLING_REMEDIATION = {
     ERR_400_INVALID_WEBHOOK_PAYLOAD: "contact_support",
     ERR_403_FORBIDDEN_BILLING: "contact_support",
     ERR_409_DUPLICATE_WEBHOOK: "retry",
+    ERR_409_SUBSCRIPTION_NOT_PAID: "verify",
 }
 
 register_service_errors(BILLING_ERRORS, remediation=BILLING_REMEDIATION)
