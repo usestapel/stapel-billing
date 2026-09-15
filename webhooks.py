@@ -66,6 +66,14 @@ BUILTIN_STRIPE_HANDLERS: dict[str, str] = {
     # refund at all: the card was refunded, the dispute was lost, the
     # invoice was credited — and the credits those payments bought stayed
     # spendable. Free credits by webhook silence.
+    # Money that did NOT arrive. Neither of these grants or claws anything
+    # back — the ledger is already right, because a declined charge credited
+    # nothing. They exist because until 0.14.0 a declined renewal produced
+    # no event, no log line and no letter: the subscriber's card failed, the
+    # plan lapsed on Stripe's own retry schedule, and the first the person
+    # heard of it was losing access.
+    "invoice.payment_failed": "stapel_billing.services.handle_invoice_payment_failed",
+    "charge.failed": "stapel_billing.services.handle_charge_failed",
     "charge.refunded": "stapel_billing.services.handle_charge_refunded",
     "charge.dispute.created": "stapel_billing.services.handle_dispute_created",
     "credit_note.created": "stapel_billing.services.handle_credit_note_created",

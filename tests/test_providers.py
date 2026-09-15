@@ -310,6 +310,11 @@ class TestWebhookMilestones:
             "plan": "pro",
             "status": "active",
             "current_period_end": None,
+            # 0.14.0: always stated, never inferred. A fresh checkout is not
+            # a cancellation, and the consumer that writes "your plan ends
+            # on…" must be able to read that off the fact rather than
+            # guessing it from a status that says "active" either way.
+            "cancel_at_period_end": False,
         }
         assert len(received_signals) == 1
         assert isinstance(received_signals[0]["subscription"], Subscription)

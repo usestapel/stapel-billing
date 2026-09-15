@@ -43,6 +43,16 @@ DEFAULTS = {
     "CHECKOUT_SUCCESS_URL": "",
     "CHECKOUT_CANCEL_URL": "",
     "PORTAL_RETURN_URL": "",
+    # Where a person manages their card and their plan. Used ONLY as the
+    # call to action in the billing notifications (notifications.py): the
+    # "update your payment method" button on a declined charge, and the
+    # "keep my subscription" button on one that will not renew. Empty by
+    # default and empty means NO BUTTON — a recoverable declined card must
+    # not be turned into a support ticket by a link that 404s. Unlike the
+    # three redirect settings above it is never sent to the provider and is
+    # not subject to redirects.py validation, because it is this host
+    # telling its own customers where its own page is.
+    "BILLING_PAGE_URL": "",
     # Exact origins ("https://app.example.com") a REQUEST-supplied redirect
     # target may point at, on top of the origins of the three fallbacks
     # above and of FRONTEND_URL. See redirects.py.

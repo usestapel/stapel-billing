@@ -691,6 +691,23 @@ class ProviderGrant(models.Model):
     #: same problem regardless.
     SCOPE_PLAN_BUNDLE = "plan_bundle"
 
+    #: One notification already sent about a thing — see
+    #: :mod:`stapel_billing.notifications`. Taken under
+    #: ``provider=PROVIDER_NOTIFY`` so the claim "we told the customer about
+    #: invoice X" can never collide with the claim "we granted credits for
+    #: invoice X": the two are different questions about the same
+    #: identifier, and sharing a row would make a granted invoice silently
+    #: unnotifiable (and vice versa).
+    SCOPE_NOTIFY_PAYMENT = "notify_payment"
+    SCOPE_NOTIFY_PAYMENT_FAILED = "notify_payment_failed"
+    SCOPE_NOTIFY_SUBSCRIPTION_ENDING = "notify_subscription_ending"
+
+    #: The pseudo-provider the notification claims above are taken under.
+    #: Same precedent as ``"local"`` for SCOPE_PLAN_BUNDLE: the column
+    #: names whose namespace the ``external_id`` lives in, and a
+    #: send-once claim lives in its own.
+    PROVIDER_NOTIFY = "notify"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     provider = models.CharField(max_length=32, default="stripe")
     scope = models.CharField(max_length=32)

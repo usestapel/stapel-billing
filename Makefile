@@ -45,7 +45,16 @@ PYTHON ?= python3
 # does not know it exists writes a shell loop that fixes one column — which is
 # the failure this release was opened on. Its intent was cut to six lines
 # before the ceiling moved.
-LLMS_BUDGET ?= 5800
+#
+# Raised again in 0.14.0, by the two failure webhooks
+# (`handle_invoice_payment_failed`, `handle_charge_failed`). They are the
+# registry entries whose ABSENCE was the release: `invoice.payment_failed` was
+# not routed anywhere, so a declined renewal produced no fact, no log line and
+# no letter. An agent that cannot see them here writes the handler again, in
+# the host, where the next fleet does not get it. Both intents were cut to two
+# sentences — the shortest wording that still says when to reach for them —
+# before the ceiling moved by 200.
+LLMS_BUDGET ?= 6000
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

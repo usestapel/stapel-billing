@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "payment.failed",
+  "description": "A payment attempt was declined. The opposite fact to payment.completed, and deliberately a separate event rather than a flag on it: a consumer subscribed to 'money arrived' must never be handed 'money did not arrive'. Nothing was granted and nothing is clawed back \u2014 a declined charge credited nothing \u2014 so this fact exists to be told to the payer.",
+  "type": "object",
+  "required": [
+    "user_id",
+    "amount_cents",
+    "currency"
+  ],
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "amount_cents": {
+      "type": "integer",
+      "description": "The amount that was attempted, not taken."
+    },
+    "currency": {
+      "type": "string"
+    },
+    "invoice_id": {
+      "type": "string",
+      "description": "Provider invoice this attempt belongs to. Present for subscription renewals. Consumers deduplicating repeated attempts on one invoice key on this."
+    },
+    "payment_intent_id": {
+      "type": "string",
+      "description": "Provider payment intent, for a failure outside the invoice flow (a one-off purchase). Present when invoice_id is not."
+    },
+    "plan": {
+      "type": "string",
+      "description": "Plan slug, when the failed attempt was a subscription renewal."
+    },
+    "decline_reason": {
+      "type": "string",
+      "description": "What the provider said: its human-readable seller message when it sent one, otherwise its decline code. Never rendered at a customer verbatim without translation \u2014 see stapel_billing.notifications._humanise_decline."
+    },
+    "invoice_url": {
+      "type": "string",
+      "description": "Provider-hosted invoice, when the payload carried one."
+    }
+  },
+  "additionalProperties": true
+}

@@ -3,15 +3,52 @@
   "title": "payment.completed",
   "description": "A payment transaction completed successfully.",
   "type": "object",
-  "required": ["user_id", "amount_cents", "currency", "transaction_id", "created_at"],
+  "required": [
+    "user_id",
+    "amount_cents",
+    "currency",
+    "transaction_id",
+    "created_at"
+  ],
   "properties": {
-    "user_id":        { "type": "string", "format": "uuid" },
-    "amount_cents":   { "type": "integer" },
-    "currency":       { "type": "string" },
-    "transaction_id": { "type": "string", "format": "uuid" },
-    "created_at":     { "type": "string", "format": "date-time" },
-    "package":        { "type": "string" },
-    "plan":           { "type": "string" }
+    "user_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "amount_cents": {
+      "type": "integer"
+    },
+    "currency": {
+      "type": "string"
+    },
+    "transaction_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "package": {
+      "type": "string"
+    },
+    "plan": {
+      "type": "string"
+    },
+    "invoice_url": {
+      "type": "string",
+      "description": "Provider-hosted invoice or receipt document for this payment, when the payload carried one. Absent for checkout-session payments, whose payload has no document URL."
+    },
+    "period_start": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Start of the service period this payment covers. Present for subscription renewals; absent for one-off package purchases, which cover no period."
+    },
+    "period_end": {
+      "type": "string",
+      "format": "date-time",
+      "description": "End of the service period this payment covers. Present and absent under the same conditions as period_start; the two are always emitted together or not at all."
+    }
   },
   "additionalProperties": true
 }

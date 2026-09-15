@@ -519,6 +519,10 @@ class TestStripeHandlerRegistry:
 
         assert registered_stripe_events() == [
             "charge.dispute.created",
+            # 0.14.0 — money that did NOT arrive. Neither grants nor claws
+            # back; both exist so a declined card produces a fact, and the
+            # payer a letter, instead of a lapsed plan and no explanation.
+            "charge.failed",
             "charge.refunded",
             "checkout.session.completed",
             "credit_note.created",
@@ -526,6 +530,7 @@ class TestStripeHandlerRegistry:
             "customer.subscription.deleted",
             "customer.subscription.updated",
             "invoice.paid",
+            "invoice.payment_failed",
             "invoice.payment_succeeded",
         ]
 

@@ -310,6 +310,14 @@
       "instead_of": [
         "stapel_billing.models.Subscription.objects.update"
       ]
+    },
+    "handle_invoice_payment_failed": {
+      "kind": "gate_function",
+      "intent": "Built-in handler for `invoice.payment_failed` — unregistered before 0.14.0, so a declined renewal produced no fact and no letter. Grants and claws back nothing; emits `payment.failed` so the subscriber can be told."
+    },
+    "handle_charge_failed": {
+      "kind": "gate_function",
+      "intent": "Built-in handler for `charge.failed`, the one-off-purchase half of the above. A bare charge names no subscription, so an unattributable failure is dropped rather than mailed at a guess."
     }
   }
 }

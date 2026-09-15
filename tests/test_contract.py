@@ -66,7 +66,7 @@ ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
 #: Kept in step with LLMS_BUDGET in the Makefile — the gate and the emitter
 #: have to agree on the ceiling, or `make contract` would write an artifact
 #: this test then refuses to regenerate.
-LLMS_BUDGET = "5800"
+LLMS_BUDGET = "6000"
 
 
 def _emit(out_dir: Path) -> None:

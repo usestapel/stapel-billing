@@ -1,8 +1,8 @@
-# stapel-billing 0.13.0
+# stapel-billing 0.14.0
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 40 · extension points 6 · operations 10 · error codes 56.
+Contract: axes 1 · surface 42 · extension points 6 · operations 10 · error codes 56.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -31,6 +31,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Hourly crash-safety task: releases credit holds past expires_at, recorded as expired. Wire it via get_billing_beat_schedule; without it a pipeline that dies between hold and capture reserves a customer's credits for good.
 - grant_plan_bundles — stapel_billing.tasks.grant_plan_bundles
   The worker that grants the current period's bundle to every entitled wallet — without it a free plan's monthly_credits_included is a number nothing reads. Idempotent per period; wire it via get_billing_beat_schedule().
+- handle_charge_failed — stapel_billing.services.handle_charge_failed
+  Built-in handler for `charge.failed`, the one-off-purchase half of the above. A bare charge names no subscription, so an unattributable failure is dropped rather than mailed at a guess.
 - handle_charge_refunded — stapel_billing.services.handle_charge_refunded
   Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated when the refund was partial. Name it only to wrap or replace it.
 - handle_checkout_completed — stapel_billing.services.handle_checkout_completed
@@ -41,6 +43,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a dispute won later is one manual credit, a dispute lost after the credits are spent is unrecoverable.
 - handle_invoice_paid — stapel_billing.services.handle_invoice_paid
   The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and claims the invoice through claim_provider_object, so the several distinct events Stripe sends for one paid invoice credit it exactly once. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings.
+- handle_invoice_payment_failed — stapel_billing.services.handle_invoice_payment_failed
+  Built-in handler for `invoice.payment_failed` — unregistered before 0.14.0, so a declined renewal produced no fact and no letter. Grants and claws back nothing; emits `payment.failed` so the subscriber can be told.
 - handle_subscription_deleted — stapel_billing.services.handle_subscription_deleted
   The terminal cancellation on customer.subscription.deleted: marks the local Subscription cancelled with its timestamp and announces it. Read it before letting a product decide on its own what a deleted provider subscription means locally; call it only under the webhook claim protocol.
 - handle_subscription_updated — stapel_billing.services.handle_subscription_updated

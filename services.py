@@ -1605,6 +1605,45 @@ def _invoice_period_end(obj: dict):
     return _epoch_to_datetime(obj.get("period_end"))
 
 
+def _invoice_period_start(obj: dict):
+    """The other end of :func:`_invoice_period_end`, read the same way.
+
+    Announced on ``payment.completed`` so a receipt can say which month the
+    money bought. A subscriber charged on the 9th has no way to tell a
+    renewal from a duplicate charge without it.
+    """
+    lines = ((obj.get("lines") or {}).get("data") or [])
+    for line in lines:
+        start = _epoch_to_datetime((line.get("period") or {}).get("start"))
+        if start is not None:
+            return start
+    return _epoch_to_datetime(obj.get("period_start"))
+
+
+def _invoice_document_url(obj: dict) -> str:
+    """Stripe's own hosted document for an invoice, or ``""``.
+
+    The hosted page before the PDF: it renders in a browser, it is what
+    Stripe's own receipt emails link to, and it does not force a download on
+    a phone. ``""`` when the payload carries neither — the receipt then goes
+    out without a button rather than not going out, because an amount and an
+    item is already a complete letter.
+
+    NOTE for the checkout path: a ``checkout.session.completed`` payload
+    carries no document URL at all (only an invoice ID, and for one-off
+    package payments not even that). Retrieving one would mean an outbound
+    Stripe call inside the webhook's atomic block — a new failure mode in
+    the one place that must not acquire one. So package receipts carry no
+    link, and the provider-side receipt setting is the right fix for that
+    half.
+    """
+    for key in ("hosted_invoice_url", "invoice_pdf", "receipt_url"):
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _stamp_subscription_period(sub: Subscription) -> int:
     """Date the subscription lots that were granted before the period was known.
 
@@ -1711,6 +1750,24 @@ def _apply_stripe_cancellation(sub: Subscription, obj: dict) -> list[str]:
     return changed
 
 
+def _announce_extras(**values) -> dict:
+    """Drop the keys whose value is absent, and ISO-format the datetimes.
+
+    A comm payload says what is KNOWN. Emitting ``"invoice_url": null``
+    and ``"period_end": null`` because this particular webhook did not carry
+    them makes every consumer write the same "is it null" branch and makes
+    the schema's optional keys meaningless — so an unknown fact is an absent
+    key, which is what ``payment.completed``'s existing optional ``package``
+    / ``plan`` already do.
+    """
+    out = {}
+    for key, value in values.items():
+        if value in (None, ""):
+            continue
+        out[key] = value.isoformat() if hasattr(value, "isoformat") else value
+    return out
+
+
 def _announce_payment(*, user, txn: Transaction, amount_cents: int, currency: str, **extra) -> None:
     """Emit payment.completed + send the payment_completed signal.
 
@@ -1755,6 +1812,13 @@ def _announce_subscription(sub: Subscription) -> None:
             "current_period_end": sub.current_period_end.isoformat()
             if sub.current_period_end
             else None,
+            # The one state a consumer cannot infer from the other three.
+            # A subscriber who has cancelled stays `status="active"` until
+            # the period runs out, so a consumer reading only `status` sees
+            # a live subscription and says nothing — which is exactly how
+            # two paying customers reached a cancellation date nobody had
+            # told them about (0.14.0). Always present, never guessed.
+            "cancel_at_period_end": bool(sub.cancel_at_period_end),
         },
         key=str(sub.user_id),
     )
@@ -2059,12 +2123,22 @@ def handle_invoice_paid(event: dict) -> None:
     amount = obj.get("amount_paid")
     if not isinstance(amount, int):
         amount = plan_entry.price_cents
+    period_start = _invoice_period_start(obj)
+    period_end = _invoice_period_end(obj)
     _announce_payment(
         user=sub.user,
         txn=txn,
         amount_cents=amount,
         currency=(obj.get("currency") or plan_entry.currency).lower(),
         plan=sub.plan,
+        # What the renewal receipt needs beyond the money: which month it
+        # paid for, and where the document is. Read from the invoice, which
+        # is the only payload that knows both.
+        **_announce_extras(
+            invoice_url=_invoice_document_url(obj),
+            period_start=period_start,
+            period_end=period_end,
+        ),
     )
 
 
@@ -2645,3 +2719,159 @@ def handle_dispute_created(event: dict) -> None:
 def handle_credit_note_created(event: dict) -> None:
     """``credit_note.created`` — an invoice was credited back, in part or whole."""
     _handle_clawback(event, label="credit_note")
+
+
+# ─── Money that did not arrive ─────────────────────────────
+
+
+def _failed_payment_user(obj: dict):
+    """The local user behind a failed charge, or None.
+
+    Two routes, in order of how much they prove. The invoice names its
+    subscription, and the subscription row names its owner — that is an
+    identification, not a guess. Falling back to the Stripe customer id is
+    weaker but still a fact this module stored itself when the subscription
+    was opened.
+
+    None is a real answer and the caller must respect it: a failure this
+    deployment cannot attribute to an account is a failure it must not
+    write to anybody, and a notice sent to the wrong payer about a card
+    that is not theirs is worse than the silence.
+    """
+    subscription_id = obj.get("subscription")
+    if isinstance(subscription_id, dict):  # expanded object
+        subscription_id = subscription_id.get("id")
+    if subscription_id:
+        sub = Subscription.objects.filter(
+            stripe_subscription_id=subscription_id
+        ).select_related("user").first()
+        if sub:
+            return sub.user, sub.plan
+    customer_id = obj.get("customer")
+    if isinstance(customer_id, dict):
+        customer_id = customer_id.get("id")
+    if customer_id:
+        sub = Subscription.objects.filter(
+            stripe_customer_id=customer_id
+        ).select_related("user").first()
+        if sub:
+            return sub.user, sub.plan
+    return None, None
+
+
+def _decline_reason(obj: dict) -> str:
+    """The most human thing Stripe said about why it failed.
+
+    Preference order is deliberate: the message written for a person beats
+    the code written for a machine, and the code beats nothing. The
+    notification layer turns a bare code into a sentence and drops codes it
+    does not recognise, so passing one along is safe.
+    """
+    error = obj.get("last_payment_error") or obj.get("outcome") or {}
+    for source in (error, obj):
+        if not isinstance(source, dict):
+            continue
+        for key in ("seller_message", "message"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for source in (error, obj):
+        if not isinstance(source, dict):
+            continue
+        for key in ("decline_code", "code", "failure_code", "network_status"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _announce_payment_failed(*, user, amount_cents, currency, **extra) -> None:
+    """Emit ``payment.failed`` — the fact that had no event at all.
+
+    A new fact rather than a flag on ``payment.completed``: "money arrived"
+    and "money did not arrive" are opposite facts, and a consumer that
+    subscribed to the first and got the second (recordings' un-parking
+    handler, for one) would resume work nobody paid for.
+
+    Through the outbox like its sibling, so the notice leaves iff the
+    webhook transaction commits.
+    """
+    emit(
+        "payment.failed",
+        {
+            "user_id": str(user.id),
+            "amount_cents": int(amount_cents or 0),
+            "currency": (currency or "").lower(),
+            **extra,
+        },
+        key=str(user.id),
+    )
+
+
+def handle_invoice_payment_failed(event: dict) -> None:
+    """``invoice.payment_failed`` — a renewal was declined.
+
+    Grants nothing and claws nothing back: the ledger is already correct,
+    because a renewal that was not paid for never granted anything. The only
+    thing missing was somebody telling the subscriber, which is what the
+    emitted fact is for.
+
+    Deliberately NOT idempotency-claimed here. Stripe retries a failed
+    invoice on its own schedule and fires this event each time, and each of
+    those is a true, separate fact about a distinct attempt. Collapsing the
+    retries into one letter is the NOTIFICATION's job and is keyed on the
+    invoice there — a fact is not the right place to hide a send-once rule.
+    """
+    obj = event["data"]["object"]
+    user, plan = _failed_payment_user(obj)
+    if not user:
+        logger.warning(
+            "invoice.payment_failed for invoice %s: no local subscription "
+            "names its owner — nobody to notify",
+            obj.get("id"),
+        )
+        return
+    amount = obj.get("amount_due")
+    if not isinstance(amount, int):
+        amount = obj.get("amount_remaining")
+    _announce_payment_failed(
+        user=user,
+        amount_cents=amount,
+        currency=obj.get("currency") or "",
+        **_announce_extras(
+            invoice_id=obj.get("id"),
+            plan=plan,
+            decline_reason=_decline_reason(obj),
+            invoice_url=_invoice_document_url(obj),
+        ),
+    )
+
+
+def handle_charge_failed(event: dict) -> None:
+    """``charge.failed`` — a card was declined outside the invoice flow.
+
+    The one-off purchase half of the same silence. Weaker than its invoice
+    sibling by nature: a bare charge carries no subscription, so the payer
+    is found through the stored Stripe customer id or not at all, and a
+    charge this deployment cannot attribute is dropped with a log line
+    rather than mailed at a guess.
+    """
+    obj = event["data"]["object"]
+    user, plan = _failed_payment_user(obj)
+    if not user:
+        logger.warning(
+            "charge.failed for charge %s: cannot attribute it to a local "
+            "account — nobody to notify",
+            obj.get("id"),
+        )
+        return
+    _announce_payment_failed(
+        user=user,
+        amount_cents=obj.get("amount"),
+        currency=obj.get("currency") or "",
+        **_announce_extras(
+            payment_intent_id=obj.get("payment_intent") or obj.get("id"),
+            plan=plan,
+            decline_reason=_decline_reason(obj),
+        ),
+    )

@@ -49,8 +49,17 @@ else:
 
 ### Emits
 | `payment.completed` | [schema](schemas/emits/payment.completed.json) | A payment transaction completed successfully. |
-| `subscription.changed` | [schema](schemas/emits/subscription.changed.json) | User subscription plan or status changed. |
+| `payment.failed` | [schema](schemas/emits/payment.failed.json) | A payment attempt was declined. Nothing was granted, so nothing is clawed back — the fact exists to be told to the payer. |
+| `subscription.changed` | [schema](schemas/emits/subscription.changed.json) | User subscription plan or status changed. Carries `cancel_at_period_end`, which no consumer can infer from `status`. |
 
 ### Consumes
 | `user.deleted` | [schema](schemas/consumes/user.deleted.json) |
 | `user.deletion_initiated` | [schema](schemas/consumes/user.deletion_initiated.json) |
+
+This module also subscribes to **its own** `payment.completed`, `payment.failed`
+and `subscription.changed` — see `stapel_billing/notifications.py`. That is not
+a loop: the emit records that money moved, and the subscriber turns it into the
+letter the payer is owed. It lives here rather than in each host because the
+gap is identical in every host that installs this library, and the template it
+asks for lives in stapel-notifications (≥ 0.20.0) because copy, channels and
+languages are that module's job and not this one's.

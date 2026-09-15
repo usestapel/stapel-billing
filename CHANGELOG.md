@@ -5,6 +5,80 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-16
+
+### Added — the payer finally gets told
+
+`payment.completed` has been emitted since 0.5.0, dispatched faithfully
+through the transactional outbox, and consumed by nobody who writes to the
+customer. A forensic pass over a live fleet found six real charges on one
+account: every emit dispatched, the only subscriber in the deployment re-queued
+parked recordings, and the notification journal held no payment type at all.
+The provider's own receipts were off on that account too, so the payers learned
+they had been charged from their card statement.
+
+`stapel_billing/notifications.py` and three `@on_action` subscribers in
+`actions.py` are the missing half. They subscribe to the EXISTING facts rather
+than to a new "send an email" event: `payment.completed` is already emitted
+inside the webhook's atomic block, so a receipt is produced exactly when money
+was taken and committed, and there is no second event to keep in agreement with
+the first.
+
+The subscriber is in this library rather than in each host on purpose. The gap
+is identical in every host that installs stapel-billing — a second fleet on the
+same library was checked the same day and has the same hole — and a defect
+identical in every host is a defect in the library. The copy, the channel and
+the recipient's language stay upstream in stapel-notifications (≥ 0.20.0),
+which knows nothing about plans, packages or billing periods and should not
+start.
+
+**Exactly once per payment.** Delivery is at-least-once, so a replayed outbox
+row must not produce a second receipt. Each send is claimed through
+`claim_provider_object` — the same unique-constraint table the credit grants
+use — keyed on the identity of the THING: the transaction id for a payment, the
+invoice id for a failure (so the provider's own retry schedule does not mail
+somebody daily about one card), and `(subscriber, period_end)` for a pending
+cancellation, so a subscription touched eleven times in one period produces one
+letter about that period. Claims are taken under `provider="notify"` so the
+claim "we told the customer about invoice X" can never collide with "we granted
+credits for invoice X". The claim is released and the handler raises if the bus
+refuses the publish — claimed-and-never-sent is the one failure mode this
+release exists to prevent, so it is not allowed to be the quiet path.
+
+**Two Stripe events that were not in the registry at all.**
+`invoice.payment_failed` and `charge.failed` now route to
+`handle_invoice_payment_failed` / `handle_charge_failed`. Neither grants nor
+claws anything back — a declined charge credited nothing — they emit the new
+`payment.failed` fact so the subscriber can be told. Before this, a failing
+card produced no fact, no log line and no letter: the plan lapsed on the
+provider's retry schedule and the first the person heard of it was losing
+access. One of the six charges above succeeded only on the retry after an
+`insufficient_funds` decline, and the customer was told about neither the
+failure nor the eventual success.
+
+`STAPEL_BILLING["BILLING_PAGE_URL"]` is the call to action on those letters.
+Empty by default, and empty means no button — a recoverable declined card must
+not be turned into a support ticket by a link that 404s.
+
+### Changed — the two facts now carry what a letter needs
+
+`subscription.changed` always states `cancel_at_period_end`, and it is now
+required by the schema. It is the one state no consumer can infer: a subscriber
+who cancels stays `status="active"` at the provider for the whole remaining
+period, so anything reading only `status` sees a live subscription and says
+nothing — which is how two paying customers reached a cancellation date nobody
+had told them about, with service owed weeks into the future.
+
+`payment.completed` gained optional `invoice_url`, `period_start` and
+`period_end`, read from the renewal invoice, which is the only payload that
+knows all three. Absent rather than null when unknown (`_announce_extras`): a
+`"period_end": null` emitted because this particular webhook did not carry one
+makes every consumer write the same is-null branch and makes the schema's
+optional keys meaningless. A `checkout.session.completed` payload carries no
+document URL at all, so package receipts go out without a link rather than
+acquiring an outbound provider call inside the webhook's atomic block.
+
+
 ## [0.13.0] — 2026-09-12
 
 ### Fixed — the billing period Stripe moved, and the reader that never found it

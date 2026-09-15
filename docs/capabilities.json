@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -202,6 +202,12 @@
       ]
     },
     {
+      "name": "handle_charge_failed",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.handle_charge_failed",
+      "intent": "Built-in handler for `charge.failed`, the one-off-purchase half of the above. A bare charge names no subscription, so an unattributable failure is dropped rather than mailed at a guess."
+    },
+    {
       "name": "handle_charge_refunded",
       "kind": "gate_function",
       "path": "stapel_billing.services.handle_charge_refunded",
@@ -230,6 +236,12 @@
       "kind": "gate_function",
       "path": "stapel_billing.services.handle_invoice_paid",
       "intent": "The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and claims the invoice through claim_provider_object, so the several distinct events Stripe sends for one paid invoice credit it exactly once. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings."
+    },
+    {
+      "name": "handle_invoice_payment_failed",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.handle_invoice_payment_failed",
+      "intent": "Built-in handler for `invoice.payment_failed` — unregistered before 0.14.0, so a declined renewal produced no fact and no letter. Grants and claws back nothing; emits `payment.failed` so the subscriber can be told."
     },
     {
       "name": "handle_subscription_deleted",

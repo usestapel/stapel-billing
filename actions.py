@@ -1,4 +1,4 @@
-"""Action subscriptions of the billing module — the credit ledger's erasure seam.
+"""Action subscriptions of the billing module — erasure, merge, and the payer's letter.
 
 Wallets, transactions, holds and Stripe webhook payloads are this
 package's slice of a person, so it is a data owner in the stapel-gdpr
@@ -9,7 +9,12 @@ in ``DATA_OWNERS`` that never answered the request the orchestrator
 actually sends, discoverable only by waiting thirty days for the part to
 time out.
 
-Four handlers, one module, on purpose:
+Seven handlers, one module, on purpose. Four of them are the account
+life-cycle seam described below; the other three (0.14.0) are the payer's
+side of this module's own facts, and they are here for the same reason the
+rest are — a subscriber is only worth anything where the thing it subscribes
+to is emitted, and an owner that emits a fact nobody consumes is indist-
+inguishable from an owner that emits nothing:
 
 * ``gdpr.erasure.requested`` — erase the subject (person out, bill kept —
   see :func:`stapel_billing.gdpr.erase_subject`), reply
@@ -27,6 +32,11 @@ Four handlers, one module, on purpose:
   answer for the other (``stapel_core.lifecycle.E001``). Routed through
   ``services.merge_wallets``, so the wallet's invariants have one
   implementation here too.
+* ``payment.completed`` / ``payment.failed`` / ``subscription.changed`` —
+  the receipt, the declined-card notice, and the "your plan will not renew"
+  notice. See :mod:`stapel_billing.notifications` for why the subscriber
+  belongs in this library and the template belongs upstream in
+  stapel-notifications.
 
 Handlers are idempotent — delivery is at-least-once (outbox retries,
 broker redelivery) — and a redelivery reports the ``0`` rows it touched
@@ -243,9 +253,213 @@ def handle_user_merged(event):
     )
 
 
+# ─── Telling the payer ─────────────────────────────────────
+#
+# The three handlers below are the other half of the three facts this module
+# already emits. Reasoning, seam choice and the idempotency rule live in
+# :mod:`stapel_billing.notifications`; what follows is the wiring.
+#
+# They subscribe to the EXISTING facts rather than to a new "send an email"
+# event, and that is the whole point: ``payment.completed`` is already
+# emitted inside the webhook's atomic block through the transactional
+# outbox, so a receipt is produced exactly when money was actually taken and
+# committed. A second event emitted beside it could be emitted when the
+# first one was not, and then the two would have to be kept in agreement
+# forever.
+
+
+class NotificationNotQueued(RuntimeError):
+    """The bus refused a notification request. Transient, so: retry.
+
+    A ``RuntimeError`` subclass, not a ``ValidationError`` — the comm layer
+    treats ``ValidationError`` as "this payload can never work, park it",
+    and a bus that was briefly down is the opposite of that
+    (``stapel_core.comm.actions`` docstring, "ValidationError is never a
+    retry signal").
+    """
+
+
+def _claim_and_send(*, scope: str, external_id, notification_type, user_id, variables):
+    """Claim, publish, and undo the claim if the publish did not happen.
+
+    The ordering is the load-bearing part. Claiming first is what makes a
+    redelivery silent; releasing the claim on failure is what stops the
+    claim from becoming a permanent record that a letter was sent when it
+    was not. Between the two there is a window in which a process death
+    loses the letter — small, and the alternative (publish first, claim
+    after) loses the idempotency this task exists to provide.
+    """
+    from .models import ProviderGrant
+    from .notifications import _send
+    from .services import claim_provider_object
+
+    if not claim_provider_object(
+        scope=scope,
+        external_id=external_id,
+        provider=ProviderGrant.PROVIDER_NOTIFY,
+    ):
+        logger.info(
+            "%s for %s already sent — redelivery, nothing to do",
+            notification_type, external_id,
+        )
+        return False
+
+    if _send(notification_type, user_id=user_id, variables=variables):
+        logger.info("%s queued for user %s (%s)", notification_type, user_id, external_id)
+        return True
+
+    ProviderGrant.objects.filter(
+        provider=ProviderGrant.PROVIDER_NOTIFY, scope=scope,
+        external_id=str(external_id),
+    ).delete()
+    raise NotificationNotQueued(
+        f"{notification_type} for {external_id} was not accepted by the bus; "
+        "the send-once claim has been released so a redelivery retries it."
+    )
+
+
+@on_action("payment.completed")
+def handle_payment_completed_notification(event):
+    """Tell the payer their payment went through.
+
+    Keyed on ``transaction_id``: one ledger row is one payment, and it is
+    the only id in this fact that is unique per charge. ``user_id`` would
+    collapse a customer's whole history into one letter; the bus event id
+    would defeat the point, because a redelivery carries a fresh one.
+    """
+    from .models import ProviderGrant
+    from .notifications import TYPE_PAYMENT_SUCCEEDED, payment_succeeded_variables
+
+    payload = event.payload or {}
+    user_id = payload.get("user_id")
+    transaction_id = payload.get("transaction_id")
+    if not user_id or not transaction_id:
+        logger.error(
+            "payment.completed without user_id/transaction_id (%s) — cannot "
+            "address a receipt", getattr(event, "event_id", "?"),
+        )
+        return
+
+    variables = payment_succeeded_variables(payload)
+    if variables is None:
+        logger.error(
+            "payment.completed %s carries no usable amount — no receipt sent",
+            transaction_id,
+        )
+        return
+
+    _claim_and_send(
+        scope=ProviderGrant.SCOPE_NOTIFY_PAYMENT,
+        external_id=transaction_id,
+        notification_type=TYPE_PAYMENT_SUCCEEDED,
+        user_id=user_id,
+        variables=variables,
+    )
+
+
+@on_action("payment.failed")
+def handle_payment_failed_notification(event):
+    """Tell the payer a charge was declined, and how to fix it.
+
+    The adjacent silence, and the one with a live example: of six charges
+    on one account, one succeeded only on the retry after an
+    ``insufficient_funds`` decline. The customer was told about neither the
+    failure nor the eventual success.
+
+    Keyed on the provider object that failed (invoice or payment intent),
+    so Stripe's own retry schedule — which fires this event again for the
+    same invoice — does not mail the customer once a day about one card.
+    """
+    from .models import ProviderGrant
+    from .notifications import TYPE_PAYMENT_FAILED, payment_failed_variables
+
+    payload = event.payload or {}
+    user_id = payload.get("user_id")
+    external_id = payload.get("invoice_id") or payload.get("payment_intent_id")
+    if not user_id or not external_id:
+        logger.error(
+            "payment.failed without user_id/invoice_id (%s) — cannot address "
+            "a notice", getattr(event, "event_id", "?"),
+        )
+        return
+
+    variables = payment_failed_variables(payload)
+    if variables is None:
+        logger.error(
+            "payment.failed %s carries no usable amount — no notice sent",
+            external_id,
+        )
+        return
+
+    _claim_and_send(
+        scope=ProviderGrant.SCOPE_NOTIFY_PAYMENT_FAILED,
+        external_id=external_id,
+        notification_type=TYPE_PAYMENT_FAILED,
+        user_id=user_id,
+        variables=variables,
+    )
+
+
+@on_action("subscription.changed")
+def handle_subscription_ending_notification(event):
+    """Tell a subscriber their plan will not renew, and until when.
+
+    ``cancel_at_period_end`` is the state in which a person has cancelled,
+    is still fully entitled, and — until this handler — was never told when
+    that stops. Two of three live subscriptions on the fleet this was found
+    on were in exactly that state, with service owed weeks into the future.
+
+    ``subscription.changed`` fires on every provider update, so the claim is
+    keyed on ``(subscription, period_end)`` rather than on the event: a
+    subscription touched eleven times during one period produces one letter
+    about that period, and a RENEWED subscription that is cancelled again
+    later has a new period end and therefore correctly gets a new letter.
+    """
+    from .models import ProviderGrant
+    from .notifications import (
+        TYPE_SUBSCRIPTION_ENDING,
+        iso_date,
+        subscription_ending_variables,
+    )
+
+    payload = event.payload or {}
+    if not payload.get("cancel_at_period_end"):
+        # Every other subscription change — a renewal, a plan switch, a
+        # status move — is somebody else's letter or nobody's. Silence here
+        # is a decision, not the bug this module fixes.
+        return
+
+    user_id = payload.get("user_id")
+    period_end = iso_date(payload.get("current_period_end"))
+    if not user_id or not period_end:
+        logger.error(
+            "subscription.changed is cancel_at_period_end but carries no "
+            "user_id/current_period_end (%s) — a letter that cannot name the "
+            "date it is about is worse than none",
+            getattr(event, "event_id", "?"),
+        )
+        return
+
+    variables = subscription_ending_variables(payload)
+    if variables is None:
+        return
+
+    _claim_and_send(
+        scope=ProviderGrant.SCOPE_NOTIFY_SUBSCRIPTION_ENDING,
+        external_id=f"{user_id}:{period_end}",
+        notification_type=TYPE_SUBSCRIPTION_ENDING,
+        user_id=user_id,
+        variables=variables,
+    )
+
+
 __all__ = [
     "handle_erasure_requested",
     "handle_owner_probe",
     "handle_user_deleted",
     "handle_user_merged",
+    "handle_payment_completed_notification",
+    "handle_payment_failed_notification",
+    "handle_subscription_ending_notification",
+    "NotificationNotQueued",
 ]
