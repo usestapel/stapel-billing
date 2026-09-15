@@ -3,6 +3,7 @@ from uuid import uuid4
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm
+from django.utils import timezone
 
 from stapel_core.django.admin.base import StapelModelAdmin
 
@@ -148,6 +149,12 @@ class WalletAdmin(admin.ModelAdmin):
             or "admin"
         )
         granted = 0
+        replayed = 0
+        # Taken before the loop so "is this row the one I just wrote" is
+        # answered by the row's own age. The alternative — comparing
+        # balances — agrees by accident whenever the amount happens to
+        # match, which on a resubmitted form is ALWAYS.
+        started = timezone.now()
         for wallet in wallets:
             if wallet.user_id is None:
                 self.message_user(
@@ -175,6 +182,20 @@ class WalletAdmin(admin.ModelAdmin):
                 )
                 continue
             wallet.refresh_from_db()
+            if txn.created_at < started:
+                # The token short-circuited this one: the form was
+                # resubmitted. Say THAT — reporting a grant that did not
+                # happen is the same lie as granting twice, told the other
+                # way round — and write no log row, because nothing changed.
+                replayed += 1
+                self.message_user(
+                    request,
+                    f"Wallet {wallet.id}: already granted by this form "
+                    f"(transaction {txn.id}) — nothing moved. Balance is "
+                    f"still {wallet.balance}.",
+                    level=messages.WARNING,
+                )
+                continue
             granted += 1
             # The audit trail a human looks for first. Without it the admin
             # log stays silent about the one action in here that moves money.
@@ -195,6 +216,13 @@ class WalletAdmin(admin.ModelAdmin):
                 request,
                 f"Granted {credits} credit(s) to {granted} wallet(s).",
                 level=messages.SUCCESS,
+            )
+        elif replayed:
+            self.message_user(
+                request,
+                f"Nothing granted: this form had already credited "
+                f"{replayed} wallet(s). Reload the page to grant again.",
+                level=messages.WARNING,
             )
 
 

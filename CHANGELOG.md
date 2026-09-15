@@ -5,6 +5,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-09-16
+
+### Fixed — the admin grant action told the truth about granting, not about not granting
+
+0.15.0 made the action safe to resubmit: a hidden per-rendering token means
+one form grants once. It did not make it SAY so. A resubmitted form
+short-circuited on its idempotency key, moved nothing — and still reported
+"Granted 7 credit(s) to 1 wallet(s)" and wrote a second `LogEntry` for a
+change that never happened. Verified on a live stand: two submissions, one
+transaction, two admin-log rows and two success messages.
+
+Reporting a grant that did not happen is the same lie as granting twice,
+told the other way round, and it is worse in the admin than anywhere else
+because the admin log is what an audit reads. The action now compares the
+returned transaction's age against the moment the submission started, says
+"already granted by this form — nothing moved" with the unchanged balance,
+and writes no log row for it.
+
+
 ## [0.16.0] — 2026-09-16
 
 ### Fixed — an old payment must not become a new letter

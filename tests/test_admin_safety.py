@@ -116,6 +116,88 @@ class TestGrantCreditsAction:
         assert wallet.balance == 15
         assert CreditDebt.objects.get().settled_at is not None
 
+    def test_resubmitting_the_same_form_grants_once_and_says_so(
+        self, wallet_admin, user, admin_user
+    ):
+        from django.contrib.admin.models import LogEntry
+
+        wallet = services.get_or_create_wallet(user)
+        post = {
+            "grant_credits": "40",
+            "grant_reason": "goodwill",
+            "grant_token": "admin-grant:fixed-token",
+        }
+        wallet_admin.grant_credits(
+            _Request(post, admin_user), Wallet.objects.filter(pk=wallet.pk)
+        )
+        # Back button, double-click, retried POST: the same rendering of the
+        # form arrives twice.
+        wallet_admin.grant_credits(
+            _Request(post, admin_user), Wallet.objects.filter(pk=wallet.pk)
+        )
+
+        wallet.refresh_from_db()
+        assert wallet.balance == 40
+        assert Transaction.objects.count() == 1
+        # And it does not claim otherwise, nor log a change that never was.
+        assert any("already granted by this form" in m for m, _ in wallet_admin._sent)
+        assert LogEntry.objects.count() == 1
+
+    def test_a_fresh_form_grants_again(self, wallet_admin, user, admin_user):
+        wallet = services.get_or_create_wallet(user)
+        for token in ("admin-grant:first", "admin-grant:second"):
+            wallet_admin.grant_credits(
+                _Request(
+                    {
+                        "grant_credits": "40",
+                        "grant_reason": "goodwill",
+                        "grant_token": token,
+                    },
+                    admin_user,
+                ),
+                Wallet.objects.filter(pk=wallet.pk),
+            )
+        wallet.refresh_from_db()
+        # A reloaded page is a deliberate second grant.
+        assert wallet.balance == 80
+        assert Transaction.objects.count() == 2
+
+    def test_a_select_all_across_pages_is_refused(
+        self, wallet_admin, user, admin_user
+    ):
+        wallet = services.get_or_create_wallet(user)
+        wallet_admin.grant_credits(
+            _Request(
+                {
+                    "grant_credits": "40",
+                    "grant_reason": "goodwill",
+                    "select_across": "1",
+                },
+                admin_user,
+            ),
+            Wallet.objects.filter(pk=wallet.pk),
+        )
+        assert Transaction.objects.count() == 0
+        assert "select-all" in wallet_admin._sent[0][0]
+
+    def test_the_grant_is_written_to_the_admins_own_log(
+        self, wallet_admin, user, admin_user
+    ):
+        from django.contrib.admin.models import LogEntry
+
+        wallet = services.get_or_create_wallet(user)
+        wallet_admin.grant_credits(
+            _Request({"grant_credits": "40", "grant_reason": "goodwill"}, admin_user),
+            Wallet.objects.filter(pk=wallet.pk),
+        )
+        # A custom action gets no LogEntry for free; without this the admin
+        # log is empty after every grant ever made, which reads as "nobody
+        # has ever used this".
+        entry = LogEntry.objects.get()
+        assert entry.user_id == admin_user.pk
+        assert "Granted 40 credit(s)" in entry.change_message
+        assert "balance now 40" in entry.change_message
+
     def test_an_erased_owners_wallet_is_skipped_rather_than_crashing(
         self, wallet_admin, user, admin_user
     ):
