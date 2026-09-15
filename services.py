@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q, Sum, Value
 from django.db.models.functions import Coalesce
@@ -37,6 +38,7 @@ from django.utils import timezone
 from stapel_core.comm import emit
 from stapel_core.signals import payment_completed, subscription_changed
 
+from . import internal
 from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
 from .models import (
     CreditDebt,
@@ -61,6 +63,24 @@ logger = logging.getLogger(__name__)
 
 class InsufficientCreditsError(Exception):
     pass
+
+
+class AccountNotFoundError(Exception):
+    """No account matches the reference an operator typed.
+
+    Its own exception rather than ``None``: the one thing a manual grant
+    must never do is succeed quietly against nobody, and a caller that has
+    to remember to check a return value will one day not.
+    """
+
+
+class AmbiguousAccountError(Exception):
+    """More than one account matches — the operator must say which.
+
+    E-mail is not unique in every deployment's user table (case, or a
+    soft-deleted row that kept its address). Picking "the first one" would
+    put credits on an account nobody named.
+    """
 
 
 class HoldNotFoundError(Exception):
@@ -611,6 +631,138 @@ def credit(
     return txn
 
 
+def resolve_account(reference: str):
+    """Find the account an operator named — by primary key or by e-mail.
+
+    One resolver for every manual path (the management command, the admin
+    action, a host's own tooling), because "which account did that grant
+    land on" must have exactly one answer however the grant was made.
+
+    Raises :class:`AccountNotFoundError` when nothing matches and
+    :class:`AmbiguousAccountError` when more than one does. Neither is a
+    return value: a grant that silently lands on nobody, or on the wrong
+    one of two rows, is the failure this function exists to make loud.
+    """
+    User = _get_user_model()
+    ref = (reference or "").strip()
+    if not ref:
+        raise AccountNotFoundError("no account reference given")
+
+    # Primary key first. Tried inside a try/except rather than by shape
+    # (UUID? int?) because the user model's pk type is the host's choice,
+    # and a lookup that guesses wrong for a host is a lookup that cannot
+    # find that host's accounts at all.
+    try:
+        found = User.objects.filter(pk=ref).first()
+    except (ValueError, TypeError, ValidationError):
+        found = None
+    if found is not None:
+        return found
+
+    email_field = getattr(User, "EMAIL_FIELD", "email")
+    try:
+        User._meta.get_field(email_field)
+    except FieldDoesNotExist:
+        # A user model with no e-mail column: the pk is the only handle
+        # there is, and saying so beats a crash inside a filter().
+        raise AccountNotFoundError(
+            f"no account with id {ref!r} (this user model has no "
+            f"{email_field!r} field to look up by)"
+        ) from None
+    matches = list(User.objects.filter(**{f"{email_field}__iexact": ref})[:2])
+    if not matches:
+        raise AccountNotFoundError(f"no account matches {ref!r}")
+    if len(matches) > 1:
+        raise AmbiguousAccountError(
+            f"{ref!r} matches more than one account — name it by id instead"
+        )
+    return matches[0]
+
+
+def grant_credits(
+    *,
+    user,
+    credits: int,
+    reason: str,
+    actor: str,
+    idempotency_key: Optional[str] = None,
+    expires_at=None,
+    metadata: Optional[dict] = None,
+) -> Transaction:
+    """Put credits on an account by hand, with the audit trail that makes it OK.
+
+    The ONE entry point for a manual grant — the management command and the
+    admin action both come through here — so that every hand-made credit
+    row in the ledger has the same shape and the same three facts on it:
+    how many, why, and who.
+
+    * *reason* is required and non-empty. A credit adjustment nobody can
+      explain later is exactly the row an audit stops on.
+    * *actor* is required: the person or process that decided. An e-mail, a
+      user id, a script name — whatever identifies them in this deployment.
+    * *idempotency_key*, when given, makes the grant safe to repeat: the
+      same key on the same wallet returns the original transaction and
+      moves nothing. Without one, two runs are two grants — which is also
+      correct, because "grant them another 100" is a real instruction.
+
+    The lot never expires (:data:`~stapel_billing.models.LotSource.ADJUSTMENT`):
+    a manual grant has no billing period behind it, so there is no honest
+    deadline to give it. Pass *expires_at* to say otherwise.
+
+    Raises ``ValueError`` on a non-positive amount, a missing reason or a
+    missing actor — the three ways a grant goes silently wrong.
+    """
+    if user is None:
+        raise AccountNotFoundError("grant_credits needs an account")
+    try:
+        amount = int(credits)
+    except (TypeError, ValueError):
+        raise ValueError(f"credits must be a whole number, got {credits!r}") from None
+    if amount <= 0:
+        # Explicitly including 0: "grant nothing" is never what an operator
+        # meant, and a no-op that reports success is how a person walks away
+        # believing an account was topped up.
+        raise ValueError(f"credits must be positive, got {amount}")
+    explanation = (reason or "").strip()
+    if not explanation:
+        raise ValueError("reason is required — it is written onto the ledger row")
+    who = (actor or "").strip()
+    if not who:
+        raise ValueError("actor is required — a grant nobody signed is not auditable")
+
+    row_metadata = dict(metadata or {})
+    row_metadata.update(
+        {
+            "manual_grant": True,
+            # Kept for readers written against the 0.13.0 admin action,
+            # which is where every manual grant came from until now.
+            "admin_grant": True,
+            "reason": explanation,
+            "actor": who,
+            "granted_by": who,
+        }
+    )
+    txn = credit(
+        user=user,
+        credits=amount,
+        type=TransactionType.ADJUSTMENT,
+        source=LotSource.ADJUSTMENT,
+        expires_at=expires_at,
+        description=f"Manual grant by {who}: {explanation}"[:255],
+        metadata=row_metadata,
+        idempotency_key=idempotency_key or None,
+    )
+    logger.info(
+        "manual grant: %s credit(s) to wallet %s by %s (txn %s, key %s)",
+        amount,
+        txn.wallet_id,
+        who,
+        txn.id,
+        idempotency_key or "-",
+    )
+    return txn
+
+
 @transaction.atomic
 def debit(
     *,
@@ -669,6 +821,22 @@ def debit(
             )
             return _replay_debit(wallet, existing, credits) if allow_partial else existing
     _expire_due_lots(wallet, now=now)
+    if internal.meter_only(user):
+        # One of ours. The row is written, the lots are not touched, and no
+        # debt is opened — see stapel_billing.internal for why the row is
+        # written at all. Placed AFTER the idempotency short-circuit so a
+        # retry behaves the same way it does for a paying account, and
+        # after the expiry sweep so the balance it reports is the live one.
+        return _meter_only_debit(
+            wallet,
+            credits=credits,
+            type=type,
+            description=description,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+            allow_partial=allow_partial,
+            now=now,
+        )
     if allow_partial:
         chargeable = min(credits, _live_balance(wallet, now=now))
     else:
@@ -722,6 +890,66 @@ def debit(
     )
 
 
+def _meter_only_debit(
+    wallet,
+    *,
+    credits: int,
+    type: str,
+    description: Optional[str],
+    metadata: Optional[dict],
+    idempotency_key: Optional[str],
+    allow_partial: bool,
+    now,
+):
+    """Record an internal account's spend at zero cost.
+
+    The row keeps its type, description and metadata — everything a usage
+    report reads — and carries ``credits_delta = 0`` plus the marker and the
+    waived amount. Nothing is consumed, so ``lots`` is empty and there is
+    nothing to open a debt against.
+
+    The return shape matches what a charged debit would have returned for
+    the same arguments, so no caller needs to know which branch it got:
+    ``allow_partial`` callers get a :class:`DebitResult` whose ``shortfall``
+    is **0**. A waived charge is not a shortfall — reporting one would put
+    the run into the "we served this for free by accident" log the
+    shortfall exists to raise.
+    """
+    balance = _live_balance(wallet, now=now)
+    row_metadata = internal.mark(metadata, credits=credits)
+    if idempotency_key:
+        row_metadata["idempotency_key"] = idempotency_key
+    row_metadata["lots"] = []
+    txn = Transaction.objects.create(
+        wallet=wallet,
+        lot=None,
+        type=type,
+        amount_cents=None,
+        credits_delta=0,
+        balance_after=balance,
+        description=description,
+        metadata=row_metadata,
+        idempotency_key=idempotency_key or "",
+    )
+    logger.info(
+        "debit waived for internal wallet %s: %s credit(s) metered at zero "
+        "cost (txn %s)",
+        wallet.id,
+        credits,
+        txn.id,
+    )
+    if not allow_partial:
+        return txn
+    return DebitResult(
+        transaction=txn,
+        requested=credits,
+        debited=0,
+        shortfall=0,
+        balance=balance,
+        debt=None,
+    )
+
+
 def _replay_debit(wallet, txn: Transaction, requested: int) -> DebitResult:
     """Rebuild the :class:`DebitResult` a short-circuited retry already got.
 
@@ -731,6 +959,20 @@ def _replay_debit(wallet, txn: Transaction, requested: int) -> DebitResult:
     """
     debited = -txn.credits_delta
     metadata = txn.metadata or {}
+    if internal.was_waived(metadata):
+        # A waived row has credits_delta 0 and no debt, so the generic
+        # arithmetic below would read the whole charge back as a shortfall
+        # and hand the retry a failure the first call never saw.
+        waived = metadata.get(internal.WAIVED)
+        original = waived if isinstance(waived, int) and not isinstance(waived, bool) else requested
+        return DebitResult(
+            transaction=txn,
+            requested=original,
+            debited=0,
+            shortfall=0,
+            balance=txn.balance_after,
+            debt=None,
+        )
     original = metadata.get("requested_credits")
     if not isinstance(original, int) or isinstance(original, bool):
         original = requested if requested is not None else debited
@@ -773,6 +1015,16 @@ def can_afford(*, user=None, wallet=None, credits: int) -> Affordability:
         # Deliberately not get_or_create: a read must not write.
         wallet = Wallet.objects.filter(user=user).first()
     balance = _live_balance(wallet, now=timezone.now()) if wallet is not None else 0
+    subject = user if user is not None else getattr(wallet, "user", None)
+    if internal.meter_only(subject):
+        # The pre-flight has to agree with the charge. If the debit is going
+        # to be waived, a gate that answers "cannot afford it" from the same
+        # empty wallet would trim or refuse the work before the waiver ever
+        # got the chance to apply — which is exactly the shape that made a
+        # staff account at zero credits untestable.
+        return Affordability(
+            affordable=True, balance=balance, requested=credits, shortfall=0
+        )
     return Affordability(
         affordable=balance >= credits,
         balance=balance,
@@ -856,7 +1108,17 @@ def hold(
         ttl = hold_default_ttl_seconds()
         expires_at = now + timedelta(seconds=ttl) if ttl else None
     _expire_due_lots(wallet, now=now)
-    taken = _consume_lots(wallet, credits, now=now)
+    waived = internal.meter_only(user)
+    if waived:
+        # A reservation that reserves nothing, on purpose: the credits are
+        # not going to be spent, so taking them out of the lots would fail
+        # on an empty wallet for no benefit. ``credits`` is 0 so that the
+        # arithmetic in capture() and release() — both of which reason from
+        # this number against the allocations — stays true with no
+        # allocations at all; what it WOULD have cost is on the metadata.
+        metadata = internal.mark(metadata, credits=credits)
+        credits = 0
+    taken = _consume_lots(wallet, credits, now=now) if credits else []
     if existing is not None:
         # released / expired: re-arm the same row so the unique key stands.
         # Its allocations were refunded down to zero on release; they are
@@ -960,6 +1222,17 @@ def capture(
     actual = held.credits if actual_credits is None else int(actual_credits)
     if actual < 0:
         raise ValueError("actual_credits must not be negative")
+    if internal.was_waived(held.metadata):
+        # The hold reserved nothing (see hold()), so the real cost the
+        # caller is reporting must not be taken out of the lots here — that
+        # would charge an internal account at capture time for the credits
+        # the hold deliberately did not take. The row is written at zero
+        # with what the work would have cost recorded on it, which is the
+        # same shape a waived debit writes.
+        return _meter_only_capture(
+            held, wallet, actual=actual, description=description,
+            metadata=metadata, now=now,
+        )
     _expire_due_lots(wallet, now=now)
     extra_taken: list[tuple[CreditLot, int]] = []
     if actual > held.credits:
@@ -993,6 +1266,40 @@ def capture(
         metadata=txn_metadata,
     )
     _settle(held, HoldStatus.CAPTURED, now=now)
+    return txn
+
+
+def _meter_only_capture(
+    held: CreditHold, wallet, *, actual: int, description, metadata, now
+) -> Transaction:
+    """Bill a waived hold at zero and settle it. See :mod:`stapel_billing.internal`."""
+    balance = _sync_balance(wallet, now=now)
+    txn_metadata = dict(held.metadata or {})
+    txn_metadata.update(metadata or {})
+    txn_metadata["hold_id"] = str(held.id)
+    txn_metadata["lots"] = []
+    # The hold's own waived figure was an estimate; the capture knows the
+    # real one, and the real one is what a usage report wants.
+    txn_metadata = internal.mark(txn_metadata, credits=actual)
+    txn = Transaction.objects.create(
+        wallet=wallet,
+        lot=None,
+        type=held.type,
+        amount_cents=None,
+        credits_delta=0,
+        balance_after=balance,
+        description=description or held.description,
+        metadata=txn_metadata,
+    )
+    _settle(held, HoldStatus.CAPTURED, now=now)
+    logger.info(
+        "capture waived for internal wallet %s: hold %s metered at zero cost "
+        "(%s credit(s), txn %s)",
+        wallet.id,
+        held.id,
+        actual,
+        txn.id,
+    )
     return txn
 
 

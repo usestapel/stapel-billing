@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm
@@ -8,17 +10,35 @@ from .models import (
     CreditDebt,
     CreditHold,
     CreditLot,
-    LotSource,
     StripeWebhookEvent,
     Subscription,
     Transaction,
-    TransactionType,
     Wallet,
 )
 
 
+#: How many wallets one submission of the action may credit. A manual grant
+#: is a deliberate act on named accounts; "select all 2 000 wallets and give
+#: everyone 500 credits" is a slip, not an instruction, and the changelist's
+#: own "select all N across pages" link makes that slip one click away.
+MAX_WALLETS_PER_GRANT = 25
+
+
+def _grant_nonce() -> str:
+    """A fresh idempotency key per rendering of the changelist.
+
+    The browser's back button, a double-click on "Go" and a retried POST all
+    resubmit the same form. Without a key each one is another grant, and the
+    operator's only clue is a balance that climbed further than they asked
+    for. The token is rendered hidden in the action bar, so a resubmission
+    of the SAME form carries the SAME key and grants once, while a genuine
+    second grant — a reloaded page — carries a new one.
+    """
+    return f"admin-grant:{uuid4()}"
+
+
 class GrantCreditsActionForm(ActionForm):
-    """The two things a manual grant needs: how many, and why.
+    """The three things a manual grant needs: how many, why, and once.
 
     An action form rather than an intermediate page: the fields sit in the
     action bar the operator is already using, and the reason is REQUIRED —
@@ -31,6 +51,9 @@ class GrantCreditsActionForm(ActionForm):
     )
     grant_reason = forms.CharField(
         required=False, max_length=255, label="Reason (recorded on the ledger row)"
+    )
+    grant_token = forms.CharField(
+        required=False, widget=forms.HiddenInput, initial=_grant_nonce
     )
 
 
@@ -50,17 +73,34 @@ class WalletAdmin(admin.ModelAdmin):
 
     @admin.action(description="Grant credits (writes a ledger row)")
     def grant_credits(self, request, queryset):
-        """Add credits to the selected wallets through services.credit().
+        """Add credits to the selected wallets through services.grant_credits().
 
         Goes through the service, not the ORM: the grant creates a lot,
         updates the cache under the row lock, writes the ledger row that
         explains it and settles any outstanding debt — the four things a
-        hand-edited balance skipped.
+        hand-edited balance skipped. The SAME service the
+        ``billing_grant_credits`` management command uses, so a grant made
+        from a browser and a grant made from a terminal are the same row.
+
+        Three things this does that the 0.14.0 version did not, each of them
+        a way a *working* action still let an operator down:
+
+        1. **It writes to the admin's own log.** A custom action gets no
+           ``LogEntry`` for free, so "who changed what in the admin" showed
+           nothing for every grant ever made — and an empty
+           ``django_admin_log`` reads as "nobody has ever used this", which
+           is how an action that works gets diagnosed as broken.
+        2. **It is safe to resubmit.** Back button, double-click, retried
+           POST: one rendering of the form grants once (:func:`_grant_nonce`).
+        3. **It refuses a select-all.** The changelist offers "select all N
+           across pages" one click from the action bar, and running a grant
+           that way would credit every account in the deployment.
         """
         from . import services
 
         credits = request.POST.get("grant_credits")
         reason = (request.POST.get("grant_reason") or "").strip()
+        token = (request.POST.get("grant_token") or "").strip()
         try:
             credits = int(credits)
         except (TypeError, ValueError):
@@ -80,8 +120,35 @@ class WalletAdmin(admin.ModelAdmin):
                 level=messages.ERROR,
             )
             return
+        if request.POST.get("select_across") in ("1", "true", "True"):
+            self.message_user(
+                request,
+                "Refusing a select-all grant: tick the wallets you mean. "
+                "Credits handed to every account in the deployment cannot be "
+                "taken back without another ledger row per account.",
+                level=messages.ERROR,
+            )
+            return
+
+        wallets = list(queryset[: MAX_WALLETS_PER_GRANT + 1])
+        if len(wallets) > MAX_WALLETS_PER_GRANT:
+            self.message_user(
+                request,
+                f"Refusing to grant to more than {MAX_WALLETS_PER_GRANT} "
+                "wallets at once. Grant in smaller batches, or use "
+                "`manage.py billing_grant_credits`, which grants to one "
+                "named account at a time.",
+                level=messages.ERROR,
+            )
+            return
+
+        actor = (
+            getattr(request.user, "get_username", lambda: "")()
+            or str(getattr(request.user, "id", ""))
+            or "admin"
+        )
         granted = 0
-        for wallet in queryset:
+        for wallet in wallets:
             if wallet.user_id is None:
                 self.message_user(
                     request,
@@ -89,22 +156,40 @@ class WalletAdmin(admin.ModelAdmin):
                     level=messages.WARNING,
                 )
                 continue
-            services.credit(
-                user=wallet.user,
-                credits=credits,
-                type=TransactionType.ADJUSTMENT,
-                # Never expires: a manual grant has no billing period behind
-                # it, so there is no honest deadline to give it.
-                source=LotSource.ADJUSTMENT,
-                expires_at=None,
-                description=f"Admin grant: {reason}"[:255],
-                metadata={
-                    "admin_grant": True,
-                    "reason": reason,
-                    "granted_by": str(getattr(request.user, "id", "")),
-                },
-            )
+            try:
+                txn = services.grant_credits(
+                    user=wallet.user,
+                    credits=credits,
+                    reason=reason,
+                    actor=actor,
+                    # Per wallet AND per rendering of the form: resubmitting
+                    # the same form is a no-op, a freshly loaded page is a
+                    # new grant.
+                    idempotency_key=f"{token}:{wallet.id}" if token else None,
+                )
+            except ValueError as exc:
+                self.message_user(
+                    request,
+                    f"Wallet {wallet.id}: {exc} — skipped.",
+                    level=messages.ERROR,
+                )
+                continue
+            wallet.refresh_from_db()
             granted += 1
+            # The audit trail a human looks for first. Without it the admin
+            # log stays silent about the one action in here that moves money.
+            self.log_change(
+                request,
+                wallet,
+                f"Granted {credits} credit(s) ({reason}) — transaction "
+                f"{txn.id}, balance now {wallet.balance}.",
+            )
+            self.message_user(
+                request,
+                f"Wallet {wallet.id}: balance is now {wallet.balance} "
+                f"(transaction {txn.id}).",
+                level=messages.INFO,
+            )
         if granted:
             self.message_user(
                 request,

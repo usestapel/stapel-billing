@@ -71,9 +71,12 @@ class TestGrantCreditsAction:
         assert txn.type == TransactionType.ADJUSTMENT
         assert txn.credits_delta == 40
         assert txn.balance_after == 40
-        assert txn.description == "Admin grant: goodwill"
+        assert txn.description == "Manual grant by root: goodwill"
         assert txn.metadata["admin_grant"] is True
+        assert txn.metadata["manual_grant"] is True
         assert txn.metadata["reason"] == "goodwill"
+        # WHO, not just why: the operator is on the row.
+        assert txn.metadata["actor"] == "root"
         # A manual grant has no billing period behind it, so no deadline.
         assert txn.lot.expires_at is None
         assert txn.lot.source == LotSource.ADJUSTMENT

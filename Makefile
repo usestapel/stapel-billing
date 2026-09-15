@@ -54,7 +54,15 @@ PYTHON ?= python3
 # the host, where the next fleet does not get it. Both intents were cut to two
 # sentences — the shortest wording that still says when to reach for them —
 # before the ceiling moved by 200.
-LLMS_BUDGET ?= 6000
+# Raised again in 0.15.0, by eight entries that are one capability between
+# them: the manual grant path (`grant_credits`, `resolve_account`) and the
+# internal-account policy (`internal.py`'s six). The release exists because
+# neither could be found: staff could not get credits without paying, and the
+# only grant affordance was an admin action nobody could locate — so an agent
+# that cannot see these here will write a shell loop against the wallet table,
+# which is the exact failure being closed. Every intent was cut to one or two
+# sentences first; the ceiling moved by 500, less than the entries cost.
+LLMS_BUDGET ?= 6500
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

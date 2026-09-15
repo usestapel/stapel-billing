@@ -24,11 +24,11 @@ pip install stapel-billing
 
 | Fact | Value |
 |---|---|
-| Version | `0.14.0` |
+| Version | `0.15.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 10 |
 | Config axes | 1 |
-| Usage surface | 42 |
+| Usage surface | 50 |
 | Extension points | 6 |
 | Error codes | 56 |
 | Fleet dependencies | [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
@@ -83,6 +83,39 @@ except Exception:
 else:
     capture(hold_id=held.id, actual_credits=used)
 ```
+
+## Granting credits by hand
+
+Credits move without a payment more often than a payments library likes to
+admit: staff testing the product, goodwill after an outage, an invoiced
+agreement. There is one audited path for it, reachable from a terminal —
+
+```
+manage.py billing_grant_credits --account <id|e-mail> --credits 100 \
+    --reason "staff testing" --actor ops@example.com \
+    --idempotency-key grant-2026-09-16-01
+```
+
+— and the same service (`services.grant_credits`) behind the admin's **Grant
+credits** action, so a grant made in a browser and a grant made over ssh are
+the same ledger row: type `adjustment`, never expiring, carrying the reason
+**and** the actor. The command refuses an unknown or ambiguous account, a
+non-positive amount and an empty reason or actor with a non-zero exit; with an
+idempotency key a repeat grants once and says so.
+
+## Your own staff should not have to pay to test
+
+```python
+STAPEL_BILLING = {"INTERNAL_ACCOUNT_POLICY": "meter_only"}
+```
+
+An internal account is then **metered but not charged**: `debit`, `can_afford`,
+`hold` and `capture` all still run, the ledger row is still written with its
+type, description and metadata — and `credits_delta` is `0`, with
+`metadata.waived_credits` recording what it would have cost. No credits move,
+no `CreditDebt` is opened, and "what did our own testing consume this month"
+is still a query. Off by default; who counts as internal is
+`INTERNAL_ACCOUNT_RESOLVER` (default `is_staff or is_superuser`).
 
 ## Bus events
 

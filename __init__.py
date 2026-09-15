@@ -8,6 +8,9 @@ no Django code until an attribute is actually accessed):
     debit                     — deduct credits (raises InsufficientCreditsError,
                                 or charges partially and records the debt)
     can_afford                — read-only: would a charge of N go through?
+    grant_credits             — put credits on an account by hand, with the
+                                reason and the actor on the ledger row
+    resolve_account           — find an account by primary key or e-mail
     grant_plan_bundle         — grant one period's plan bundle without a
                                 payment provider (the free-tier path)
     claw_back_grant           — take back a refunded/disputed grant's credits
@@ -17,6 +20,10 @@ no Django code until an attribute is actually accessed):
     get_provider              — instantiate the configured PaymentProvider
     PaymentProvider           — base class for custom payment backends
     InsufficientCreditsError  — raised by ``debit`` on insufficient balance
+    AccountNotFoundError      — raised by ``resolve_account`` when nothing
+                                matches the reference an operator typed
+    AmbiguousAccountError     — raised by ``resolve_account`` when more than
+                                one account matches
     HoldKeyResolvedError      — raised by ``hold`` when the idempotency key
                                 names a hold that was already captured
     CHECK_ENTITLEMENT         — name of the ``billing.check_entitlement``
@@ -36,6 +43,8 @@ function; callers use ``comm.call(DEBIT, ...)`` anyway.)
 """
 
 __all__ = [
+    "AccountNotFoundError",
+    "AmbiguousAccountError",
     "CAN_AFFORD",
     "CAPTURE",
     "CHECK_ENTITLEMENT",
@@ -59,9 +68,11 @@ __all__ = [
     "debit",
     "get_provider",
     "get_stripe_handler",
+    "grant_credits",
     "grant_plan_bundle",
     "hold",
     "release",
+    "resolve_account",
     "stripe_handlers",
 ]
 
@@ -76,6 +87,8 @@ _EXPORTS = {
     "release": (".services", "release"),
     "can_afford": (".services", "can_afford"),
     "grant_plan_bundle": (".services", "grant_plan_bundle"),
+    "grant_credits": (".services", "grant_credits"),
+    "resolve_account": (".services", "resolve_account"),
     "claw_back_grant": (".services", "claw_back_grant"),
     "Affordability": (".services", "Affordability"),
     "ClawbackResult": (".services", "ClawbackResult"),
@@ -84,6 +97,8 @@ _EXPORTS = {
     "HoldNotFoundError": (".services", "HoldNotFoundError"),
     "HoldStateError": (".services", "HoldStateError"),
     "HoldKeyResolvedError": (".services", "HoldKeyResolvedError"),
+    "AccountNotFoundError": (".services", "AccountNotFoundError"),
+    "AmbiguousAccountError": (".services", "AmbiguousAccountError"),
     "PaymentProvider": (".providers.base", "PaymentProvider"),
     "CHECK_ENTITLEMENT": (".entitlements", "CHECK_ENTITLEMENT"),
     "DEBIT": (".entitlements", "DEBIT"),

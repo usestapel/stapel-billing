@@ -35,6 +35,10 @@ def test_all_lists_the_public_api():
         "Affordability",
         "ClawbackResult",
         "DebitResult",
+        "grant_credits",
+        "resolve_account",
+        "AccountNotFoundError",
+        "AmbiguousAccountError",
     }
 
 
@@ -94,4 +98,4 @@ def test_package_import_pulls_no_django():
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "27"
+    assert proc.stdout.strip() == "31"

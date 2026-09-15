@@ -118,12 +118,26 @@ DEFAULTS = {
     # currency, amount, owner) against the catalog before granting credits
     # or a plan. Off means the provider's metadata is taken on faith.
     "STRICT_CHECKOUT_RECONCILIATION": True,
+    # What happens when one of the deployment's OWN people uses the product:
+    # "charge" (the default — they are billed like anybody else) or
+    # "meter_only" (the spend is recorded at zero cost, so the run is still
+    # visible and the charge path still runs, but no credits move and no
+    # debt is opened). See internal.py for why metered-but-not-charged is
+    # the shape, and why the default is off.
+    "INTERNAL_ACCOUNT_POLICY": "charge",
+    # Who counts as internal: a dotted path to callable(user) -> bool.
+    # Defaults to Django's own is_staff/is_superuser.
+    "INTERNAL_ACCOUNT_RESOLVER": "stapel_billing.internal.staff_is_internal",
 }
 
 billing_settings = AppSettings(
     "STAPEL_BILLING",
     defaults=DEFAULTS,
-    import_strings=("PAYMENT_PROVIDER", "PLAN_BUNDLE_ENTITLEMENTS"),
+    import_strings=(
+        "PAYMENT_PROVIDER",
+        "PLAN_BUNDLE_ENTITLEMENTS",
+        "INTERNAL_ACCOUNT_RESOLVER",
+    ),
     # PAYMENT_PROVIDER decides which class handles money — checkout,
     # subscriptions, webhook verification. The name is generic enough that a
     # same-named env var in a shared pod or compose file could swap it
@@ -133,7 +147,17 @@ billing_settings = AppSettings(
     # PLAN_BUNDLE_ENTITLEMENTS decides who is handed free credits every
     # period, so it gets the same treatment for the same reason: a
     # same-named env var in a shared pod must not be able to redirect it.
-    no_env=("PAYMENT_PROVIDER", "PLAN_BUNDLE_ENTITLEMENTS"),
+    # INTERNAL_ACCOUNT_RESOLVER decides who is served without being
+    # charged, which is the same kind of authority: it resolves from the
+    # namespace dict, a flat Django setting or the default only. The POLICY
+    # beside it is deliberately NOT in this list — turning the switch on for
+    # a stand is exactly the kind of thing an env var is for, and it can
+    # only ever apply to accounts the (non-env) resolver already names.
+    no_env=(
+        "PAYMENT_PROVIDER",
+        "PLAN_BUNDLE_ENTITLEMENTS",
+        "INTERNAL_ACCOUNT_RESOLVER",
+    ),
 )
 
 #: Values an environment variable may spell "yes" with. AppSettings resolves

@@ -63,6 +63,10 @@
     {
       "select": "functions",
       "path": "tasks.py"
+    },
+    {
+      "select": "functions",
+      "path": "internal.py"
     }
   ],
   "surface": {
@@ -318,6 +322,42 @@
     "handle_charge_failed": {
       "kind": "gate_function",
       "intent": "Built-in handler for `charge.failed`, the one-off-purchase half of the above. A bare charge names no subscription, so an unattributable failure is dropped rather than mailed at a guess."
+    },
+    "grant_credits": {
+      "kind": "factory",
+      "intent": "Put credits on an account by hand — the one audited entry point behind `manage.py billing_grant_credits` and the admin's Grant credits action. Requires a reason and an actor, writes them onto an `adjustment` row, and is repeat-safe under an idempotency_key. Reach for it whenever credits must move without a payment: staff testing, goodwill, an invoiced agreement.",
+      "instead_of": [
+        "stapel_billing.services.credit",
+        "stapel_billing.models.Wallet.balance"
+      ]
+    },
+    "resolve_account": {
+      "kind": "factory",
+      "intent": "Turn what an operator typed — a primary key or an e-mail — into the account they meant, raising rather than returning None when nothing or more than one thing matches. Use it in any manual path that names an account, so a grant cannot land on nobody or on the wrong one of two rows."
+    },
+    "policy": {
+      "kind": "gate_function",
+      "intent": "The deployment's internal-account policy: 'charge' (default) or 'meter_only'. Anything unrecognised reads as 'charge' — a typo must not turn the meter off."
+    },
+    "is_internal": {
+      "kind": "gate_function",
+      "intent": "Is this user one of the deployment's own, per INTERNAL_ACCOUNT_RESOLVER. A resolver that raises answers False: 'we could not tell' falls on the side that charges."
+    },
+    "meter_only": {
+      "kind": "gate_function",
+      "intent": "Should this user's spend be recorded at zero cost — the question the wallet services ask before charging. True only when the deployment opted into 'meter_only' AND the account is internal. Use it rather than reimplementing the two-part test."
+    },
+    "staff_is_internal": {
+      "kind": "gate_function",
+      "intent": "The default INTERNAL_ACCOUNT_RESOLVER: is_staff or is_superuser. Point the setting at your own callable when 'ours' means something else here."
+    },
+    "mark": {
+      "kind": "factory",
+      "intent": "Stamp a metadata dict as a waived, metered operation and record what it would have cost. Only a host writing such a row itself needs to call it."
+    },
+    "was_waived": {
+      "kind": "gate_function",
+      "intent": "Did this ledger row come out of the meter-only branch — the filter a usage or revenue report uses to include or exclude the deployment's own testing."
     }
   }
 }

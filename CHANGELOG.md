@@ -5,6 +5,81 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-09-16
+
+### Added — a deployment's own people can finally use the product
+
+Two affordances were missing and one existed but could not be found. Between
+them they meant the same thing in practice: **staff could not test the product
+without paying for it.**
+
+**1. `manage.py billing_grant_credits` — a grant path that works from a
+terminal.** Until now the only way to put credits on an account without taking
+a payment was an admin action behind a browser session, so an operator on the
+box, a deploy script or a support engineer over ssh had no way at all:
+
+    manage.py billing_grant_credits --account <id|e-mail> --credits 100 \
+        --reason "staff testing" --actor ops@example.com \
+        --idempotency-key grant-2026-09-16-01
+
+It refuses the three ways a manual grant goes silently wrong — an account
+nothing matches (or an e-mail more than one account matches), a non-positive
+amount, an empty reason or actor — with a non-zero exit, because an operator
+who walks away believing a grant landed is worse off than one who was told it
+did not. With `--idempotency-key` a repeat grants once and *says* it did
+nothing; without one, two runs are two grants, because "give them another 100"
+is a real instruction. `--dry-run` reports the balance it would change.
+
+Both the command and the admin action now go through one new service,
+`services.grant_credits()`, so a grant made from a browser and a grant made
+from a terminal are the same ledger row: type `adjustment`, source
+`adjustment`, never expiring, with the reason AND the actor on it.
+`services.resolve_account()` is the shared id-or-e-mail lookup, raising
+`AccountNotFoundError` / `AmbiguousAccountError` rather than returning `None`.
+
+**2. Internal accounts are METERED, NOT CHARGED
+(`STAPEL_BILLING["INTERNAL_ACCOUNT_POLICY"] = "meter_only"`).** A staff wallet
+at zero used to leave a deployment's own testing with two bad options: refuse
+the work, or — under `allow_partial` — serve it and open a `CreditDebt` for
+credits nobody intends to collect, which then silently ate the next grant.
+
+Under `meter_only` every operation that would have spent credits still writes
+its ledger row, with its type, description and metadata intact, and with
+`credits_delta = 0`, `metadata.internal_meter_only = true` and
+`metadata.waived_credits = <what it would have cost>`. `debit`, `can_afford`,
+`hold` and `capture` all honour it, so a pre-flight gate can no longer refuse
+work that the charge behind it was going to waive anyway.
+
+Metered rather than simply not debited, deliberately: the charge path stays
+under test on the only accounts that exercise it daily; "what did our own
+testing consume" stays a query instead of becoming impossible; and every
+report that sums `credits_delta` sees a zero and is unchanged, while reports
+that count rows still see the run.
+
+Off by default (`charge`) — "staff" is not a synonym for "ours" in every
+deployment, and turning it on silently would stop billing real usage. Who
+counts as internal is the host's call through `INTERNAL_ACCOUNT_RESOLVER`
+(default: `is_staff or is_superuser`); like `PAYMENT_PROVIDER` it is not read
+from the environment. An unrecognised policy spelling reads as `charge`: a
+typo in a billing switch must never be the thing that turns the meter off.
+
+### Fixed — the admin grant action a human reaches for first
+
+The action worked. What it did not do was leave a trace: a custom admin action
+gets no `LogEntry` for free, so `django_admin_log` was empty after every grant
+ever made — and an empty admin log reads as "nobody has ever used this", which
+is how a working action gets diagnosed as broken. It now logs the change, with
+the transaction id and the resulting balance.
+
+Two more sharp edges went with it. The action was **not safe to resubmit** — a
+back button, a double-click or a retried POST was another grant, and the
+operator's only clue was a balance that climbed further than they asked for; a
+hidden per-rendering token now makes one form grant once. And it accepted the
+changelist's **"select all N across pages"**, one click from the action bar,
+which would have credited every account in the deployment; select-across is now
+refused outright and a single submission is capped at 25 wallets.
+
+
 ## [0.14.0] — 2026-09-16
 
 ### Added — the payer finally gets told
