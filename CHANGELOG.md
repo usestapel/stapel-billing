@@ -5,6 +5,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-09-16
+
+### Fixed — an old payment must not become a new letter
+
+0.14.0's send-once claim silences a redelivery of a payment that was ALREADY
+notified. Nothing taken before 0.14.0 has a claim row — the code that writes
+them is the code that was missing — so to the claim table a replayed outbox
+row from before the fix is indistinguishable from a payment that just
+happened. Verified rather than assumed: a 21-day-old `payment.completed`
+delivered to the 0.15.0 subscriber produced a receipt, today.
+
+That is not a theoretical replay. The fleet this subscriber was written for
+has six real charges in exactly that state, and its owner is writing to those
+payers personally — a receipt dated three weeks after the charge would arrive
+on top of that and read as a second charge, or as a system that has lost
+track of time. Worse than the silence it replaces.
+
+Freshness is now a property of the FACT, checked before the claim, so the
+claim table goes on meaning "a letter was sent" and never "a letter was
+considered". `STAPEL_BILLING["NOTIFY_MAX_AGE_SECONDS"]` is the window, seven
+days by default: an outbox a week behind is an incident a human should be
+deciding about, not a queue that should quietly start mailing. `0` switches
+the gate off — the deliberate hatch for a host that HAS decided to backfill.
+
+A fact carrying no timestamp is refused rather than sent. `created_at` is
+required by this library's own emit schema, so its absence means a malformed
+or hand-made payload, and "I cannot tell how old this is" must not resolve to
+"mail it". Every refusal is logged at ERROR with its remedy — a gate that
+prevents one silence by creating a quieter one has not helped.
+
+`payment.failed` now carries `created_at` (required), stamped at webhook
+reconciliation, because no single provider field means "when did this fail"
+across both invoice and charge objects.
+
+For `subscription.changed` the gate is the letter's own subject rather than a
+clock window, and it is not configurable: "you keep full access until 28
+September" posted in October is not a late notice but a false one, so a
+period that has already ended sends nothing at whatever
+`NOTIFY_MAX_AGE_SECONDS` says.
+
+
 ## [0.15.0] — 2026-09-16
 
 ### Added — a deployment's own people can finally use the product

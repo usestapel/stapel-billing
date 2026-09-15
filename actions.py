@@ -279,6 +279,39 @@ class NotificationNotQueued(RuntimeError):
     """
 
 
+def _too_stale_to_send(timestamp, *, what: str, ref) -> bool:
+    """True when this fact is too old to write to a human about.
+
+    Checked BEFORE the claim, deliberately: the claim table means "a letter
+    was sent", and a fact refused for age must not leave a row that says one
+    was. Refusing is also permanent — age only grows — so there is nothing to
+    reserve.
+
+    Logged at ERROR with the remedy, never silently: "we did not tell a payer
+    about their money" is exactly the class of silence this module exists to
+    end, and a gate that prevents one silence by creating a quieter one has
+    not helped.
+    """
+    from .notifications import NO_TIMESTAMP, staleness_refusal
+
+    reason = staleness_refusal(timestamp)
+    if reason is None:
+        return False
+    logger.error(
+        "%s %s %s — NO LETTER SENT. The send-once claim cannot recognise a "
+        "payment from before this subscriber existed, so an old replayed "
+        "outbox row would otherwise mail a receipt long after the charge. "
+        "%s Set STAPEL_BILLING['NOTIFY_MAX_AGE_SECONDS'] = 0 to send anyway.",
+        what, ref, reason,
+        "The fact carries no created_at, which this library's emit schema "
+        "requires — the payload is malformed or hand-made."
+        if reason == NO_TIMESTAMP else
+        "If this is a live payment, the outbox is badly behind and that is "
+        "the thing to fix.",
+    )
+    return True
+
+
 def _claim_and_send(*, scope: str, external_id, notification_type, user_id, variables):
     """Claim, publish, and undo the claim if the publish did not happen.
 
@@ -340,6 +373,11 @@ def handle_payment_completed_notification(event):
         )
         return
 
+    if _too_stale_to_send(
+        payload.get("created_at"), what="payment.completed", ref=transaction_id
+    ):
+        return
+
     variables = payment_succeeded_variables(payload)
     if variables is None:
         logger.error(
@@ -381,6 +419,11 @@ def handle_payment_failed_notification(event):
             "payment.failed without user_id/invoice_id (%s) — cannot address "
             "a notice", getattr(event, "event_id", "?"),
         )
+        return
+
+    if _too_stale_to_send(
+        payload.get("created_at"), what="payment.failed", ref=external_id
+    ):
         return
 
     variables = payment_failed_variables(payload)
@@ -437,6 +480,27 @@ def handle_subscription_ending_notification(event):
             "user_id/current_period_end (%s) — a letter that cannot name the "
             "date it is about is worse than none",
             getattr(event, "event_id", "?"),
+        )
+        return
+
+    # Staleness here is not a clock window, it is the letter's own subject.
+    # "You keep full access until 28 September" posted in October is not a
+    # late notice, it is a false one — and a replayed outbox row from before
+    # this subscriber existed is exactly how that gets sent. No setting: a
+    # period that has already ended is wrong for every host, and
+    # NOTIFY_MAX_AGE_SECONDS = 0 must not switch a falsehood back on.
+    from django.utils import timezone
+
+    from .notifications import _parse_moment
+
+    ends_at = _parse_moment(payload.get("current_period_end"))
+    if ends_at is not None and ends_at <= timezone.now():
+        logger.error(
+            "subscription.changed for %s ends %s, which has already passed — "
+            "NO LETTER SENT. Telling somebody they keep access until a date "
+            "in the past is a false statement, not a late one; this is what a "
+            "replayed outbox row from before 0.14.0 looks like.",
+            user_id, period_end,
         )
         return
 

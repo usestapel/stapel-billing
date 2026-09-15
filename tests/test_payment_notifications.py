@@ -276,6 +276,8 @@ class TestAReplayedPaymentSendsOneReceipt:
 class TestADeclinedChargeIsAnnounced:
 
     def _failed(self, payer, **overrides):
+        from django.utils import timezone
+
         payload = {
             "user_id": str(payer.id),
             "amount_cents": 1500,
@@ -283,6 +285,9 @@ class TestADeclinedChargeIsAnnounced:
             "invoice_id": "in_declined_1",
             "plan": "pro",
             "decline_reason": "insufficient_funds",
+            # Required since 0.16.0 — a fact this subscriber cannot date is
+            # refused, not mailed. See TestAnOldPaymentIsNotMailedToday.
+            "created_at": timezone.now().isoformat(),
         }
         payload.update(overrides)
         return payload
@@ -616,3 +621,150 @@ class TestADeclinedRenewalBecomesAFact:
         assert payload["invoice_url"].startswith("https://invoice.stripe.com/")
         assert payload["period_start"].startswith("2026-09-")
         assert payload["period_end"].startswith("2026-10-")
+
+
+# ─── Old facts must not become new letters ─────────────────
+
+
+@pytest.mark.django_db
+class TestAnOldPaymentIsNotMailedToday:
+    """The gap the send-once claim cannot close.
+
+    The claim silences a redelivery of a payment ALREADY notified. Nothing
+    taken before 0.14.0 has a claim row — the code that writes them is the
+    code that was missing — so to the claim table a replayed outbox row from
+    before the fix is indistinguishable from a payment that just happened.
+    Six real charges on the fleet this was found on are in that state, and
+    the owner is writing to those payers personally; a receipt dated three
+    weeks after the charge would arrive on top of that and read as a second
+    charge.
+
+    Verified before the gate existed: a 21-day-old `payment.completed`
+    produced `['billing.payment_succeeded']`.
+    """
+
+    def _old(self, payer, days):
+        from django.utils import timezone
+        from datetime import timedelta
+
+        return _payment_completed(
+            payer,
+            created_at=(timezone.now() - timedelta(days=days)).isoformat(),
+        )
+
+    def test_a_three_week_old_payment_sends_nothing(self, payer, notifier):
+        _deliver("payment.completed", self._old(payer, 21))
+        assert notifier.calls == []
+
+    def test_a_payment_from_minutes_ago_still_sends(self, payer, notifier):
+        """The gate must not be a new way to lose a receipt."""
+        from django.utils import timezone
+        from datetime import timedelta
+
+        _deliver("payment.completed", _payment_completed(
+            payer, created_at=(timezone.now() - timedelta(minutes=5)).isoformat(),
+        ))
+        assert notifier.types == ["billing.payment_succeeded"]
+
+    def test_the_boundary_is_the_configured_window(self, payer, notifier, settings):
+        settings.STAPEL_BILLING = {
+            **getattr(settings, "STAPEL_BILLING", {}),
+            "NOTIFY_MAX_AGE_SECONDS": 3 * 24 * 3600,
+        }
+        _deliver("payment.completed", self._old(payer, 2))
+        assert notifier.types == ["billing.payment_succeeded"]
+
+        notifier.calls.clear()
+        _deliver("payment.completed", self._old(payer, 4))
+        assert notifier.calls == []
+
+    def test_a_refused_fact_leaves_no_claim_behind(self, payer, notifier):
+        """The claim table means "a letter was sent", never "considered"."""
+        payload = self._old(payer, 21)
+        _deliver("payment.completed", payload)
+
+        assert not ProviderGrant.objects.filter(
+            provider=ProviderGrant.PROVIDER_NOTIFY,
+            external_id=payload["transaction_id"],
+        ).exists()
+
+    def test_a_fact_with_no_timestamp_is_refused_not_mailed(
+        self, payer, notifier
+    ):
+        """"I cannot tell how old this is" must not resolve to "mail it"."""
+        payload = _payment_completed(payer)
+        del payload["created_at"]
+        _deliver("payment.completed", payload)
+
+        assert notifier.calls == []
+
+    def test_a_host_that_wants_to_backfill_can_switch_the_gate_off(
+        self, payer, notifier, settings
+    ):
+        settings.STAPEL_BILLING = {
+            **getattr(settings, "STAPEL_BILLING", {}),
+            "NOTIFY_MAX_AGE_SECONDS": 0,
+        }
+        _deliver("payment.completed", self._old(payer, 21))
+        assert notifier.types == ["billing.payment_succeeded"]
+
+    def test_an_old_declined_charge_is_not_mailed_either(self, payer, notifier):
+        from django.utils import timezone
+        from datetime import timedelta
+
+        _deliver("payment.failed", {
+            "user_id": str(payer.id), "amount_cents": 1500, "currency": "usd",
+            "invoice_id": "in_old_1", "plan": "pro",
+            "created_at": (timezone.now() - timedelta(days=21)).isoformat(),
+        })
+        assert notifier.calls == []
+
+
+@pytest.mark.django_db
+class TestASubscriptionThatAlreadyEndedIsNotAnnounced:
+
+    def _changed(self, payer, period_end):
+        return {
+            "user_id": str(payer.id), "plan": "pro", "status": "active",
+            "current_period_end": period_end,
+            "cancel_at_period_end": True,
+        }
+
+    def test_a_period_that_has_already_passed_sends_nothing(
+        self, payer, notifier
+    ):
+        """"You keep access until 28 September", posted in October, is not a
+        late notice — it is a false one."""
+        from django.utils import timezone
+        from datetime import timedelta
+
+        _deliver("subscription.changed", self._changed(
+            payer, (timezone.now() - timedelta(days=10)).isoformat(),
+        ))
+        assert notifier.calls == []
+
+    def test_a_period_still_running_is_announced(self, payer, notifier):
+        from django.utils import timezone
+        from datetime import timedelta
+
+        _deliver("subscription.changed", self._changed(
+            payer, (timezone.now() + timedelta(days=12)).isoformat(),
+        ))
+        assert notifier.types == ["billing.subscription_ending"]
+
+    def test_switching_the_age_gate_off_does_not_switch_a_falsehood_on(
+        self, payer, notifier, settings
+    ):
+        """NOTIFY_MAX_AGE_SECONDS is about lateness. A period in the past is
+        wrong for every host, at every setting."""
+        from django.utils import timezone
+        from datetime import timedelta
+
+        settings.STAPEL_BILLING = {
+            **getattr(settings, "STAPEL_BILLING", {}),
+            "NOTIFY_MAX_AGE_SECONDS": 0,
+        }
+        _deliver("subscription.changed", self._changed(
+            payer, (timezone.now() - timedelta(days=10)).isoformat(),
+        ))
+        assert notifier.calls == []

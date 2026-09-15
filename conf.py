@@ -53,6 +53,18 @@ DEFAULTS = {
     # not subject to redirects.py validation, because it is this host
     # telling its own customers where its own page is.
     "BILLING_PAGE_URL": "",
+    # How old a payment fact may be and still produce a letter. The send-once
+    # claim only silences a redelivery of something ALREADY notified, and no
+    # payment taken before 0.14.0 has a claim row — the code that writes them
+    # is the code that was missing. So a replayed outbox row from before the
+    # fix is indistinguishable, to the claim table, from a payment that just
+    # happened, and would mail a receipt for a three-week-old charge.
+    #
+    # 0 or None switches the gate off: the deliberate hatch for a host that
+    # has decided to backfill. Seven days by default — an outbox a week behind
+    # is an incident a human should decide about, not a queue that should
+    # quietly start mailing. See notifications.staleness_refusal.
+    "NOTIFY_MAX_AGE_SECONDS": 7 * 24 * 3600,
     # Exact origins ("https://app.example.com") a REQUEST-supplied redirect
     # target may point at, on top of the origins of the three fallbacks
     # above and of FRONTEND_URL. See redirects.py.

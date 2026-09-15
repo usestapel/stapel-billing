@@ -3103,12 +3103,22 @@ def _announce_payment_failed(*, user, amount_cents, currency, **extra) -> None:
     Through the outbox like its sibling, so the notice leaves iff the
     webhook transaction commits.
     """
+    from django.utils import timezone
+
     emit(
         "payment.failed",
         {
             "user_id": str(user.id),
             "amount_cents": int(amount_cents or 0),
             "currency": (currency or "").lower(),
+            # When the attempt failed. Required, and for the same reason
+            # payment.completed carries created_at: the subscriber refuses to
+            # write to a human about money without being able to tell how long
+            # ago it happened (notifications.staleness_refusal). The provider
+            # payload has no single reliable field for this across invoice and
+            # charge objects, so it is stamped here, at the moment the webhook
+            # is reconciled — which is within seconds of the attempt.
+            "created_at": timezone.now().isoformat(),
             **extra,
         },
         key=str(user.id),

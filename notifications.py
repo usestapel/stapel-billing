@@ -198,6 +198,83 @@ def iso_date(value) -> str:
         return ""
 
 
+#: Returned by :func:`staleness_refusal` when the fact carries no usable
+#: timestamp at all. Kept as a named constant so the handlers and the tests
+#: agree on the case without matching on prose.
+NO_TIMESTAMP = "carries no usable timestamp"
+
+
+def staleness_refusal(timestamp, *, now=None) -> str | None:
+    """``None`` = send it. A string = the reason not to, ready to log.
+
+    THE PROBLEM THIS EXISTS FOR. The send-once claim makes a redelivery
+    silent, but only for a payment that was ALREADY notified under 0.14.0 or
+    later. Every payment taken before this module existed has no claim row,
+    because the code that writes them is the code that was missing — so a
+    replayed outbox row from before the fix looks, to the claim table, exactly
+    like a payment that just happened. Six real charges on the fleet this was
+    found on are in precisely that state.
+
+    A receipt that arrives three weeks after the charge is worse than the
+    silence it replaces: the payer has already reconciled the statement, and
+    the letter reads as a second charge or as a system that has lost track of
+    time. So freshness is a property of the FACT, checked before the claim —
+    the claim table goes on meaning "a letter was sent" and never "a letter
+    was considered".
+
+    ``STAPEL_BILLING["NOTIFY_MAX_AGE_SECONDS"]`` is the window; ``0`` (or
+    ``None``) switches the gate off, which is the deliberate escape hatch for
+    a host that has decided to backfill and wants these letters to fire for
+    old facts. Seven days by default: an outbox that is a week behind is an
+    incident a human should be deciding about, not a queue that should quietly
+    start mailing.
+
+    A fact with NO timestamp is refused rather than sent. ``created_at`` is
+    required by this library's own emit schema, so its absence means a
+    malformed or hand-made payload — and "I cannot tell how old this is" must
+    not resolve to "mail it", which is the exact failure the gate is here to
+    prevent. The refusal is logged with its remedy by the caller.
+    """
+    from django.utils import timezone
+
+    from .conf import billing_settings
+
+    max_age = billing_settings.NOTIFY_MAX_AGE_SECONDS
+    if not max_age:
+        return None
+
+    moment = _parse_moment(timestamp)
+    if moment is None:
+        return NO_TIMESTAMP
+
+    now = now or timezone.now()
+    age = (now - moment).total_seconds()
+    if age > max_age:
+        return f"is {int(age // 86400)} day(s) old (limit {int(max_age // 86400)})"
+    return None
+
+
+def _parse_moment(value):
+    """An aware datetime from what a comm payload or a model field carries."""
+    from django.utils import timezone
+
+    if value in (None, ""):
+        return None
+    moment = value
+    if not isinstance(moment, datetime):
+        try:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if timezone.is_naive(moment):
+        # A naive timestamp is ambiguous, but treating it as UTC is what every
+        # other reader of these payloads does and is right for the only
+        # producer that exists. Never silently "now": that would read every
+        # malformed fact as perfectly fresh.
+        moment = timezone.make_aware(moment, timezone.utc)
+    return moment
+
+
 def billing_page_url() -> str:
     """Where a person manages their card and their plan, or ``""``.
 

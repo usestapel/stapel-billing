@@ -6,7 +6,8 @@
   "required": [
     "user_id",
     "amount_cents",
-    "currency"
+    "currency",
+    "created_at"
   ],
   "properties": {
     "user_id": {
@@ -39,6 +40,11 @@
     "invoice_url": {
       "type": "string",
       "description": "Provider-hosted invoice, when the payload carried one."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the attempt failed, stamped at webhook reconciliation (within seconds of the attempt). Required: a consumer that writes to a human about money must be able to tell how long ago it happened, or a replayed outbox row mails a notice about a card that was fixed weeks ago."
     }
   },
   "additionalProperties": true
