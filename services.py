@@ -2469,7 +2469,17 @@ def simulate_checkout_completed(*, user, package: str, actor: str) -> dict:
         "money moved; the ledger row and payment.completed carry simulated=true",
         pkg.credits, pkg.slug, user.id, actor,
     )
-    handle_checkout_completed({"data": {"object": session}})
+    # ATOMIC, because the real path is. `handle_checkout_completed` emits
+    # `payment.completed` through the transactional outbox, and the outbox's
+    # whole guarantee is that the row commits IFF the mutation it describes
+    # commits. The webhook view supplies that block; calling the handler
+    # directly did not, and stapel-core said so on the stand —
+    # "emit('payment.completed') called outside transaction.atomic(): the
+    # outbox row commits detached from the mutation it describes". A
+    # simulation that announces a purchase it might not have made is not a
+    # simulation of the real path.
+    with transaction.atomic():
+        handle_checkout_completed({"data": {"object": session}})
 
     txn = (
         Transaction.objects.filter(

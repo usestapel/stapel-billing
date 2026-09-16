@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-09-17
+
+### Fixed — the simulated purchase now commits its announcement with its grant
+
+Caught by the stand within minutes of deploying 0.18.0:
+
+    emit('payment.completed') called outside transaction.atomic():
+    the outbox row commits detached from the mutation it describes.
+
+The real path gets its atomic block from the webhook view.
+`simulate_checkout_completed` called the handler directly and supplied none,
+so the outbox row and the grant could commit independently — which is the one
+guarantee the transactional outbox exists to give. A simulation that announces
+a purchase it might not have made is not a simulation of the real path, which
+is the entire claim this feature rests on.
+
+
 ## [0.18.0] — 2026-09-17
 
 ### Added — staff buy credits without a card, through the REAL post-payment path
