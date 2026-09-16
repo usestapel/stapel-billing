@@ -725,34 +725,37 @@ def test_every_declared_path_resolves_under_this_urlconf():
     )
 
 
-def test_the_suite_urlconf_is_the_one_the_document_does_not_describe():
-    """The mount defect, pinned where a reader will see it.
+def test_the_suite_urlconf_resolves_the_committed_contract_too():
+    """The mount defect, now pinned closed.
 
-    The test above proves this module looks in the right place. This one
-    records WHY it had to declare its own urlconf: under the suite's own
-    ``ROOT_URLCONF`` not a single path of the committed contract resolves,
-    so every existing test in this repository drives an endpoint the document
-    does not describe. Written as an assertion rather than a comment so that
-    the day ``tests/urls.py`` is fixed, this fails and the docstring above
-    gets corrected instead of quietly becoming untrue.
+    This test used to assert the OPPOSITE — that under the suite's own
+    ROOT_URLCONF not a single path of the committed contract resolved, which
+    was true when this file was written: ``tests/urls.py`` mounted
+    ``urls_v1`` directly under ``billing/api/``, skipping the ``v1/`` segment
+    every declared path carries, so every existing test in this repository
+    drove an endpoint the document does not describe.
+
+    It was written as an assertion rather than a comment so that the day the
+    mount was fixed it would fail and force this docstring to be corrected
+    instead of quietly becoming untrue. That is what happened. The suite
+    urlconf now carries the contract mount alongside the one the existing
+    tests address, and this asserts the property that replaced the defect.
     """
     from django.urls import Resolver404, resolve
 
     with override_settings(ROOT_URLCONF="stapel_billing.tests.urls"):
-        resolvable = []
+        unresolved = []
         for _method, path, _code, _schema in OPERATIONS:
             try:
                 resolve(re.sub(r"\{[^}]+\}", "1", path))
             except Resolver404:
-                continue
-            resolvable.append(path)
+                unresolved.append(path)
 
-    assert not resolvable, (
-        "the suite urlconf now resolves declared contract paths — the mount "
-        "defect this file documents has been fixed, so update the module "
-        "docstring and delete this test:\n  " + "\n  ".join(sorted(set(resolvable)))
+    assert not unresolved, (
+        "a contract nothing drives is a contract nothing checks: these "
+        "declared paths do not resolve under the suite's own urlconf:\n  "
+        + "\n  ".join(sorted(set(unresolved)))
     )
-
 
 def test_every_declared_operation_is_driven_or_named_undrivable():
     """No operation is covered by silence, and no entry outlives its operation."""
