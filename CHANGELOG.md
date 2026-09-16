@@ -5,6 +5,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.1] — 2026-09-17
+
+### Fixed — `grant_credits` declares itself operator-only, beside the model that defines it
+
+0.17.0 made "may grant" a separate permission. It did not stop anyone putting
+that permission in a Staff **group** fixture — and the deployment that asked
+for the split did exactly that on the same day, because a group fixture is
+where permissions obviously go.
+
+It is not. `stapel_core.django.jwt.utils._ensure_user_in_staff_group` enrols
+every mirrored non-superuser `is_staff` account into the Staff group on every
+JWT request, so the group is not a subset of staff, it *is* staff. The split
+survived review and was undone by its own fixture; a view-only operator
+granting credits on a live stand is what caught it.
+
+`BillingConfig.ready()` now calls stapel-core's
+`register_operator_only_permission("billing.grant_credits")`, next to the
+`Wallet.Meta.permissions` that introduces the codename, so the declaration and
+the definition are read together. stapel-core >= 0.76.0 then refuses a group
+fixture that names it, saying which permission and why. The call is guarded:
+on an older stapel-core there is simply no refusal, and the deployment must
+keep `grant_credits` out of its group fixture by hand.
+
+
 ## [0.17.0] — 2026-09-17
 
 ### Added — "may look at wallets" and "may move credits" are finally two rights
