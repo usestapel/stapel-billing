@@ -62,7 +62,15 @@ PYTHON ?= python3
 # that cannot see these here will write a shell loop against the wallet table,
 # which is the exact failure being closed. Every intent was cut to one or two
 # sentences first; the ceiling moved by 500, less than the entries cost.
-LLMS_BUDGET ?= 6500
+# Raised again in 0.18.0, by two entries that are one capability: the staff
+# mock-purchase path (`simulate_checkout_completed`) and the query that keeps
+# it out of revenue (`real_money`). The second is the reason the ceiling moves
+# rather than the entries being cut: the obvious filter an agent would write,
+# `exclude(metadata__simulated=True)`, ALSO drops every purchase written before
+# this release, and the only symptom is a revenue number quietly too low. An
+# agent that cannot see `real_money` here writes the wrong query. Both intents
+# were trimmed twice first; the ceiling moved by 200.
+LLMS_BUDGET ?= 6700
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

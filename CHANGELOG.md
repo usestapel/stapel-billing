@@ -5,6 +5,55 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-17
+
+### Added — staff buy credits without a card, through the REAL post-payment path
+
+Staff have to exercise the product the way a customer meets it, and "buy
+credits" is the one step they could not take: it ends at a card. The usual
+answer is a mock payment provider behind an environment flag, which this fleet
+forbids — a deployment must not behave differently because of a setting, and
+"is this one pretending?" is not a question a reader should have to ask of a
+settings file.
+
+So `services.simulate_checkout_completed()` simulates the **return** from the
+processor, not the grant. Everything after that return is the code a real
+purchase runs: the ownership check, the catalogue reconciliation, the
+one-grant-per-session claim, `credit()`, the ledger row, the non-expiring lot,
+and `payment.completed` with its notification. A shortcut that credited the
+wallet would have exercised none of it, and the exercising is the point.
+
+`POST /billing/api/v1/checkout/simulate` is the endpoint, gated on
+`IsStaffUser` **in the view**. A hidden control is not a gate; a non-staff
+request that posts the body anyway gets 403. The client names only the
+PACKAGE — credits, price and currency come from the catalogue — so a forged
+body cannot ask for a number.
+
+### The mark is a flag, and `real_money()` is how you use it
+
+`Transaction.metadata["simulated"]` is the column. The account belongs to a
+real person, so nothing about the id can tell a simulated purchase from a paid
+one; only the flag can. The same key rides on the emitted `payment.completed`,
+because the consumers that must exclude it — revenue reporting, and above all
+an ad-conversion reporter that would otherwise train a bidding algorithm on a
+purchase that never happened — live in other services and see only the payload.
+
+It is written on **every** purchase row, `False` included, and that is not
+tidiness. `exclude(metadata__simulated=True)` over a JSONField also drops every
+row where the key is ABSENT, so the obvious revenue query silently discards
+real money. A test caught it; in production the only symptom would have been a
+revenue number quietly too low. Use `services.real_money(queryset)`, which
+handles both the flagged rows and the pre-0.18.0 ones that have no key.
+
+### Changed — `grant_credits` is no longer declared operator-only
+
+0.17.1 registered it with stapel-core so a Staff group fixture naming it would
+be refused. The owner overruled that: staff means QA or above, and a staff
+member should simply be able to get credits. The registration is gone; the
+permission stays, because it is Django-native, shows in the admin log, and is
+the audit trail we do want.
+
+
 ## [0.17.1] — 2026-09-17
 
 ### Fixed — `grant_credits` declares itself operator-only, beside the model that defines it

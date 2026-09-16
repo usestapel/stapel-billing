@@ -8,6 +8,7 @@ from .errors import BillingErrorKeysView
 from .views import (
     CatalogView,
     CheckoutView,
+    SimulatedCheckoutView,
     CustomerPortalView,
     InternalDebitView,
     StripeWebhookView,
@@ -28,6 +29,13 @@ urlpatterns = [
 
     # Checkout / portal
     path("checkout", CheckoutView.as_view(), name="checkout"),
+    # Staff only, enforced in the view. The real post-payment path, without
+    # the card — see SimulatedCheckoutView.
+    path(
+        "checkout/simulate",
+        SimulatedCheckoutView.as_view(),
+        name="checkout-simulate",
+    ),
     path("portal", CustomerPortalView.as_view(), name="customer-portal"),
 
     # Subscription

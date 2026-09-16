@@ -358,6 +358,17 @@
     "was_waived": {
       "kind": "gate_function",
       "intent": "Did this ledger row come out of the meter-only branch — the filter a usage or revenue report uses to include or exclude the deployment's own testing."
+    },
+    "simulate_checkout_completed": {
+      "kind": "factory",
+      "intent": "A staff member buys a credit package without a card, by simulating the RETURN from the processor — so reconciliation, the one-grant-per-session claim, the ledger row, the lot and `payment.completed` all run as a real purchase runs them. Gated on WHO by the caller, never on a setting. Every row and the emitted fact carry `simulated`.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
+    },
+    "real_money": {
+      "kind": "gate_function",
+      "intent": "Narrow a Transaction queryset to rows where money actually arrived. Use it rather than writing the filter: `exclude(metadata__simulated=True)` also drops rows whose metadata lacks the key — every purchase before 0.18.0 — so the obvious query under-reports revenue silently."
     }
   }
 }

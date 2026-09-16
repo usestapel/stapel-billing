@@ -17,6 +17,8 @@ from .dto import (
     ExpiringCreditsResponse,
     PackageResponse,
     PlanResponse,
+    SimulatedCheckoutRequest,
+    SimulatedCheckoutResponse,
     SubscriptionResponse,
     TransactionListResponse,
     TransactionResponse,
@@ -54,6 +56,16 @@ class ExpiringCreditsResponseSerializer(StapelDataclassSerializer):
 class WalletResponseSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = WalletResponse
+
+
+class SimulatedCheckoutRequestSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = SimulatedCheckoutRequest
+
+
+class SimulatedCheckoutResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = SimulatedCheckoutResponse
 
 
 class WalletUpdateRequestSerializer(StapelDataclassSerializer):

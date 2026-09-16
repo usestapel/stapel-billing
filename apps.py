@@ -21,21 +21,5 @@ class BillingConfig(AppConfig):
         from . import entitlements
         entitlements.register()
 
-        # `grant_credits` ACTS: it creates credits out of nothing. Declared
-        # operator-only HERE, beside the Wallet.Meta that introduces it, so
-        # the declaration and the definition are read together — and so a
-        # group fixture naming it is refused by stapel_core's importer rather
-        # than granting it to every staff member, which is what the Staff
-        # group actually is (the JWT mirror enrols them on sight).
-        #
-        # Guarded: a host on stapel-core < 0.75.0 simply does not get the
-        # refusal, and must keep grant_credits out of its fixture by hand.
-        try:
-            from stapel_core.django.groups import register_operator_only_permission
-        except ImportError:  # pragma: no cover — older stapel-core
-            pass
-        else:
-            register_operator_only_permission("billing.grant_credits")
-
         # Configuration that must fail the deploy, not the customer.
         from . import checks  # noqa: F401

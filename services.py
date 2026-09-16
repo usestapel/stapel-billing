@@ -25,6 +25,7 @@ credentials are read lazily at call time — nothing is frozen at import.
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
@@ -2227,6 +2228,9 @@ def handle_checkout_completed(event: dict) -> None:
     package_slug = metadata.get("package")
     plan_slug = metadata.get("plan")
     session_id = obj.get("id")
+    # Stripe metadata values are strings on the wire; a real session never
+    # carries this key at all.
+    simulated = str(metadata.get("simulated", "")).lower() in ("1", "true", "yes")
     if not user_id:
         logger.warning("checkout.session.completed without user_id")
         return
@@ -2287,6 +2291,22 @@ def handle_checkout_completed(event: dict) -> None:
                 # intent, so the intent is what makes the grant findable
                 # when the money is taken back (see _grant_transactions).
                 "stripe_payment_intent": obj.get("payment_intent"),
+                # A FLAG, not a naming convention (see
+                # simulate_checkout_completed). `Transaction.metadata` is the
+                # column that carries it.
+                #
+                # ALWAYS WRITTEN, including `False` for a real purchase, and
+                # that is not tidiness. `exclude(metadata__simulated=True)`
+                # over a JSONField ALSO drops every row where the key is
+                # ABSENT — so the obvious revenue query silently discards
+                # real money. A test caught it here; nothing would have
+                # caught it in production except a revenue number that was
+                # quietly too low. With the key always present on a purchase
+                # row, "real money" is the positive filter
+                # `metadata__simulated=False`, which has no null trap. Rows
+                # written before 0.18.0 have no key at all — use
+                # `services.real_money(qs)`, which handles both.
+                "simulated": bool(simulated),
             },
         )
         _announce_payment(
@@ -2295,6 +2315,13 @@ def handle_checkout_completed(event: dict) -> None:
             amount_cents=pkg.price_cents,
             currency=pkg.currency.lower(),
             package=pkg.slug,
+            # Travels ON THE FACT, because the consumers that must exclude it
+            # live in other services and see only this payload. The ad
+            # conversion reporter is the one that matters: it refuses
+            # synthetic USER IDS, and a staff member's id is a real uuid4, so
+            # without this a simulated purchase would be reported to an
+            # advertising platform under a real campaign.
+            **({"simulated": True} if simulated else {}),
         )
     if plan_slug and plan_slug in PLANS_BY_SLUG:
         plan_entry = PLANS_BY_SLUG[plan_slug]
@@ -2365,6 +2392,100 @@ def handle_checkout_completed(event: dict) -> None:
                 plan=plan_slug,
             )
         _announce_subscription(sub)
+
+
+def real_money(queryset):
+    """Narrow a Transaction queryset to rows where money actually arrived.
+
+    Use this rather than writing the filter by hand. ``exclude(
+    metadata__simulated=True)`` looks correct and is not: over a JSONField it
+    also drops every row whose metadata has no ``simulated`` key, which is
+    every purchase written before 0.18.0 — so the obvious query silently
+    reports less revenue than there was, and nothing goes red.
+
+    Two shapes are legitimate here and both mean real money: the key set to
+    ``False`` (written from 0.18.0 on) and the key absent (older rows).
+    """
+    from django.db.models import Q
+
+    return queryset.filter(
+        Q(metadata__simulated=False) | ~Q(metadata__has_key="simulated")
+    )
+
+
+def simulate_checkout_completed(*, user, package: str, actor: str) -> dict:
+    """A staff member's purchase, without the card. Runs the REAL path.
+
+    WHAT THIS IS FOR. Staff have to be able to exercise the product the way a
+    customer meets it, and "buy credits" is the one step they cannot take:
+    it ends at a card. The alternative people reach for is a mock payment
+    provider behind an environment flag, which is banned in this fleet for
+    good reason — a deployment then behaves differently because of a setting,
+    and the difference is invisible in the code path.
+
+    So this is gated on WHO, never on a setting. The caller must already have
+    established that the user may do it (the view checks ``is_staff``); this
+    function's contribution is that everything after the "return from Stripe"
+    is the SAME code a real purchase runs: the ownership check, the catalogue
+    reconciliation, the one-grant-per-session claim, ``credit()``, the ledger
+    row, the lot, and ``payment.completed`` with its notification. A shortcut
+    that credited the wallet directly would exercise none of it, and the
+    exercising is the entire point.
+
+    IT IS MARKED, AND THE MARK IS A FLAG. ``Transaction.metadata["simulated"]``
+    is the column, and the same key rides on the emitted ``payment.completed``
+    so consumers in other services — which see only the payload — can exclude
+    it too. The account is a REAL person's, so nothing about the id can be
+    used to tell a simulated purchase from a paid one; only the flag can.
+
+    Returns ``{"transaction_id", "credits", "balance", "session_id"}``.
+    """
+    pkg = CREDIT_PACKAGES_BY_SLUG.get(package)
+    if pkg is None:
+        raise ValueError(f"unknown credit package {package!r}")
+
+    # Shaped exactly like the session Stripe sends back, because it is fed to
+    # the same handler — including the fields the reconciliation checks, which
+    # would otherwise refuse the grant.
+    session_id = f"cs_simulated_{uuid4().hex}"
+    session = {
+        "id": session_id,
+        "mode": "payment",
+        "payment_status": "paid",
+        "status": "complete",
+        "currency": pkg.currency.lower(),
+        "amount_total": pkg.price_cents,
+        "client_reference_id": str(user.id),
+        "payment_intent": None,
+        "metadata": {
+            "user_id": str(user.id),
+            "package": pkg.slug,
+            "simulated": "true",
+            "simulated_by": actor,
+        },
+    }
+    logger.warning(
+        "SIMULATED purchase: %s credits (package %r) for user %s, by %s — no "
+        "money moved; the ledger row and payment.completed carry simulated=true",
+        pkg.credits, pkg.slug, user.id, actor,
+    )
+    handle_checkout_completed({"data": {"object": session}})
+
+    txn = (
+        Transaction.objects.filter(
+            wallet__user=user, metadata__stripe_session_id=session_id
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    wallet = get_or_create_wallet(user)
+    wallet.refresh_from_db()
+    return {
+        "transaction_id": str(txn.id) if txn else None,
+        "credits": txn.credits_delta if txn else 0,
+        "balance": wallet.balance,
+        "session_id": session_id,
+    }
 
 
 def handle_invoice_paid(event: dict) -> None:

@@ -282,3 +282,34 @@ class CreditDebitRequest:
 class CreditOperationResponse:  # noqa: R004
     transaction_id: UUID
     balance_after: int
+
+
+@dataclass
+class SimulatedCheckoutRequest:
+    """Buy a credit package WITHOUT a card. Staff only, enforced server-side.
+
+    Attributes:
+        package: Credit-package slug, exactly as the real checkout takes it.
+    """
+
+    package: str
+
+
+@dataclass
+class SimulatedCheckoutResponse:  # noqa: R004
+    """What the simulated return from the processor produced.
+
+    Attributes:
+        transaction_id: The ledger row, which carries `metadata.simulated`.
+        credits: Credits granted — the package's, not a number the client chose.
+        balance: Wallet balance after the grant.
+        session_id: The synthetic checkout-session id the grant was claimed on.
+        simulated: Always true. Present so a caller cannot mistake this
+            response for a real purchase's.
+    """
+
+    transaction_id: Optional[str]
+    credits: int
+    balance: int
+    session_id: str
+    simulated: bool = True

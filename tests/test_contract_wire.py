@@ -528,6 +528,20 @@ def _checkout_bare(call):
     return call(client_for(make_user()), data={"package": "starter"})
 
 
+@recipe("POST", "/checkout/simulate")
+def _simulate(call):
+    """Staff buy a package with no card. The gate is WHO, so the user is staff."""
+    return call(client_for(make_user(is_staff=True)), data={"package": "starter"})
+
+
+@empty_state("POST", "/checkout/simulate")
+def _simulate_empty(call):
+    """An empty wallet is the state this exists for: a staff account that has
+    never bought anything, going from zero to the package's credits through
+    the real post-payment path."""
+    return call(client_for(make_user(is_staff=True)), data={"package": "starter"})
+
+
 @recipe("GET", "/portal")
 def _portal(call):
     user, _sub = paid_subscription()

@@ -58,6 +58,7 @@ from stapel_core.django.openapi.schemas import StapelErrorSerializer
 from . import redirects, services
 from .catalog import CREDIT_PACKAGES, PLANS
 from .dto import (
+    SimulatedCheckoutResponse,
     CatalogResponse,
     CheckoutResponse,
     CreditDebtResponse,
@@ -74,6 +75,7 @@ from .dto import (
     WalletResponse,
 )
 from .errors import (
+    ERR_400_INVALID_PACKAGE,
     ERR_400_INVALID_STRIPE_SIGNATURE,
     ERR_400_INVALID_WEBHOOK_PAYLOAD,
     ERR_402_INSUFFICIENT_CREDITS,
@@ -91,6 +93,8 @@ from .models import (
 from .providers.base import ProviderNotConfiguredError
 from .webhooks import get_stripe_handler
 from .serializers import (
+    SimulatedCheckoutRequestSerializer,
+    SimulatedCheckoutResponseSerializer,
     CatalogResponseSerializer,
     CheckoutRequestSerializer,
     CheckoutResponseSerializer,
@@ -633,6 +637,59 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Internal"])
+class SimulatedCheckoutView(SerializerSeamMixin, GuestDeniedMixin, APIView):
+    """Staff buy a package without a card, and the REAL post-payment path runs.
+
+    THE GATE IS WHO, NEVER A SETTING. ``IsStaffUser`` is checked here, on the
+    server, on every call — a fleet rule, and the reason this is not a mock
+    payment provider behind an environment flag: a deployment must not behave
+    differently because of a variable, and "is this deployment pretending" is
+    not a question a reader should have to ask of a settings file.
+
+    The client's control being hidden is NOT the gate. A non-staff account
+    that posts this body anyway gets 403 from ``permission_classes``, which is
+    what makes the hidden checkbox merely a courtesy.
+
+    The client chooses the PACKAGE and nothing else. Credits, price and
+    currency come from the catalogue, so a forged body cannot ask for a
+    number: the worst a staff member can do is buy a package they could have
+    bought.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsStaffUser]
+    request_serializer_class = SimulatedCheckoutRequestSerializer
+    response_serializer_class = SimulatedCheckoutResponseSerializer
+
+    @extend_schema(
+        request=SimulatedCheckoutRequestSerializer,
+        responses={200: SimulatedCheckoutResponseSerializer},
+    )
+    def post(self, request):  # noqa: R007
+        ser = self.get_request_serializer_class()(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        try:
+            result = services.simulate_checkout_completed(
+                user=request.user,
+                package=data.package,
+                actor=request.user.get_username(),
+            )
+        except ValueError:
+            return StapelErrorResponse(400, ERR_400_INVALID_PACKAGE)
+        response_cls = self.get_response_serializer_class()
+        return StapelResponse(
+            response_cls(
+                SimulatedCheckoutResponse(
+                    transaction_id=result["transaction_id"],
+                    credits=result["credits"],
+                    balance=result["balance"],
+                    session_id=result["session_id"],
+                )
+            )
+        )
+
+
+@extend_schema(tags=["Checkout"])
 class InternalDebitView(SerializerSeamMixin, APIView):
     """Charge a user's wallet from another service (transcription/AI etc.)."""
 

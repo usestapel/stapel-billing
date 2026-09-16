@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.17.1",
+  "version": "0.18.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -371,6 +371,12 @@
       ]
     },
     {
+      "name": "real_money",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.real_money",
+      "intent": "Narrow a Transaction queryset to rows where money actually arrived. Use it rather than writing the filter: `exclude(metadata__simulated=True)` also drops rows whose metadata lacks the key — every purchase before 0.18.0 — so the obvious query under-reports revenue silently."
+    },
+    {
       "name": "reconcile_subscriptions",
       "kind": "gate_function",
       "path": "stapel_billing.services.reconcile_subscriptions",
@@ -399,6 +405,15 @@
       "kind": "factory",
       "path": "stapel_billing.services.resolve_account",
       "intent": "Turn what an operator typed — a primary key or an e-mail — into the account they meant, raising rather than returning None when nothing or more than one thing matches. Use it in any manual path that names an account, so a grant cannot land on nobody or on the wrong one of two rows."
+    },
+    {
+      "name": "simulate_checkout_completed",
+      "kind": "factory",
+      "path": "stapel_billing.services.simulate_checkout_completed",
+      "intent": "A staff member buys a credit package without a card, by simulating the RETURN from the processor — so reconciliation, the one-grant-per-session claim, the ledger row, the lot and `payment.completed` all run as a real purchase runs them. Gated on WHO by the caller, never on a setting. Every row and the emitted fact carry `simulated`.",
+      "instead_of": [
+        "stapel_billing.services.credit"
+      ]
     },
     {
       "name": "verify_stripe_signature",
@@ -441,7 +456,7 @@
       "intent": "Daily task over reconcile_wallet_balances: logs at ERROR every wallet whose balance cache no longer matches its lots — how a deployment learns something wrote Wallet.balance directly."
     }
   ],
-  "operations_total": 10,
+  "operations_total": 11,
   "requires": [
     {
       "module": "stapel-core",

@@ -50,12 +50,58 @@
         }
       }
     },
+    "/billing/api/v1/checkout/simulate": {
+      "post": {
+        "operationId": "billing_api_v1_checkout_simulate_create",
+        "description": "Staff buy a package without a card, and the REAL post-payment path runs.\n\nTHE GATE IS WHO, NEVER A SETTING. ``IsStaffUser`` is checked here, on the\nserver, on every call — a fleet rule, and the reason this is not a mock\npayment provider behind an environment flag: a deployment must not behave\ndifferently because of a variable, and \"is this deployment pretending\" is\nnot a question a reader should have to ask of a settings file.\n\nThe client's control being hidden is NOT the gate. A non-staff account\nthat posts this body anyway gets 403 from ``permission_classes``, which is\nwhat makes the hidden checkbox merely a courtesy.\n\nThe client chooses the PACKAGE and nothing else. Credits, price and\ncurrency come from the catalogue, so a forged body cannot ask for a\nnumber: the worst a staff member can do is buy a package they could have\nbought.\n\n**Permissions:** `IsAuthenticated, IsStaffUser`",
+        "tags": [
+          "Internal"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulatedCheckoutRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulatedCheckoutRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulatedCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulatedCheckoutResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/billing/api/v1/internal/debit": {
       "post": {
         "operationId": "billing_api_v1_internal_debit_create",
         "description": "Charge a user's wallet from another service (transcription/AI etc.).\n\n**Permissions:** `OperandHolder`",
         "tags": [
-          "Internal"
+          "Checkout"
         ],
         "requestBody": {
           "content": {
@@ -770,6 +816,52 @@
           "price_cents",
           "slug",
           "storage_limit_bytes"
+        ]
+      },
+      "SimulatedCheckoutRequest": {
+        "type": "object",
+        "description": "Buy a credit package WITHOUT a card. Staff only, enforced server-side.",
+        "properties": {
+          "package": {
+            "type": "string",
+            "description": "Credit-package slug, exactly as the real checkout takes it"
+          }
+        },
+        "required": [
+          "package"
+        ]
+      },
+      "SimulatedCheckoutResponse": {
+        "type": "object",
+        "description": "What the simulated return from the processor produced.",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "The ledger row, which carries `metadata.simulated`"
+          },
+          "credits": {
+            "type": "integer",
+            "description": "Credits granted — the package's, not a number the client chose"
+          },
+          "balance": {
+            "type": "integer",
+            "description": "Wallet balance after the grant"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The synthetic checkout-session id the grant was claimed on"
+          },
+          "simulated": {
+            "type": "boolean",
+            "description": "Always true. Present so a caller cannot mistake this"
+          }
+        },
+        "required": [
+          "balance",
+          "credits",
+          "session_id",
+          "transaction_id"
         ]
       },
       "StapelError": {

@@ -48,6 +48,10 @@
       "type": "string",
       "format": "date-time",
       "description": "End of the service period this payment covers. Present and absent under the same conditions as period_start; the two are always emitted together or not at all."
+    },
+    "simulated": {
+      "type": "boolean",
+      "description": "TRUE when this payment was SIMULATED by a staff member rather than taken from a card \u2014 the staff mock-payment path (services.simulate_checkout_completed). Absent or false means real money. Any consumer that counts revenue, reports a conversion to an advertising platform, or writes to a customer about money they spent MUST exclude it: the account is a real person's, so an id-shaped test cannot be used to tell the two apart."
     }
   },
   "additionalProperties": true
