@@ -215,6 +215,25 @@ class Wallet(models.Model):
 
     class Meta:
         db_table = "billing_wallet"
+        permissions = [
+            # "May look at wallets" and "may move credits" are different
+            # rights, and until 0.17.0 they were the same one by accident.
+            #
+            # Django does not filter a custom admin action by permission
+            # unless the action declares `allowed_permissions`, so the
+            # Grant-credits action was available to anyone who could see the
+            # changelist. A deployment that granted its operators
+            # `view_wallet` — deliberately narrow, no add/change/delete, so
+            # that nobody could hand-edit a balance — handed them the ability
+            # to create credits out of nothing in the same breath, and could
+            # not separate the two without taking the changelist away too.
+            #
+            # A model-level permission rather than a settings flag: it is the
+            # thing an operator is granted, it belongs in the same fixture as
+            # every other permission they hold, and `has_perm` is where a
+            # reviewer already looks.
+            ("grant_credits", "Can grant credits by hand"),
+        ]
 
     def __str__(self):
         return f"Wallet({self.user_id}): {self.balance} {self.currency}"

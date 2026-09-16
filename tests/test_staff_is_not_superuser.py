@@ -59,6 +59,7 @@ def meter_only(settings):
 class _Request:
     def __init__(self, post, user):
         self.POST = post
+        self.GET = {}
         self.user = user
 
 
@@ -129,29 +130,56 @@ class TestTheAdminGrantIsReachableWithoutSuperuser:
         admin.grant_credits(post_request := _Request(post, user), Wallet.objects.filter(pk=wallet.pk))
         return post_request
 
-    def test_view_permission_is_enough_to_run_the_grant(
+    @staticmethod
+    def _with_perms(user, *codenames):
+        group, _ = Group.objects.get_or_create(name="Staff")
+        for codename in codenames:
+            group.permissions.add(
+                Permission.objects.get(
+                    content_type__app_label="billing",
+                    content_type__model="wallet",
+                    codename=codename,
+                )
+            )
+        user.groups.add(group)
+        return type(user).objects.get(pk=user.pk)  # drop the permission cache
+
+    def test_view_alone_does_NOT_reach_the_grant(
         self, wallet_admin, staff_only, user
     ):
-        # Exactly the set a client fleet shipped: view, nothing else. No `change`,
-        # no `add`, no `delete` — a grant must not require the right to edit
-        # a wallet by hand, which is the thing the readonly_fields exist to
-        # prevent.
-        group = Group.objects.create(name="Staff")
-        group.permissions.add(
-            Permission.objects.get(
-                content_type__app_label="billing",
-                content_type__model="wallet",
-                codename="view_wallet",
-            )
-        )
-        staff_only.groups.add(group)
-        staff_only = type(staff_only).objects.get(pk=staff_only.pk)
-        assert staff_only.has_perm("billing.view_wallet")
-        assert not staff_only.has_perm("billing.change_wallet")
-        assert not staff_only.has_perm("billing.delete_wallet")
+        """May look is not may grant (0.17.0).
+
+        Before the `grant_credits` permission existed, a custom admin action
+        with no declared permission was offered to anyone who could open the
+        changelist — so the deliberately narrow view-only set handed the
+        operator the money as well as the list, with no way to split them.
+        """
+        operator = self._with_perms(staff_only, "view_wallet")
+        assert operator.has_perm("billing.view_wallet")
+        assert not operator.has_perm("billing.grant_credits")
+
+        request = _Request({}, operator)
+        # Sees the wallets...
+        assert wallet_admin.has_view_permission(request) is True
+        # ...and is NOT offered the action.
+        assert wallet_admin.has_grant_credits_permission(request) is False
+        assert "grant_credits" not in wallet_admin.get_actions(request)
+
+    def test_the_grant_permission_reaches_it_without_change_or_delete(
+        self, wallet_admin, staff_only, user
+    ):
+        operator = self._with_perms(staff_only, "view_wallet", "grant_credits")
+        assert operator.has_perm("billing.grant_credits")
+        # Still nothing destructive, and still no hand-editing of a balance.
+        assert not operator.has_perm("billing.change_wallet")
+        assert not operator.has_perm("billing.delete_wallet")
+
+        request = _Request({}, operator)
+        assert wallet_admin.has_grant_credits_permission(request) is True
+        assert "grant_credits" in wallet_admin.get_actions(request)
 
         wallet = services.get_or_create_wallet(user)
-        self._grant(wallet_admin, staff_only, wallet)
+        self._grant(wallet_admin, operator, wallet)
 
         wallet.refresh_from_db()
         assert wallet.balance == 40

@@ -72,7 +72,31 @@ class WalletAdmin(admin.ModelAdmin):
     action_form = GrantCreditsActionForm
     actions = ["grant_credits"]
 
-    @admin.action(description="Grant credits (writes a ledger row)")
+    def has_grant_credits_permission(self, request):
+        """Backs ``permissions=["grant_credits"]`` on the action below.
+
+        Django resolves an action's declared permission by calling
+        ``has_<name>_permission`` on the ModelAdmin, so this method IS the
+        gate — without it the declaration silently allows nobody.
+        """
+        # The codename is LITERAL, not `get_permission_codename(...)`: that
+        # helper builds `<action>_<model>` for Django's built-in four, and
+        # Wallet.Meta declares this one as plain `grant_credits`. Deriving it
+        # produced `grant_credits_wallet`, which nothing grants — the gate
+        # then refuses everybody, which is the safe direction and exactly the
+        # kind of silent mismatch a test has to catch rather than a reviewer.
+        return request.user.has_perm(f"{self.opts.app_label}.grant_credits")
+
+    @admin.action(
+        description="Grant credits (writes a ledger row)",
+        # WITHOUT THIS the action is offered to anyone who can open the
+        # changelist. Django only filters an action by permission when the
+        # action says which permission it needs, so a deployment that granted
+        # its operators `view_wallet` and nothing else — deliberately, so no
+        # one could hand-edit a balance — was also granting them the ability
+        # to create credits from nothing, with no way to separate the two.
+        permissions=["grant_credits"],
+    )
     def grant_credits(self, request, queryset):
         """Add credits to the selected wallets through services.grant_credits().
 

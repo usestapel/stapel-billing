@@ -5,6 +5,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-09-17
+
+### Added — "may look at wallets" and "may move credits" are finally two rights
+
+Django only filters a custom admin action by permission when the action says
+which permission it needs. The Grant-credits action said nothing, so it was
+offered to anyone who could open the wallet changelist.
+
+That is worse than it sounds, because it defeats the narrow permission set it
+looks compatible with. A fleet audited on 2026-09-16 gave its non-superuser
+operators exactly `view_wallet` and no `add`/`change`/`delete` — deliberately,
+so that nobody could hand-edit a balance past the `readonly_fields` that exist
+to stop precisely that. The same six view permissions silently carried the
+right to create credits out of nothing, and there was no way to hand someone
+the list without also handing them the money.
+
+`Wallet.Meta.permissions` now declares `grant_credits`, the action declares
+`permissions=["grant_credits"]`, and `WalletAdmin.has_grant_credits_permission`
+is the gate Django calls to resolve it. Migration `0008` is options-only — no
+schema change, the Permission row is created by Django's own post-migrate
+signal, and it is safe to apply while serving.
+
+**This NARROWS an existing deployment.** Before upgrading, add
+`billing.grant_credits` to whatever grants your operators `view_wallet`, or
+the action disappears for everyone except superusers — which is the state this
+release exists to make impossible to arrive at by accident, so it fails in the
+safe direction rather than the convenient one.
+
+A trap worth naming, because it cost a test run here: the codename is the
+literal `grant_credits`. `get_permission_codename("grant_credits", opts)`
+builds `grant_credits_wallet`, which nothing grants, and a gate keyed on it
+refuses everybody silently.
+
+
 ## [0.16.1] — 2026-09-16
 
 ### Fixed — the admin grant action told the truth about granting, not about not granting
