@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.18.2] — 2026-09-17
+
+Patch: delete this module's copies of `gdpr.section.erased` and
+`gdpr.owner.alive`.
+
+`stapel-core` owns both facts and has shipped schemas for them since 0.81.0.
+These copies validated identically to core's — they differed only in prose —
+so nothing was being refused here. They go because identical copies are how
+divergent ones start: two sibling modules had already drifted theirs into
+pinning `owner` to their own name, which rejects every other owner's receipt
+inside the erasure's own transaction, rolling the erasure back while the
+orchestrator counts a success.
+
+Floor moves to `stapel-core>=0.81.0`, the release that ships the two schemas.
+
 All notable changes to stapel-billing are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 

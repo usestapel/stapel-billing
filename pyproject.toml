@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.18.1"
+version = "0.18.2"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,7 +27,7 @@ classifiers = [
 dependencies = [
     # Floor: 0.26.0 emits docs/errors.json with the `owner` field the
     # committed artifact and its drift gate require.
-    "stapel-core>=0.26.0,<1.0",
+    "stapel-core>=0.81.0,<1.0",
 ]
 
 [project.urls]
