@@ -79,21 +79,27 @@ class TestUserDeletedAction:
     def _event(self, payload):
         return types.SimpleNamespace(payload=payload, event_id="evt-act-1")
 
-    def test_handle_user_deleted_erases_billing_pii(self, user):
-        from stapel_billing.actions import handle_user_deleted
+    def _handler(self):
+        """The handler ``apps.ready()`` registered — core builds it now."""
+        from stapel_core.gdpr import register_gdpr_owner
 
+        from stapel_billing.gdpr import OWNER, SUBJECT_TYPES, erase_subject
+
+        return register_gdpr_owner(
+            OWNER, SUBJECT_TYPES, erase_subject
+        ).handle_user_deleted
+
+    def test_handle_user_deleted_erases_billing_pii(self, user):
         sub = Subscription.objects.create(
             user=user, plan="pro", stripe_customer_id="cus_1"
         )
-        handle_user_deleted(self._event({"user_id": str(user.id)}))
+        self._handler()(self._event({"user_id": str(user.id)}))
         sub.refresh_from_db()
         assert sub.stripe_customer_id == ""
 
     def test_handle_user_deleted_without_user_id_logs_and_returns(self, caplog):
-        from stapel_billing.actions import handle_user_deleted
-
-        with caplog.at_level("ERROR", logger="stapel_billing.actions"):
-            handle_user_deleted(self._event({}))
+        with caplog.at_level("ERROR", logger="stapel_core.gdpr.owners"):
+            self._handler()(self._event({}))
         assert any("without user_id" in r.message for r in caplog.records)
 
 

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.19.0] — 2026-09-18
+
+### Changed — the erasure protocol is core's; `erase_subject` stays ours
+
+This module hand-wrote the data-owner side of the erasure protocol:
+`gdpr.erasure.requested`, `gdpr.owner.probe` and the deprecated
+`user.deleted`, plus the receipt id and the emit — sixty lines that nine
+libraries carried verbatim. `apps.ready()` now declares the owner instead:
+
+```python
+register_gdpr_owner("billing", SUBJECT_TYPES, gdpr.erase_subject)
+```
+
+Core builds the same three handlers. The owner name (`billing`), the one
+subject type it claims (`account`), the rows it touches and the receipt
+payload — `owner`, `subject_type`, `subject_key`, `correlation_id`,
+`receipt_id`, `counts` — are unchanged, receipt id included
+(`billing:account:<key>:<correlation_id>`).
+
+Why it matters beyond tidiness: a library that both registers a
+`GDPRProvider` and hand-writes the protocol made core's provider bridge
+stand down for the whole **app** rather than for the named **section** —
+`gdpr.W012`. A named registration makes that question exact, and one
+erasure leaves exactly one receipt per part. Two receipts assert the
+deletion happened twice, which is a false legal record rather than a
+duplicate log line.
+
+`stapel_billing.gdpr.erase_subject` now takes `workspace_id` positionally
+(it was keyword-only), because that is how core drives it:
+`erase(subject_type, subject_key, workspace_id)`. Keyword callers are
+unaffected. `stapel_billing.actions` no longer exports
+`handle_erasure_requested`, `handle_owner_probe` or `handle_user_deleted`;
+reach them through the `GdprOwner` the registration returns.
+
+Floor moves to `stapel-core>=0.85.1`, the release whose provider bridge
+yields to a registered owner.
+
+All notable changes to stapel-billing are documented here.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
 ## [0.18.2] — 2026-09-17
 
 Patch: delete this module's copies of `gdpr.section.erased` and
@@ -14,9 +54,6 @@ inside the erasure's own transaction, rolling the erasure back while the
 orchestrator counts a success.
 
 Floor moves to `stapel-core>=0.81.0`, the release that ships the two schemas.
-
-All notable changes to stapel-billing are documented here.
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 

@@ -291,7 +291,7 @@ def _scrub_webhook_payloads(customer_ids, subscription_ids) -> int:
     return touched
 
 
-def erase_subject(subject_type: str, subject_key, *, workspace_id=None) -> dict | None:
+def erase_subject(subject_type: str, subject_key, workspace_id=None) -> dict | None:
     """Erase one subject from the credit ledger: the person out, the bill kept.
 
     Returns the receipt's ``counts`` — rows **touched** per model — or
@@ -309,7 +309,9 @@ def erase_subject(subject_type: str, subject_key, *, workspace_id=None) -> dict 
     redelivery matches nothing and receipts zeroes. ``workspace_id`` is
     accepted and ignored — an account request may carry it as a partition
     hint for owners that need one, and narrowing by it here would leave the
-    subject's rows in every other tenant.
+    subject's rows in every other tenant. It is positional because
+    ``register_gdpr_owner`` drives this callable as
+    ``erase(subject_type, subject_key, workspace_id)``.
     """
     from .models import CreditDebt, CreditHold, Subscription, Transaction, Wallet
 

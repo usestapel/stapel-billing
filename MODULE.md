@@ -334,13 +334,20 @@ live in `schemas/emits/`, `schemas/consumes/` and `schemas/functions/`.
 | `gdpr.section.erased` | `owner`, `subject_type`, `subject_key`, `correlation_id`, `receipt_id`, `counts` | Receipt for one erasure — same transaction as the erasure (see **Erasure**) |
 | `gdpr.owner.alive` | `owner`, `subject_types` (+ `correlation_id`) | Answer to the liveness probe |
 
-**Consumes** (`actions.py`, `@on_action`; handlers must be idempotent — delivery is at-least-once):
+**Consumes** (`actions.py`, `@on_action`, plus the three the erasure
+registration subscribes; handlers must be idempotent — delivery is
+at-least-once). The erasure protocol is not written here: `apps.ready()`
+calls `stapel_core.gdpr.register_gdpr_owner("billing", SUBJECT_TYPES,
+erase_subject)` and core supplies the three handlers, with the deterministic
+receipt id and the receipt inside the erase's transaction. Registering by
+name is also what stands core's provider bridge down for this section
+exactly rather than for the whole app (`gdpr.W012`):
 
 | Event | Handler | Effect |
 |---|---|---|
-| `gdpr.erasure.requested` | `handle_erasure_requested` | Erase this owner's slice of the subject, receipt `gdpr.section.erased` with counts |
-| `gdpr.owner.probe` | `handle_owner_probe` | Answer `gdpr.owner.alive` — from the same module, which is what makes it evidence |
-| `user.deleted` | `handle_user_deleted` | DEPRECATED account signal, routed through the same `erase_subject("account", …)` |
+| `gdpr.erasure.requested` | core, via `register_gdpr_owner` | Erase this owner's slice of the subject, receipt `gdpr.section.erased` with counts |
+| `gdpr.owner.probe` | core, via `register_gdpr_owner` | Answer `gdpr.owner.alive` — from the same module as the erasure, which is what makes it evidence |
+| `user.deleted` | core, via `register_gdpr_owner` | DEPRECATED account signal, routed through the same `erase_subject("account", …)` |
 | `user.merged` | `handle_user_merged` | The other half of an account's life cycle (stapel-auth 0.30.0), routed through `services.merge_wallets`. **Merge policy: the credits MOVE and the ledger says so** — the merged wallet's lots move (never a summed integer: a lot carries its own expiry, and adding two balances would turn an expiring bundle into non-expiring cash), transactions/holds/debts follow, ONE explicit `ADJUSTMENT` row on the survivor explains the balance change, and the merged wallet is closed at zero with a `merged_into` stamp. **Exactly once**: the row carries a deterministic key derived from the pair of ids (`services.merge_idempotency_key`), so a redelivery credits nothing. Answering only `user.deleted` is `stapel_core.lifecycle.E001` |
 
 (`schemas/consumes/user.deletion_initiated.json` is declared, but `actions.py` does not

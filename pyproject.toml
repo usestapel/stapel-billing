@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.18.2"
+version = "0.19.0"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,7 +27,12 @@ classifiers = [
 dependencies = [
     # Floor: 0.26.0 emits docs/errors.json with the `owner` field the
     # committed artifact and its drift gate require.
-    "stapel-core>=0.81.0,<1.0",
+    #
+    # 0.85.1: the data-owner side of the erasure protocol moved into core
+    # (`register_gdpr_owner`, called from apps.ready()), and 0.85.1 is where
+    # the provider bridge yields to it. An older core has no such symbol, so
+    # it is an ImportError at startup rather than a silent half-wiring.
+    "stapel-core>=0.85.1,<1.0",
 ]
 
 [project.urls]
