@@ -20,6 +20,8 @@ config, not a second copy of it").
 """
 from __future__ import annotations
 
+import os
+
 from stapel_core.testing import test_database
 
 
@@ -134,11 +136,19 @@ def settings_kwargs(
         # Checkout/portal redirect fallbacks derive from this when the
         # request and STAPEL_BILLING don't provide URLs.
         FRONTEND_URL="https://front.example",
-        # Skip migrations — create tables directly from models
-        MIGRATION_MODULES={
-            "users": None,
-            "billing": None,
-        },
+        # Skip migrations — create tables directly from models. Fast, and
+        # the default everywhere EXCEPT the Postgres job, which asks for
+        # the opposite: `migrate --run-syncdb` creates unmigrated apps
+        # BEFORE it applies migrations, so an unmigrated `users` table with
+        # an FK to `auth_group` fails against a real server (SQLite does not
+        # check the reference at creation and never noticed). Running the
+        # real chain there is the better gate anyway: it is the only place
+        # the AlterField that widens a column is actually executed.
+        **(
+            {}
+            if os.environ.get("STAPEL_TEST_DATABASE_URL")
+            else {"MIGRATION_MODULES": {"users": None, "billing": None}}
+        ),
     )
     if rest_framework is not None:
         kwargs["REST_FRAMEWORK"] = rest_framework

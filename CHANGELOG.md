@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.20.1] — 2026-09-19
+
+### Fixed — the new Postgres job could not build its test database
+
+0.20.0 was tagged and never published: the publish workflow waits for a
+green CI run on the commit, and the `postgres` job that release ADDED was
+red. Not the library — the job. The test harness skips migrations and
+builds tables straight from the models, and `migrate --run-syncdb`
+creates unmigrated apps BEFORE it applies migrations, so the unmigrated
+`users` table's foreign key to `auth_group` pointed at a table that did
+not exist yet. SQLite does not check a reference at creation time and had
+never noticed.
+
+When `STAPEL_TEST_DATABASE_URL` is set, the suite now runs the real
+migration chain instead of skipping it — which is the better gate anyway:
+it is the only place the `AlterField` that widens a provider column is
+actually executed against a server that enforces the width.
+
+The library code is identical to 0.20.0. Everything below still describes
+this release.
+
 ## [0.20.0] — 2026-09-19
 
 ### Fixed — a paid subscription could be left inactive by out-of-order events
