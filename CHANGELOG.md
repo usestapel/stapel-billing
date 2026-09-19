@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.21.0] — 2026-09-19
+
+### Fixed — the comp command could not comp a real customer
+
+`billing_extend_subscription --user <id> --days 60 --reason "..."` on a
+client host answered:
+
+    CommandError: unknown plan 'starter'
+
+`starter` is that deployment's plan. It is in its
+`STAPEL_BILLING["PLANS"]`, it is on its subscriptions, and the gate
+(`services.extend_subscription`, 0.20.0) asked `slug in Plan.values` —
+the enum of the four plans **this library ships**. A host's ladder is
+never in that enum, by design, so the check refused every real customer
+of every such deployment. The whole comp feature was unusable there from
+the day it shipped.
+
+Plan membership is a CONFIGURATION question and now has exactly one
+answer, `catalog.get_plan(slug)`, which reads the deployment's catalogue.
+The refusal also names what IS configured (`unknown plan 'startr' —
+STAPEL_BILLING['PLANS'] configures: free, starter, pro`), because an
+operator who mistyped a slug should not have to go read a settings file.
+
+Every other place that asked the enum, or asked the catalogue by hand,
+was swept onto it: `entitlements._effective_plan_entry`,
+`CheckoutRequestSerializer.validate`, `checks.E102`/`W105`,
+`grant_plan_bundle`, `default_plan_bundle_entitlements`,
+`handle_checkout_completed`, `handle_invoice_paid`,
+`notifications.item_label` and the Stripe provider's plan checkout.
+
+`Subscription.plan` and `CompPeriod.plan` take their `choices` from the
+catalogue too (migration `0010`, no DDL — `choices` is form-level
+metadata and the ORM never checked it on save, which is why host slugs
+were stored happily while the Django admin refused to save the row it was
+displaying). `Subscription.is_paid` compares against the field's default
+rather than a hardcoded `free`.
+
+The suite ran on nothing but enum plans, which is why none of this was
+red: `tests/plans.py` puts a host-defined `starter` in the catalogue the
+whole suite uses, and `test_gdpr_and_misc` now fails if that stops being
+true.
+
+### Added — an upgrade comp: a better plan for a while, with no provider write
+
+Asked for by the product owner for a live customer: "raise her
+subscription level until the end of her current period so she has more
+credits" — without touching Stripe. Comp time could not do it. A comp
+only mattered once the provider's period stopped entitling, so a comp
+granted to a paying customer sat dormant for exactly as long as the
+upgrade was supposed to last.
+
+The rule is now: **the higher-ranked of the provider's plan and an open
+comp window governs** (`services.effective_plan`). Rank is the plan's
+POSITION in `STAPEL_BILLING["PLANS"]`, lowest tier first — not price, not
+bundled credits, either of which ranks somebody's ladder upside down (an
+invoiced enterprise plan is priced 0). A comp ABOVE the paid plan opens
+immediately and governs until it closes; a comp at or below it keeps its
+original meaning exactly, and still opens when the paid period does.
+
+    manage.py billing_extend_subscription --subscription <stripe id> \
+        --plan pro --until-period-end --grant-bundle --reason "<text>" --apply
+
+`--until <ISO datetime>` and `--until-period-end` name the moment the
+window closes (mutually exclusive with `--days`); "until the end of her
+current period" is read off the subscription rather than counted in days.
+
+`--grant-bundle` hands over the DIFFERENCE in bundled credits between the
+two plans — `pro 2400 - starter 1080 = +1320 credits, expires
+2026-10-16T08:46:37Z`, printed exactly like that by the dry run — as a
+lot that expires with the window. It is flagged `comped` in the ledger
+and excluded by `services.real_money()`, because credits nobody paid for
+are not revenue. It is granted at most once while such a lot is live, so
+neither a re-run nor `--stack` can double-grant.
+
+Nothing is sent to the provider: no plan change, no proration, no charge.
+`Subscription.plan` still mirrors what is being paid for, so a webhook
+cannot erase or shorten the window and `billing_reconcile_subscriptions`
+reports no drift (`plan` is not one of `RECONCILED_FIELDS`). When the
+window closes, entitlement falls back to the paid plan with no action.
+The grant emits `subscription.changed` from inside its transaction
+(0.20.2's rule) carrying the EFFECTIVE plan plus `comped_until`, so
+services holding cached entitlements drop them.
+
+`governing_comp_period` replaces "the window ending furthest out" as the
+one that governs: windows legitimately overlap now, and picking by end
+date handed back the cheaper plan whenever a long cheap window outlived a
+short expensive one.
+
 ## [0.20.2] — 2026-09-19
 
 ### Fixed — a reconciliation repair announced itself from outside its transaction

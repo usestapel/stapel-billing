@@ -153,6 +153,62 @@ def get_plans() -> list[PlanCatalogEntry]:
     return [_coerce(e, PlanCatalogEntry) for e in raw]
 
 
+def get_plan(slug) -> PlanCatalogEntry | None:
+    """The configured plan with this slug, or ``None``.
+
+    The ONE answer to "is this a plan?" in the library. The ``Plan`` enum
+    in ``models`` is the *shipped* ladder, not the deployment's: a host
+    that sells ``starter``/``growth``/``scale`` configures them in
+    ``STAPEL_BILLING["PLANS"]`` and never appears in that enum, so any
+    gate spelled ``slug in Plan.values`` refuses the host's real
+    customers (it refused every comp grant on such a host until 0.21.0).
+    Ask here instead — catalogue membership is a configuration question.
+    """
+    if not slug:
+        return None
+    for entry in get_plans():
+        if entry.slug == slug:
+            return entry
+    return None
+
+
+def plan_slugs() -> list[str]:
+    """Every configured plan slug, in catalogue order — for error messages."""
+    return [entry.slug for entry in get_plans()]
+
+
+def plan_rank(slug) -> int | None:
+    """Where this plan sits on the deployment's ladder, or ``None``.
+
+    THE LADDER IS THE ORDER THE CATALOGUE IS CONFIGURED IN — position in
+    ``STAPEL_BILLING["PLANS"]``, lowest tier first. Nothing is derived from
+    price or bundled credits: an enterprise plan is priced ``0`` here
+    because it is invoiced, and a plan can legitimately cost more while
+    bundling fewer credits, so either derivation would rank somebody's
+    ladder upside down without saying so. A list is something a host
+    writes once and can read back.
+
+    Used to decide which of two plans governs when a comp window and a
+    paid provider subscription are both live (``services.effective_plan``).
+    """
+    for index, entry in enumerate(get_plans()):
+        if entry.slug == slug:
+            return index
+    return None
+
+
+def plan_choices() -> list[tuple[str, str]]:
+    """Model-field ``choices`` over the CONFIGURED catalogue.
+
+    Passed to the ``plan`` columns as a *callable*, so the choices are the
+    deployment's plans at the moment they are asked for rather than the
+    shipped enum frozen at import. A model form (Django admin) validates
+    against these, and a host slug is a legal value there for the same
+    reason it is a legal value everywhere else.
+    """
+    return [(entry.slug, entry.name) for entry in get_plans()]
+
+
 class _LazyCatalogList(Sequence):
     """Sequence view over a loader — re-reads configuration on access."""
 

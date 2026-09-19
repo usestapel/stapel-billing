@@ -41,7 +41,7 @@ from stapel_core.comm import emit
 from stapel_core.signals import payment_completed, subscription_changed
 
 from . import internal
-from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
+from .catalog import CREDIT_PACKAGES_BY_SLUG, get_plan, plan_rank, plan_slugs
 from .models import (
     CreditDebt,
     CreditHold,
@@ -1597,7 +1597,7 @@ def grant_plan_bundle(
     ``None`` when there was nothing to grant — the plan bundles no credits,
     the period is already granted, or the period is in the past.
     """
-    entry = PLANS_BY_SLUG.get(plan_slug)
+    entry = get_plan(plan_slug)
     if credits is None:
         if entry is None:
             logger.error(
@@ -1727,7 +1727,7 @@ def default_plan_bundle_entitlements() -> Iterable[dict]:
                 slug = sub.plan
             else:
                 slug = default_slug
-            entry = PLANS_BY_SLUG.get(slug)
+            entry = get_plan(slug)
             if entry is None or entry.monthly_credits_included <= 0:
                 continue
             yield {"wallet_id": wallet_id, "user_id": user_id, "plan": slug}
@@ -2335,8 +2335,8 @@ def handle_checkout_completed(event: dict) -> None:
             # advertising platform under a real campaign.
             **({"simulated": True} if simulated else {}),
         )
-    if plan_slug and plan_slug in PLANS_BY_SLUG:
-        plan_entry = PLANS_BY_SLUG[plan_slug]
+    plan_entry = get_plan(plan_slug)
+    if plan_entry is not None:
         mismatch = _reconcile_checkout_session(
             obj,
             expected_mode="subscription",
@@ -2437,11 +2437,16 @@ def real_money(queryset):
 
     Two shapes are legitimate here and both mean real money: the key set to
     ``False`` (written from 0.18.0 on) and the key absent (older rows).
+
+    Comped credits (``metadata["comped"]``, 0.21.0) are excluded the same
+    careful way: an operator's upgrade window grants credits nobody paid
+    for, and counting them as sales overstates the month.
     """
     from django.db.models import Q
 
     return queryset.filter(
-        Q(metadata__simulated=False) | ~Q(metadata__has_key="simulated")
+        (Q(metadata__simulated=False) | ~Q(metadata__has_key="simulated"))
+        & (Q(metadata__comped=False) | ~Q(metadata__has_key="comped"))
     )
 
 
@@ -2559,9 +2564,9 @@ def handle_invoice_paid(event: dict) -> None:
         )
         return
     sub = Subscription.objects.filter(stripe_subscription_id=subscription_id).first()
-    if not sub or sub.plan not in PLANS_BY_SLUG:
+    plan_entry = get_plan(sub.plan) if sub else None
+    if plan_entry is None:
         return
-    plan_entry = PLANS_BY_SLUG[sub.plan]
     monthly = plan_entry.monthly_credits_included
     if not monthly:
         return
@@ -2659,7 +2664,7 @@ def _map_stripe_status(raw, current=None):
 # `active`, created at T+2). Both types share this module's
 # `handle_subscription_updated`, which wrote whatever the payload said in
 # DELIVERY order — so the older `incomplete` landed on top of `active`,
-# the plan stopped entitling (entitlements._granting_statuses), and a
+# the plan stopped entitling (_GRANTING_SUBSCRIPTION_STATUSES), and a
 # paying customer was shown the paywall. Two of six provider-backed
 # subscriptions on that host were stuck that way, with every webhook
 # received, processed and green.
@@ -3578,6 +3583,16 @@ class CompPeriodPreview:
         applied: False under a dry run (the default).
         stacked_on: The live comp period this one was appended to, if any.
         comp_period_id: The row written, when it was written.
+        upgrade_from: The plan the provider is charging for, when this comp
+            ranks above it — the window then opens immediately and governs
+            while it is open. None for a same-or-lower comp.
+        bundle_*: The credit difference, when ``grant_bundle`` was asked
+            for. ``bundle_credits`` is what would actually be granted (0
+            when there is nothing to add, or a comp bundle is still live —
+            ``bundle_note`` then says which), between
+            ``bundle_baseline_credits`` on ``bundle_baseline_plan`` and
+            ``bundle_plan_credits`` on this comp's plan, expiring at
+            ``bundle_expires_at``.
     """
 
     subscription_id: str
@@ -3590,6 +3605,14 @@ class CompPeriodPreview:
     applied: bool = False
     stacked_on: Optional[str] = None
     comp_period_id: Optional[str] = None
+    upgrade_from: Optional[str] = None
+    bundle_credits: Optional[int] = None
+    bundle_plan_credits: Optional[int] = None
+    bundle_baseline_plan: Optional[str] = None
+    bundle_baseline_credits: Optional[int] = None
+    bundle_expires_at: Optional[datetime] = None
+    bundle_note: Optional[str] = None
+    bundle_transaction_id: Optional[str] = None
 
 
 def live_comp_period(subscription_id, now=None):
@@ -3623,6 +3646,38 @@ def latest_comp_period(subscription_id, now=None):
     )
 
 
+def governing_comp_period(subscription_id, now=None):
+    """The open comp window that entitles to the MOST, or None.
+
+    Windows can overlap — an upgrade comp starts immediately while an
+    earlier window still runs, and stacking is explicitly allowed — so
+    "the open one" is not a single row. The one that governs is the one
+    on the highest-ranked plan (``catalog.plan_rank``); between two
+    windows on the same plan, the one that runs longest.
+
+    Picking by end date alone, which is what a single ``ORDER BY
+    -ends_at`` did, would hand back the LOWER plan whenever somebody had
+    a long cheap window and a short expensive one.
+    """
+    from .models import CompPeriod
+
+    now = now or timezone.now()
+    comps = CompPeriod.objects.filter(
+        subscription_id=subscription_id,
+        revoked_at=None,
+        starts_at__lte=now,
+        ends_at__gt=now,
+    )
+    best = None
+    best_key = None
+    for comp in comps:
+        rank = plan_rank(comp.plan)
+        key = (-1 if rank is None else rank, comp.ends_at)
+        if best_key is None or key > best_key:
+            best, best_key = comp, key
+    return best
+
+
 def comp_plan_for_user(user_id, now=None) -> Optional[str]:
     """The plan a live comp window entitles this user to, or None.
 
@@ -3633,55 +3688,169 @@ def comp_plan_for_user(user_id, now=None) -> Optional[str]:
     sub = Subscription.objects.filter(user_id=user_id).only("id").first()
     if sub is None:
         return None
-    comp = live_comp_period(sub.id, now=now)
+    comp = governing_comp_period(sub.id, now=now)
     return comp.plan if comp is not None else None
+
+
+def effective_plan(user_id, now=None) -> str:
+    """The plan that governs this user RIGHT NOW — the answer, in one place.
+
+    Two things can entitle: the provider's subscription (while its status
+    is one that entitles) and an open comp window. Since 0.21.0 the one
+    that governs is simply **the higher-ranked of the two**, where rank is
+    position on the host's configured ladder (``catalog.plan_rank``):
+
+    * comp ABOVE the paid plan — an upgrade the operator granted without
+      touching the provider (no plan change, no proration, no charge) —
+      governs while the window is open, and the account falls back to the
+      paid plan the moment it closes, with no action;
+    * comp at or BELOW the paid plan keeps its original meaning: it does
+      nothing while the subscription entitles, and carries the account
+      afterwards;
+    * no entitling subscription — lapsed, cancelled, or simply the default
+      plan — and the comp governs, which is what comp time was built for.
+
+    The ``Subscription.plan`` column is NOT touched by any of this: it
+    mirrors the provider, so a webhook rewriting it must not be able to
+    erase a comp, and ``billing_reconcile_subscriptions`` must not read the
+    comped plan as drift. The effective plan is computed, never stored.
+    """
+    sub = (
+        Subscription.objects.filter(user_id=user_id)
+        .only("id", "plan", "status")
+        .first()
+    )
+    default = Subscription._meta.get_field("plan").get_default()
+    if sub is None:
+        return default
+    candidates = []
+    if sub.status in _GRANTING_SUBSCRIPTION_STATUSES and sub.plan:
+        candidates.append(sub.plan)
+    comp_slug = comp_plan_for_user(user_id, now=now)
+    if comp_slug:
+        candidates.append(comp_slug)
+    if not candidates:
+        return default
+    # An unranked slug (a plan the host retired but rows still carry) sorts
+    # below every configured one rather than winning by accident.
+    return max(candidates, key=lambda slug: (plan_rank(slug) is not None, plan_rank(slug) or 0))
+
+
+#: Where a comp window may be told to open. ``None`` means "decide from
+#: the grant": an upgrade opens now, anything else opens when the paid
+#: period (or the window it stacks on) closes.
+COMP_STARTS_NOW = "now"
+COMP_STARTS_PERIOD_END = "period_end"
+
+
+def _comp_bundle_is_live(user_id, now) -> bool:
+    """Is a comp credit bundle from an earlier window still unspent-by-time?
+
+    The guard behind "a re-run or a stack must not double-grant". Per-row
+    idempotency (the key on the transaction) only stops the SAME comp
+    period granting twice; a stacked window is a new row and would grant
+    again on top of credits the customer still has.
+    """
+    from .models import Transaction
+
+    if user_id is None:
+        return False
+    return Transaction.objects.filter(
+        wallet__user_id=user_id,
+        metadata__comped=True,
+        lot__expires_at__gt=now,
+    ).exists()
 
 
 def extend_subscription(
     *,
     subscription: Subscription,
-    days: int,
+    days: Optional[int] = None,
     reason: str,
     actor: str = "",
     plan: Optional[str] = None,
+    until=None,
+    starts: Optional[str] = None,
     stack: bool = False,
+    grant_bundle: bool = False,
     apply: bool = False,
     now=None,
 ) -> CompPeriodPreview:
-    """Give this subscription *days* of comp time. Dry run unless ``apply``.
+    """Give this subscription comp time. Dry run unless ``apply``.
 
-    The window opens when the paid-for one closes (or immediately, if the
-    provider period has already lapsed or was never known), so comp days
-    are added to the customer's service rather than spent underneath a
-    period they already paid for.
+    Two shapes, and the difference is whether the plan is a step UP from
+    what the provider is charging for:
+
+    * **Carry** (the original): comp on the same plan, or a lower one.
+      The window opens when the paid-for one closes, so comp days are
+      added to the customer's service rather than spent underneath a
+      period they already paid for.
+    * **Upgrade** (0.21.0): comp on a HIGHER-ranked plan than the live
+      subscription. It opens immediately — "put her on pro until the end
+      of her current period" is worth nothing if it starts when that
+      period ends — governs while it is open
+      (:func:`effective_plan`), and lapses back to the paid plan by
+      itself. Nothing is sent to the provider: no plan change, no
+      proration, no charge, and ``Subscription.plan`` is not touched.
+
+    Length is ``days=`` or ``until=``, exactly one. ``until`` is the
+    moment the window closes, which is what "until the end of her current
+    period" actually means (the command spells it
+    ``--until-period-end``).
+
+    With ``grant_bundle=True`` the customer also gets the DIFFERENCE in
+    bundled credits between the comp plan and the plan they are on, as a
+    lot that expires with the window. It is flagged ``comped`` in the
+    ledger so :func:`real_money` and revenue reports leave it out, and it
+    is granted at most once while such a lot is still live.
 
     Refuses to stack silently: if a comp window is already open or
-    pending, ``stack=True`` is required, and the new window then starts
-    where that one ends — two people each granting "a month" without
-    knowing about the other is exactly how an account ends up comped
-    forever.
+    pending, ``stack=True`` is required — two people each granting "a
+    month" without knowing about the other is exactly how an account ends
+    up comped forever.
 
     Args:
         subscription: The local row to extend.
-        days: How many days of comp time. Must be positive.
+        days: How many days of comp time. Positive. Exclusive with *until*.
         reason: Why. Required — this is the audit.
         actor: Who granted it (admin username, or the shell user).
         plan: The plan to entitle to. Defaults to the subscription's own
             plan, which must not be the default one.
+        until: When the window closes (aware datetime). Exclusive with *days*.
+        starts: ``"now"`` or ``"period_end"`` to override the choice the
+            upgrade/carry distinction otherwise makes.
         stack: Append to an existing window instead of refusing.
+        grant_bundle: Also grant the credit difference (see above).
         apply: Write. The default computes and writes nothing.
         now: Test seam.
 
     Raises:
-        ValueError: on a non-positive length, an empty reason, a plan that
-            resolves to the default one, or an unrequested stack.
+        ValueError: on a non-positive length, both or neither of
+            days/until, an empty reason, a plan that resolves to the
+            default one, an unknown plan, a window that ends before it
+            starts, or an unrequested stack.
     """
-    from .models import CompPeriod, Plan
+    from django.db import transaction as db_transaction
+
+    from .models import CompPeriod, LotSource, TransactionType
 
     now = now or timezone.now()
-    days = int(days)
-    if days <= 0:
-        raise ValueError("days must be positive — a comp period of nothing is not a grant")
+    if (days is None) == (until is None):
+        raise ValueError(
+            "pass exactly one of days= or until= — a window needs a length "
+            "or an end, and two of them is an ambiguity, not a longer grant"
+        )
+    if days is not None:
+        days = int(days)
+        if days <= 0:
+            raise ValueError(
+                "days must be positive — a comp period of nothing is not a grant"
+            )
+    if starts not in (None, COMP_STARTS_NOW, COMP_STARTS_PERIOD_END):
+        raise ValueError(
+            f"starts must be {COMP_STARTS_NOW!r}, {COMP_STARTS_PERIOD_END!r} "
+            f"or None, not {starts!r}"
+        )
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("a reason is required: an unexplained comp is the row an audit stops on")
@@ -3694,8 +3863,30 @@ def extend_subscription(
             f"comping it would entitle to nothing new — name the plan "
             f"explicitly (plan=...) if that is what you mean"
         )
-    if slug not in Plan.values:
-        raise ValueError(f"unknown plan {slug!r}")
+    entry = get_plan(slug)
+    if entry is None:
+        # The catalogue, never the shipped enum: a host sells its own
+        # plans and its subscriptions carry its own slugs, so the enum
+        # check this replaced refused to comp any real customer of a
+        # deployment whose ladder is not ours.
+        configured = ", ".join(plan_slugs()) or "(none)"
+        raise ValueError(
+            f"unknown plan {slug!r} — STAPEL_BILLING['PLANS'] configures: "
+            f"{configured}"
+        )
+
+    # What the provider is entitling this account to right now, which is
+    # both the thing an upgrade is measured against and the baseline for
+    # the credit difference.
+    entitling = subscription.status in _GRANTING_SUBSCRIPTION_STATUSES
+    baseline_slug = subscription.plan if entitling else default_plan
+    comp_rank = plan_rank(slug)
+    baseline_rank = plan_rank(baseline_slug)
+    is_upgrade = (
+        entitling
+        and comp_rank is not None
+        and (baseline_rank is None or comp_rank > baseline_rank)
+    )
 
     existing = latest_comp_period(subscription.id, now=now)
     if existing is not None and not stack:
@@ -3706,14 +3897,32 @@ def extend_subscription(
             f"it — comp time must never grow by accident."
         )
 
-    if existing is not None:
+    if starts == COMP_STARTS_NOW or (starts is None and is_upgrade):
+        # An upgrade is what somebody is waiting for. Even when it stacks,
+        # it opens now: the higher plan governs while both windows are
+        # open, and the lower one is still there underneath afterwards.
+        starts_at = now
+    elif existing is not None:
         starts_at = existing.ends_at
     else:
         # Start where the paid period ends, so the gift is not consumed by
         # service the customer has already paid for.
         period_end = subscription.current_period_end
         starts_at = period_end if period_end and period_end > now else now
-    ends_at = starts_at + timedelta(days=days)
+
+    if until is not None:
+        ends_at = until
+        if timezone.is_naive(ends_at):
+            ends_at = timezone.make_aware(ends_at)
+        if ends_at <= starts_at:
+            raise ValueError(
+                f"until={ends_at.isoformat()} is not after the window opens "
+                f"({starts_at.isoformat()}) — that is a window of nothing. "
+                f"For an already-lapsed period, name a later moment."
+            )
+        days = (ends_at - starts_at).days
+    else:
+        ends_at = starts_at + timedelta(days=days)
 
     preview = CompPeriodPreview(
         subscription_id=str(subscription.id),
@@ -3724,22 +3933,96 @@ def extend_subscription(
         reason=reason,
         granted_by=actor or "",
         stacked_on=str(existing.id) if existing is not None else None,
+        upgrade_from=baseline_slug if is_upgrade else None,
     )
+
+    if grant_bundle:
+        baseline_entry = get_plan(baseline_slug)
+        preview.bundle_baseline_plan = baseline_slug
+        preview.bundle_baseline_credits = (
+            baseline_entry.monthly_credits_included if baseline_entry else 0
+        )
+        preview.bundle_plan_credits = entry.monthly_credits_included
+        difference = preview.bundle_plan_credits - preview.bundle_baseline_credits
+        preview.bundle_credits = max(difference, 0)
+        preview.bundle_expires_at = ends_at
+        if subscription.user_id is None:
+            preview.bundle_credits = 0
+            preview.bundle_note = (
+                "the subscription's owner has been erased — there is no "
+                "wallet to grant into"
+            )
+        elif difference <= 0:
+            preview.bundle_note = (
+                f"{slug} bundles {preview.bundle_plan_credits} credit(s) and "
+                f"{baseline_slug} already bundles "
+                f"{preview.bundle_baseline_credits} — nothing to add"
+            )
+        elif _comp_bundle_is_live(subscription.user_id, now):
+            preview.bundle_credits = 0
+            preview.bundle_note = (
+                "a comp bundle granted earlier has not expired yet — not "
+                "granting a second one (credits do not stack by accident "
+                "any more than windows do)"
+            )
+
     if not apply:
         return preview
 
-    comp = CompPeriod.objects.create(
-        subscription=subscription,
-        plan=slug,
-        starts_at=starts_at,
-        ends_at=ends_at,
-        reason=reason,
-        granted_by=actor or "",
-    )
-    preview.applied = True
-    preview.comp_period_id = str(comp.id)
+    with db_transaction.atomic():
+        comp = CompPeriod.objects.create(
+            subscription=subscription,
+            plan=slug,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            reason=reason,
+            granted_by=actor or "",
+        )
+        preview.applied = True
+        preview.comp_period_id = str(comp.id)
+
+        if grant_bundle and preview.bundle_credits:
+            txn = credit(
+                user=subscription.user,
+                credits=preview.bundle_credits,
+                type=TransactionType.SUBSCRIPTION_BONUS,
+                source=LotSource.SUBSCRIPTION,
+                description=(
+                    f"Comp bundle: {slug} minus {baseline_slug} "
+                    f"({preview.bundle_credits} credits) — {reason}"
+                ),
+                expires_at=ends_at,
+                # Per comp period, so a retried command cannot grant twice
+                # for the same window; the live-lot guard above is what
+                # stops a DIFFERENT window granting on top of it.
+                idempotency_key=f"comp-bundle:{comp.id}",
+                metadata={
+                    # No money arrived for these credits. The flag is read
+                    # by real_money() — a revenue report that counts comped
+                    # credits as sales is a report that overstates the
+                    # month, and metadata is the only place a consumer of
+                    # the ledger can see it.
+                    "comped": True,
+                    "comp_period_id": str(comp.id),
+                    "comp_reason": reason,
+                    "comp_plan": slug,
+                    "comp_baseline_plan": baseline_slug,
+                },
+            )
+            preview.bundle_transaction_id = str(txn.id)
+
+        # Inside the atomic block (0.20.2): the fact and the row it
+        # describes commit together, so no consumer can be told about a
+        # comp that rolled back. Consumers cache entitlements, and this is
+        # what tells them to drop that cache — the plan on the payload is
+        # the EFFECTIVE one, which is the comp plan while the window is
+        # open and the provider's again once it closes.
+        if subscription.user_id is not None:
+            _announce_comp(subscription, comp, now=now)
+
     logger.info(
-        "comp period %s: subscription %s on %s from %s to %s (%s) granted by %s",
+        "comp period %s: subscription %s on %s from %s to %s (%s) granted by "
+        "%s%s",
         comp.id,
         subscription.id,
         slug,
@@ -3747,5 +4030,31 @@ def extend_subscription(
         ends_at,
         reason,
         actor or "unknown",
+        f", +{preview.bundle_credits} credits" if preview.bundle_credits else "",
     )
     return preview
+
+
+def _announce_comp(sub: Subscription, comp, now=None) -> None:
+    """Emit ``subscription.changed`` for a comp window that was just written.
+
+    The payload's ``plan`` is the effective plan, because that is the one
+    a consumer gates on; ``current_period_end`` stays the PROVIDER's, and
+    the window's own end travels as ``comped_until`` so a consumer can
+    tell "paid until" from "comped until" rather than inferring either.
+    """
+    emit(
+        "subscription.changed",
+        {
+            "user_id": str(sub.user_id),
+            "plan": effective_plan(sub.user_id, now=now),
+            "status": sub.status,
+            "current_period_end": sub.current_period_end.isoformat()
+            if sub.current_period_end
+            else None,
+            "cancel_at_period_end": bool(sub.cancel_at_period_end),
+            "comped_until": comp.ends_at.isoformat(),
+        },
+        key=str(sub.user_id),
+    )
+    subscription_changed.send(sender=Subscription, subscription=sub)

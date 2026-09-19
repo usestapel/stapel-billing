@@ -11,6 +11,18 @@ and the gift silently disappears days later.
     manage.py billing_extend_subscription --user <id> --days 60 --reason "outage"
     manage.py billing_extend_subscription --user <id> --days 60 --reason "outage" --apply
 
+Since 0.21.0 it also raises somebody's plan for a while without touching
+the provider — no plan change, no proration, no charge — and can hand over
+the credit difference that goes with it:
+
+    manage.py billing_extend_subscription --subscription <stripe id> \
+        --plan pro --until-period-end --grant-bundle --reason "<text>" --apply
+
+A comp on a plan that RANKS ABOVE the one being paid for opens immediately
+and governs until it closes, at which point the account falls back to the
+paid plan on its own. A comp on the same or a lower plan keeps its original
+meaning and opens when the paid period does close.
+
 Dry run is the default: the output is the same either way, and the run
 that writes should not be the run that tells you what it will write.
 """
@@ -18,6 +30,8 @@ that writes should not be the run that tells you what it will write.
 import getpass
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from ... import services
 from ...models import Subscription
@@ -43,8 +57,25 @@ class Command(BaseCommand):
             metavar="STRIPE_SUBSCRIPTION_ID",
             help="The account to extend, by provider subscription id.",
         )
-        parser.add_argument(
-            "--days", type=int, required=True, help="How many days of comp time."
+        length = parser.add_mutually_exclusive_group(required=True)
+        length.add_argument(
+            "--days", type=int, help="How many days of comp time."
+        )
+        length.add_argument(
+            "--until",
+            metavar="ISO_DATETIME",
+            help=(
+                "When the window closes, e.g. 2026-10-16T08:46:37Z. A date "
+                "with no time zone is read in the deployment's."
+            ),
+        )
+        length.add_argument(
+            "--until-period-end",
+            action="store_true",
+            help=(
+                "Close the window when the provider period does — 'until the "
+                "end of her current period', read off the subscription."
+            ),
         )
         parser.add_argument(
             "--reason",
@@ -60,6 +91,16 @@ class Command(BaseCommand):
             "--actor",
             default=None,
             help="Who is granting it. Default: the shell user.",
+        )
+        parser.add_argument(
+            "--grant-bundle",
+            action="store_true",
+            help=(
+                "Also grant the DIFFERENCE in bundled credits between the "
+                "comp plan and the plan being paid for, as a lot expiring "
+                "with the window. Flagged as comped in the ledger, and not "
+                "granted twice while an earlier comp bundle is still live."
+            ),
         )
         parser.add_argument(
             "--stack",
@@ -96,31 +137,91 @@ class Command(BaseCommand):
             )
         return sub
 
+    def _until(self, sub: Subscription, options):
+        """The window's end from --until / --until-period-end, or None."""
+        if options.get("until_period_end"):
+            period_end = sub.current_period_end
+            if period_end is None:
+                raise CommandError(
+                    "this subscription has no known provider period end, so "
+                    "--until-period-end has nothing to read. Name the moment "
+                    "with --until, or a length with --days."
+                )
+            if period_end <= timezone.now():
+                raise CommandError(
+                    f"the provider period ended at {period_end.isoformat()} — "
+                    f"'until period end' is already in the past. Use --days "
+                    f"(a lapsed subscriber's comp starts now) or --until."
+                )
+            return period_end
+        raw = options.get("until")
+        if not raw:
+            return None
+        moment = parse_datetime(raw)
+        if moment is None:
+            raise CommandError(
+                f"--until {raw!r} is not an ISO datetime "
+                f"(e.g. 2026-10-16T08:46:37Z)"
+            )
+        if timezone.is_naive(moment):
+            moment = timezone.make_aware(moment)
+        return moment
+
     def handle(self, *args, **options):
         sub = self._subscription(options)
         actor = options.get("actor") or getpass.getuser()
+        until = self._until(sub, options)
         try:
             preview = services.extend_subscription(
                 subscription=sub,
-                days=options["days"],
+                days=options.get("days"),
+                until=until,
                 reason=options["reason"],
                 actor=actor,
                 plan=options.get("plan"),
                 stack=bool(options.get("stack")),
+                grant_bundle=bool(options.get("grant_bundle")),
                 apply=bool(options.get("apply")),
             )
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
 
         verb = "granted" if preview.applied else "would grant"
-        self.stdout.write(
-            f"{verb} {preview.days} day(s) of {preview.plan} to subscription "
-            f"{preview.subscription_id}"
-        )
+        if until is not None:
+            self.stdout.write(
+                f"{verb} comp time on {preview.plan} to subscription "
+                f"{preview.subscription_id} until {preview.ends_at.isoformat()}"
+            )
+        else:
+            self.stdout.write(
+                f"{verb} {preview.days} day(s) of {preview.plan} to "
+                f"subscription {preview.subscription_id}"
+            )
         self.stdout.write(
             f"    window: {preview.starts_at.isoformat()} "
             f"-> {preview.ends_at.isoformat()}"
         )
+        if preview.upgrade_from:
+            self.stdout.write(
+                f"    upgrade: {preview.upgrade_from} -> {preview.plan}, "
+                f"effective immediately and until the window closes. The "
+                f"provider is not told: no plan change, no proration, no "
+                f"charge."
+            )
+        if options.get("grant_bundle"):
+            if preview.bundle_credits:
+                self.stdout.write(
+                    f"    credits: {preview.plan} "
+                    f"{preview.bundle_plan_credits} - "
+                    f"{preview.bundle_baseline_plan} "
+                    f"{preview.bundle_baseline_credits} = "
+                    f"+{preview.bundle_credits} credits, expires "
+                    f"{preview.bundle_expires_at.isoformat()}"
+                )
+            else:
+                self.stdout.write(
+                    f"    credits: none — {preview.bundle_note}"
+                )
         self.stdout.write(f"    reason: {preview.reason}")
         self.stdout.write(f"    by:     {preview.granted_by}")
         if preview.stacked_on:

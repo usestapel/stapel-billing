@@ -138,10 +138,49 @@ class TestCatalogLazyViews:
         assert catalog.CREDIT_PACKAGES[0].slug == "starter"
         assert "starter" in repr(catalog.CREDIT_PACKAGES)
 
-    def test_lazy_mapping_protocol(self):
-        assert len(catalog.PLANS_BY_SLUG) == 4
-        assert set(iter(catalog.PLANS_BY_SLUG)) == {"free", "pro", "team", "enterprise"}
-        assert "enterprise" in repr(catalog.PLANS_BY_SLUG)
+    def test_lazy_mapping_protocol(self, settings):
+        """The view re-reads the configuration, so it is pinned against one.
+
+        The suite's own catalogue is host-shaped (tests/plans.py), which is
+        the point: a count asserted against ``DEFAULT_PLANS`` would only
+        say the test settings had not changed.
+        """
+        settings.STAPEL_BILLING = {
+            **getattr(settings, "STAPEL_BILLING", {}),
+            "PLANS": catalog.DEFAULT_PLANS,
+        }
+        catalog_settings = __import__(
+            "stapel_billing.conf", fromlist=["billing_settings"]
+        ).billing_settings
+        catalog_settings.reload()
+        try:
+            assert len(catalog.PLANS_BY_SLUG) == 4
+            assert set(iter(catalog.PLANS_BY_SLUG)) == {
+                "free",
+                "pro",
+                "team",
+                "enterprise",
+            }
+            assert "enterprise" in repr(catalog.PLANS_BY_SLUG)
+        finally:
+            catalog_settings.reload()
+
+    def test_the_suites_catalogue_carries_a_slug_the_enum_does_not(self):
+        """The guard on the gap that hid the 0.21.0 defect.
+
+        Every plan in the shipped ladder is also a ``Plan`` enum member, so
+        a suite that runs on ``DEFAULT_PLANS`` alone cannot fail a check
+        spelled ``slug in Plan.values`` — and did not, while the comp
+        command was refusing every customer of a real host.
+        """
+        from stapel_billing.models import Plan
+
+        configured = set(iter(catalog.PLANS_BY_SLUG))
+        assert configured - set(Plan.values), (
+            "the test settings configure only plans the library's own enum "
+            "knows — add a host-defined slug (tests/plans.py) or this suite "
+            "cannot see an enum-shaped gate"
+        )
 
 
 def test_error_keys_view_exposes_billing_errors():

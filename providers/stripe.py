@@ -17,7 +17,7 @@ import json
 import logging
 from typing import Optional, Tuple
 
-from ..catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
+from ..catalog import CREDIT_PACKAGES_BY_SLUG, get_plan
 from .base import PaymentProvider, ProviderNotConfiguredError
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,12 @@ class StripeProvider(PaymentProvider):
             )
             return session["url"], session["id"]
 
-        plan_entry = PLANS_BY_SLUG[plan]
+        plan_entry = get_plan(plan)
+        if plan_entry is None:
+            # Same loud failure the mapping lookup gave: the serializer has
+            # already rejected an unknown plan, so reaching here is a caller
+            # that skipped it, not a customer typo.
+            raise KeyError(plan)
         if not stripe:
             self._refuse_unless_dev_placeholders_allowed("a plan checkout")
             return self._placeholder_checkout("plan", plan_entry.slug)

@@ -26,6 +26,8 @@ from django.db import models
 
 from stapel_core.access import access
 
+from .catalog import plan_choices
+
 
 # =====================================================================
 # Provider-owned strings
@@ -76,6 +78,14 @@ class ProviderStringField(models.CharField):
 
 
 class Plan(models.TextChoices):
+    """The ladder this library SHIPS — never the test of what a plan is.
+
+    A host sells its own plans through ``STAPEL_BILLING["PLANS"]`` and its
+    slugs are absent from here by design, so membership is asked of
+    ``catalog.get_plan()``; these members remain because deployments store
+    them and code reads them by name.
+    """
+
     FREE = "free", "Free"
     PRO = "pro", "Pro"
     TEAM = "team", "Team"
@@ -636,7 +646,12 @@ class Subscription(models.Model):
             "for a live subscription."
         ),
     )
-    plan = models.CharField(max_length=16, choices=Plan.choices, default=Plan.FREE)
+    #: ``choices`` is the CONFIGURED catalogue, not the shipped enum: a
+    #: host's own slug is stored here today (the ORM never checks choices
+    #: on save) and a form that offered only the enum would refuse to edit
+    #: the row it is showing. The default stays the shipped free plan —
+    #: boot check E102 makes a host that has no such plan say so.
+    plan = models.CharField(max_length=16, choices=plan_choices, default=Plan.FREE)
     status = models.CharField(
         max_length=32,
         choices=SubscriptionStatus.choices,
@@ -723,7 +738,8 @@ class Subscription(models.Model):
         Stripe id alone admits a row whose plan was moved back to free.
         Neither is something to offer a cancel button for.
         """
-        return bool(self.plan != Plan.FREE and self.stripe_subscription_id)
+        default_plan = self._meta.get_field("plan").get_default()
+        return bool(self.plan != default_plan and self.stripe_subscription_id)
 
     @property
     def is_active(self) -> bool:
@@ -931,7 +947,11 @@ class CompPeriod(models.Model):
     )
     plan = models.CharField(
         max_length=16,
-        choices=Plan.choices,
+        # Same column shape as Subscription.plan, deliberately: the slug
+        # written here is copied from that row (or named on the command
+        # line), so a comp window must be able to hold every plan a
+        # subscription can — the host's catalogue, not the shipped enum.
+        choices=plan_choices,
         help_text=(
             "The plan the comp window entitles to. Stored rather than read "
             "from the subscription: the comp is usually granted BECAUSE the "

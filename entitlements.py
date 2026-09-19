@@ -158,52 +158,32 @@ CAPTURE_SCHEMA = _load_schema(CAPTURE)
 RELEASE_SCHEMA = _load_schema(RELEASE)
 CAN_AFFORD_SCHEMA = _load_schema(CAN_AFFORD)
 
-def _granting_statuses() -> tuple:
-    """Subscription statuses under which the subscribed plan's entitlements
-    apply. Mirrors the credit-granting lifecycle: ``past_due`` is Stripe's
-    dunning grace window (the subscription is still alive), while
-    ``cancelled`` / ``incomplete`` fall back to the default plan."""
-    from .models import SubscriptionStatus
-
-    return (
-        SubscriptionStatus.ACTIVE,
-        SubscriptionStatus.TRIALING,
-        SubscriptionStatus.PAST_DUE,
-    )
+#: Which subscription statuses entitle at all is ONE fact, and it lives in
+#: ``services._GRANTING_SUBSCRIPTION_STATUSES`` (``past_due`` is Stripe's
+#: dunning grace window — still alive; ``cancelled`` / ``incomplete`` fall
+#: back to the default plan). This module used to keep its own copy of the
+#: tuple; two copies of a lifecycle rule is one copy too many.
 
 
 def _effective_plan_entry(user_id: str):
     """Resolve the user's effective PlanCatalogEntry, or None.
 
-    Absence of a subscription is treated exactly like the existing HTTP
-    surface does (``SubscriptionView`` creates the row with model
-    defaults): the default plan is ``Subscription.plan``'s field default.
-    """
-    from .catalog import PLANS_BY_SLUG
-    from .models import Subscription
-    from .services import comp_plan_for_user
+    One question, one answer: ``services.effective_plan`` decides which of
+    the provider's subscription and an open comp window governs (since
+    0.21.0, the higher-ranked of the two — an operator can put somebody on
+    a better plan for a while without touching the provider). Absence of a
+    subscription is treated exactly like the existing HTTP surface does
+    (``SubscriptionView`` creates the row with model defaults): the
+    default plan is ``Subscription.plan``'s field default.
 
-    sub = (
-        Subscription.objects.filter(user_id=user_id)
-        .only("id", "plan", "status")
-        .first()
-    )
-    default = Subscription._meta.get_field("plan").get_default()
-    provider_slug = (
-        sub.plan if sub is not None and sub.status in _granting_statuses() else None
-    )
-    if provider_slug and provider_slug != default:
-        # A live, paid provider subscription governs. Comp time never
-        # overrides what somebody is actually paying for.
-        slug = provider_slug
-    else:
-        # The provider is not entitling this account to anything beyond the
-        # default plan. An open comp period is the operator's sanctioned way
-        # to keep it on a plan anyway (services.extend_subscription) — a
-        # separate row, so the next subscription webhook cannot quietly
-        # erase it the way editing `current_period_end` could.
-        slug = comp_plan_for_user(user_id) or provider_slug or default
-    return PLANS_BY_SLUG.get(slug)
+    The HOST's catalogue then answers, for a comped slug exactly as for a
+    paid one: comp time on a plan this deployment defines entitles to that
+    plan's limits, and nothing here knows about the shipped enum.
+    """
+    from .catalog import get_plan
+    from .services import effective_plan
+
+    return get_plan(effective_plan(user_id))
 
 
 def declared_keys() -> frozenset[str]:

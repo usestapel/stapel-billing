@@ -80,7 +80,17 @@ PYTHON ?= python3
 # subscription was reset to `incomplete` and a paying customer was shown the
 # paywall. Every intent was cut to one or two sentences first; the ceiling
 # moved by 450, less than the entries cost.
-LLMS_BUDGET ?= 7150
+# Raised again in 0.21.0, by six entries that are one capability: which plan a
+# deployment is actually on. `get_plan`/`plan_slugs`/`plan_rank`/`plan_choices`
+# answer plan membership and plan ORDER from the host's configured catalogue —
+# the enum an agent reaches for instead (`Plan.values`) describes the ladder
+# this library ships and refuses every customer of a host that sells its own —
+# and `effective_plan`/`governing_comp_period` answer which plan governs when a
+# paid subscription and an operator's comp window are both live. An agent that
+# cannot see these writes the gate that shipped in 0.20.0 and could not comp a
+# single real customer. Intents were trimmed twice first; the ceiling moved by
+# 550, close to what the entries cost.
+LLMS_BUDGET ?= 7700
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

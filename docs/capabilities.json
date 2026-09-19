@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.20.2",
+  "version": "0.21.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -62,6 +62,16 @@
       ]
     },
     {
+      "name": "get_plan",
+      "kind": "predicate",
+      "path": "stapel_billing.catalog.get_plan",
+      "intent": "THE answer to \"is this a plan?\" — the configured catalogue entry for a slug, or None. Never the models.Plan enum: that is the ladder this library ships, while a host sells its own through STAPEL_BILLING['PLANS'], so a gate spelled `slug in Plan.values` refuses that deployment's real customers.",
+      "instead_of": [
+        "stapel_billing.models.Plan.values",
+        "stapel_billing.models.Plan.choices"
+      ]
+    },
+    {
       "name": "get_plans",
       "kind": "factory",
       "path": "stapel_billing.catalog.get_plans",
@@ -70,6 +80,27 @@
         "django.conf.settings.STAPEL_BILLING[\"PLANS\"]",
         "stapel_billing.catalog.DEFAULT_PLANS"
       ]
+    },
+    {
+      "name": "plan_choices",
+      "kind": "factory",
+      "path": "stapel_billing.catalog.plan_choices",
+      "intent": "Model-field `choices` over the configured catalogue, as a callable, so a form validates against the deployment's plans. Use it on any host column storing a plan slug; an enum-backed list makes the admin refuse to save the row it is displaying.",
+      "instead_of": [
+        "stapel_billing.models.Plan.choices"
+      ]
+    },
+    {
+      "name": "plan_rank",
+      "kind": "predicate",
+      "path": "stapel_billing.catalog.plan_rank",
+      "intent": "Where a plan sits on the deployment's ladder — its POSITION in STAPEL_BILLING['PLANS'], lowest first — or None when unconfigured. The one ordering of plans: price and bundled credits each rank somebody's ladder upside down (an invoiced enterprise plan is priced 0)."
+    },
+    {
+      "name": "plan_slugs",
+      "kind": "predicate",
+      "path": "stapel_billing.catalog.plan_slugs",
+      "intent": "Every configured plan slug, in ladder order — for the message a refusal owes its operator: \"unknown plan 'startr' — configured: free, starter, pro\" is a typo somebody can fix."
     },
     {
       "name": "is_internal",
@@ -228,6 +259,15 @@
       ]
     },
     {
+      "name": "effective_plan",
+      "kind": "predicate",
+      "path": "stapel_billing.services.effective_plan",
+      "intent": "The plan that governs a user right now: the higher-ranked of the provider's subscription and an open comp window (0.21.0). Subscription.plan only mirrors what is being paid for, so a product gating on it shows the paywall to somebody just given access.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.plan"
+      ]
+    },
+    {
       "name": "extend_subscription",
       "kind": "factory",
       "path": "stapel_billing.services.extend_subscription",
@@ -253,6 +293,15 @@
       "instead_of": [
         "stapel_billing.providers.stripe.StripeProvider",
         "stripe.api_key"
+      ]
+    },
+    {
+      "name": "governing_comp_period",
+      "kind": "predicate",
+      "path": "stapel_billing.services.governing_comp_period",
+      "intent": "Of the comp windows open right now, the one entitling to the most (highest-ranked plan, longest end as tie-break). Windows overlap since upgrade comps start immediately, and picking by end date alone hands back the cheaper plan.",
+      "instead_of": [
+        "stapel_billing.models.CompPeriod.objects.filter"
       ]
     },
     {

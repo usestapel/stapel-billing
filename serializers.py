@@ -3,7 +3,7 @@
 from stapel_core.django.api.errors import StapelValidationError
 from stapel_core.django.api.serializers import StapelDataclassSerializer
 
-from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
+from .catalog import CREDIT_PACKAGES_BY_SLUG, get_plan
 from .dto import (
     CatalogResponse,
     CheckoutRequest,
@@ -114,7 +114,7 @@ class CheckoutRequestSerializer(StapelDataclassSerializer):
             raise StapelValidationError(ERR_400_INVALID_PACKAGE)
         if package and package not in CREDIT_PACKAGES_BY_SLUG:
             raise StapelValidationError(ERR_400_INVALID_PACKAGE)
-        if plan and plan not in PLANS_BY_SLUG:
+        if plan and get_plan(plan) is None:
             raise StapelValidationError(ERR_400_INVALID_PLAN)
         return data
 

@@ -417,6 +417,45 @@
       "kind": "gate_function",
       "intent": "Read and clear the stale mark after a handler ran — the value that becomes StripeWebhookEvent.ignored_stale.",
       "instead_of": []
+    },
+    "get_plan": {
+      "kind": "predicate",
+      "intent": "THE answer to \"is this a plan?\" — the configured catalogue entry for a slug, or None. Never the models.Plan enum: that is the ladder this library ships, while a host sells its own through STAPEL_BILLING['PLANS'], so a gate spelled `slug in Plan.values` refuses that deployment's real customers.",
+      "instead_of": [
+        "stapel_billing.models.Plan.values",
+        "stapel_billing.models.Plan.choices"
+      ]
+    },
+    "plan_slugs": {
+      "kind": "predicate",
+      "intent": "Every configured plan slug, in ladder order — for the message a refusal owes its operator: \"unknown plan 'startr' — configured: free, starter, pro\" is a typo somebody can fix.",
+      "instead_of": []
+    },
+    "plan_rank": {
+      "kind": "predicate",
+      "intent": "Where a plan sits on the deployment's ladder — its POSITION in STAPEL_BILLING['PLANS'], lowest first — or None when unconfigured. The one ordering of plans: price and bundled credits each rank somebody's ladder upside down (an invoiced enterprise plan is priced 0).",
+      "instead_of": []
+    },
+    "plan_choices": {
+      "kind": "factory",
+      "intent": "Model-field `choices` over the configured catalogue, as a callable, so a form validates against the deployment's plans. Use it on any host column storing a plan slug; an enum-backed list makes the admin refuse to save the row it is displaying.",
+      "instead_of": [
+        "stapel_billing.models.Plan.choices"
+      ]
+    },
+    "effective_plan": {
+      "kind": "predicate",
+      "intent": "The plan that governs a user right now: the higher-ranked of the provider's subscription and an open comp window (0.21.0). Subscription.plan only mirrors what is being paid for, so a product gating on it shows the paywall to somebody just given access.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.plan"
+      ]
+    },
+    "governing_comp_period": {
+      "kind": "predicate",
+      "intent": "Of the comp windows open right now, the one entitling to the most (highest-ranked plan, longest end as tie-break). Windows overlap since upgrade comps start immediately, and picking by end date alone hands back the cheaper plan.",
+      "instead_of": [
+        "stapel_billing.models.CompPeriod.objects.filter"
+      ]
     }
   }
 }

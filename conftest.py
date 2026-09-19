@@ -16,6 +16,18 @@ def pytest_configure(config):
         from stapel_core.comm.schemas import autoload_schemas
         autoload_schemas()
 
+        # The catalogue the suite runs on is HOST-shaped: the shipped plans
+        # plus one slug the Plan enum does not have (see tests/plans.py).
+        # It is set here and not in _codegen_settings.py on purpose — the
+        # contract harness shares that module, and what this library emits
+        # must keep describing the library, not a test host's ladder.
+        from stapel_billing.tests.plans import host_style_plans
+
+        settings.STAPEL_BILLING = {
+            **getattr(settings, "STAPEL_BILLING", {}),
+            "PLANS": host_style_plans(),
+        }
+
 
 import pytest  # noqa: E402
 

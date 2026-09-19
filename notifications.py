@@ -163,10 +163,10 @@ def item_label(*, package: str | None = None, plan: str | None = None) -> str:
     naming it by slug is worse copy but true. Falls back to a generic label
     only when the fact names neither, which is the top-up case.
     """
-    from .catalog import CREDIT_PACKAGES_BY_SLUG, PLANS_BY_SLUG
+    from .catalog import CREDIT_PACKAGES_BY_SLUG, get_plan
 
     if plan:
-        entry = PLANS_BY_SLUG.get(plan)
+        entry = get_plan(plan)
         return getattr(entry, "name", None) or str(plan)
     if package:
         entry = CREDIT_PACKAGES_BY_SLUG.get(package)

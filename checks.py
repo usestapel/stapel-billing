@@ -59,14 +59,14 @@ def check_default_plan_slug(app_configs, **kwargs):
     entitlement answer for it is now a deny, which is safe but denies
     *everyone*. This check makes that a deploy-time refusal instead.
     """
-    from .catalog import PLANS_BY_SLUG
+    from .catalog import get_plan
     from .conf import allow_unknown_plan_slugs
     from .models import Subscription
 
     if allow_unknown_plan_slugs():
         return []
     slug = Subscription._meta.get_field("plan").get_default()
-    if slug in PLANS_BY_SLUG:
+    if get_plan(slug) is not None:
         return []
     return [checks.Error(
         f"The default subscription plan {slug!r} is not in "
@@ -228,7 +228,7 @@ def check_plan_bundle_grants_are_scheduled(app_configs, **kwargs):
     """
     from django.conf import settings
 
-    from .catalog import PLANS_BY_SLUG
+    from .catalog import get_plan
     from .models import Subscription
     from .tasks import GRANT_PLAN_BUNDLES_TASK_NAME
 
@@ -239,7 +239,7 @@ def check_plan_bundle_grants_are_scheduled(app_configs, **kwargs):
     if GRANT_PLAN_BUNDLES_TASK_NAME in scheduled:
         return []
     slug = Subscription._meta.get_field("plan").get_default()
-    entry = PLANS_BY_SLUG.get(slug)
+    entry = get_plan(slug)
     if entry is None or entry.monthly_credits_included <= 0:
         return []
     return [checks.Warning(

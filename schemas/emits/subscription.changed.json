@@ -28,6 +28,15 @@
       "format": "date-time",
       "description": "End of the current billing period (renewal/expiry moment), populated from the provider subscription object. null means not yet known (e.g. the checkout.session.completed milestone, before the customer.subscription.created event lands) \u2014 never a fabricated zero timestamp."
     },
+    "comped_until": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "When an operator-granted comp window closes, on the event that granted it (stapel_billing.services.extend_subscription). Absent on every provider-driven change. While the window is open `plan` is the comped plan, which can rank ABOVE the plan the provider is charging for; `current_period_end` stays the provider's own, so a consumer can tell 'paid until' from 'comped until' instead of inferring one from the other.",
+      "default": null
+    },
     "cancel_at_period_end": {
       "type": "boolean",
       "description": "True when the subscriber has cancelled and the subscription runs to the end of the paid period without renewing. Not inferable from `status`, which stays 'active' for the whole remaining period \u2014 a consumer reading only `status` cannot tell a live subscription from one that is ending, which is how paying customers reached a cancellation date nobody had told them about. Always emitted."
