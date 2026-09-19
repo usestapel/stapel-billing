@@ -20,6 +20,8 @@ config, not a second copy of it").
 """
 from __future__ import annotations
 
+from stapel_core.testing import test_database
+
 
 def settings_kwargs(
     *,
@@ -99,12 +101,13 @@ def settings_kwargs(
         SECRET_KEY="test-secret-key-not-for-production",
         INSTALLED_APPS=installed_apps,
         AUTH_USER_MODEL="users.User",
-        DATABASES={
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": ":memory:",
-            }
-        },
+        # SQLite in memory, or the server STAPEL_TEST_DATABASE_URL names.
+        # SQLite does not enforce varchar length — it stored an
+        # 18-character provider status in a varchar(16) column happily,
+        # while Postgres refused the INSERT and the webhook answered 500.
+        # The column-width regression therefore has to be able to run
+        # against a real server; it marks itself to skip without one.
+        DATABASES={"default": test_database()},
         DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
         USE_TZ=True,
         ROOT_URLCONF=root_urlconf,

@@ -30,6 +30,8 @@ from stapel_billing.models import (
 )
 from stapel_billing.providers.base import PaymentProvider
 
+from .stripe_ids import sid
+
 WEBHOOK_URL = "/billing/api/webhooks/stripe"
 
 #: 2100-01-01T00:00:00Z — far enough out to be a real future deadline.
@@ -39,7 +41,7 @@ PAST = 1577836800
 
 
 def _basil_subscription(
-    sub_id="sub_1",
+    sub_id=sid("sub", "1"),
     *,
     status="active",
     period_start=PAST,
@@ -56,14 +58,14 @@ def _basil_subscription(
     return {
         "id": sub_id,
         "object": "subscription",
-        "customer": "cus_1",
+        "customer": sid("cus", "1"),
         "status": status,
         "cancel_at_period_end": False,
         "items": {
             "object": "list",
             "data": [
                 {
-                    "id": "si_1",
+                    "id": sid("si", "1"),
                     "object": "subscription_item",
                     "current_period_start": period_start,
                     "current_period_end": period_end,
@@ -74,11 +76,11 @@ def _basil_subscription(
     }
 
 
-def _legacy_subscription(sub_id="sub_1", *, period_end=FUTURE, **extra):
+def _legacy_subscription(sub_id=sid("sub", "1"), *, period_end=FUTURE, **extra):
     """The pre-basil shape: period at the top level, no items."""
     return {
         "id": sub_id,
-        "customer": "cus_1",
+        "customer": sid("cus", "1"),
         "status": "active",
         "current_period_start": PAST,
         "current_period_end": period_end,
@@ -102,7 +104,7 @@ class RecordingProvider(PaymentProvider):
     cancelled: list = []
 
     def create_checkout_session(self, *, user, package, plan, success_url, cancel_url):
-        return ("https://rec.test/checkout", "cs_rec_1")
+        return ("https://rec.test/checkout", sid("cs", "rec_1"))
 
     def create_portal_session(self, *, customer_id, return_url):
         return "https://rec.test/portal"
@@ -166,11 +168,11 @@ class TestPeriodSource:
 
     def test_a_period_on_the_item_reaches_the_row(self, api_client, user):
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         assert _post(
             api_client,
-            _event("evt_1", "customer.subscription.updated", _basil_subscription()),
+            _event(sid("evt", "1"), "customer.subscription.updated", _basil_subscription()),
         ).status_code == 200
 
         sub.refresh_from_db()
@@ -184,11 +186,11 @@ class TestPeriodSource:
     def test_the_pre_basil_shape_still_works(self, api_client, user):
         """One library, deployments pinned either side of the move."""
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         assert _post(
             api_client,
-            _event("evt_2", "customer.subscription.updated", _legacy_subscription()),
+            _event(sid("evt", "2"), "customer.subscription.updated", _legacy_subscription()),
         ).status_code == 200
 
         sub.refresh_from_db()
@@ -201,18 +203,18 @@ class TestPeriodSource:
         while the subscription is still running.
         """
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         obj = _basil_subscription()
         obj["items"]["data"].append(
             {
-                "id": "si_2",
+                "id": sid("si", "2"),
                 "current_period_start": PAST,
                 "current_period_end": FUTURE + 86400 * 30,
             }
         )
         assert _post(
-            api_client, _event("evt_3", "customer.subscription.updated", obj)
+            api_client, _event(sid("evt", "3"), "customer.subscription.updated", obj)
         ).status_code == 200
 
         sub.refresh_from_db()
@@ -222,7 +224,7 @@ class TestPeriodSource:
         """The stash is the same reader, and had the same blind spot."""
         assert _post(
             api_client,
-            _event("evt_4", "customer.subscription.created", _basil_subscription()),
+            _event(sid("evt", "4"), "customer.subscription.created", _basil_subscription()),
         ).status_code == 200
 
         assert Subscription.objects.count() == 0
@@ -243,11 +245,11 @@ class TestCancellationMirroring:
         subscription without it.
         """
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         obj = _basil_subscription(cancel_at_period_end=True, canceled_at=PAST)
         assert _post(
-            api_client, _event("evt_5", "customer.subscription.updated", obj)
+            api_client, _event(sid("evt", "5"), "customer.subscription.updated", obj)
         ).status_code == 200
 
         sub.refresh_from_db()
@@ -264,7 +266,7 @@ class TestCancellationMirroring:
         sub = Subscription.objects.create(
             user=user,
             plan="pro",
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             cancel_at_period_end=True,
         )
         sub.cancelled_at = sub.created_at
@@ -272,7 +274,7 @@ class TestCancellationMirroring:
 
         assert _post(
             api_client,
-            _event("evt_6", "customer.subscription.updated", _basil_subscription()),
+            _event(sid("evt", "6"), "customer.subscription.updated", _basil_subscription()),
         ).status_code == 200
 
         sub.refresh_from_db()
@@ -283,12 +285,12 @@ class TestCancellationMirroring:
         sub = Subscription.objects.create(
             user=user,
             plan="pro",
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             cancel_at_period_end=True,
         )
         obj = _basil_subscription(status="canceled", canceled_at=PAST)
         assert _post(
-            api_client, _event("evt_7", "customer.subscription.deleted", obj)
+            api_client, _event(sid("evt", "7"), "customer.subscription.deleted", obj)
         ).status_code == 200
 
         sub.refresh_from_db()
@@ -319,7 +321,7 @@ class TestStatusMirroring:
     ):
         """Unmapped used to mean "keep active and say nothing"."""
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         assert _post(
             api_client,
@@ -337,13 +339,13 @@ class TestStatusMirroring:
         self, api_client, user, caplog
     ):
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         with caplog.at_level("WARNING"):
             assert _post(
                 api_client,
                 _event(
-                    "evt_unknown",
+                    sid("evt", "unknown"),
                     "customer.subscription.updated",
                     _basil_subscription(status="quantum_superposed"),
                 ),
@@ -372,7 +374,7 @@ class TestPaidAndActive:
 
     def test_a_provider_id_on_a_free_plan_is_not_paid(self, user):
         sub = Subscription.objects.create(
-            user=user, plan="free", stripe_subscription_id="sub_old"
+            user=user, plan="free", stripe_subscription_id=sid("sub", "old")
         )
         assert sub.is_paid is False
 
@@ -383,7 +385,7 @@ class TestPaidAndActive:
         sub = Subscription.objects.create(
             user=user,
             plan="pro",
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             current_period_end=timezone.now() + timedelta(days=5),
         )
         assert sub.is_paid is True
@@ -398,7 +400,7 @@ class TestPaidAndActive:
             user=user,
             plan="pro",
             status=SubscriptionStatus.ACTIVE,
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             current_period_end=timezone.now() - timedelta(days=1),
         )
         assert sub.is_paid is True
@@ -406,7 +408,7 @@ class TestPaidAndActive:
 
     def test_no_period_is_trusted_on_status_alone(self, user):
         sub = Subscription.objects.create(
-            user=user, plan="pro", stripe_subscription_id="sub_1"
+            user=user, plan="pro", stripe_subscription_id=sid("sub", "1")
         )
         assert sub.is_active is True
 
@@ -425,7 +427,7 @@ class TestPaidAndActive:
     )
     def test_only_entitling_statuses_are_active(self, user, status, active):
         sub = Subscription.objects.create(
-            user=user, plan="pro", status=status, stripe_subscription_id="sub_1"
+            user=user, plan="pro", status=status, stripe_subscription_id=sid("sub", "1")
         )
         assert sub.is_active is active
 
@@ -458,7 +460,7 @@ class TestSubscriptionPayload:
         Subscription.objects.create(
             user=user,
             plan="pro",
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             current_period_end=ends,
             cancel_at_period_end=True,
             cancelled_at=timezone.now(),
@@ -502,12 +504,12 @@ class TestCancelRefusal:
         sub = Subscription.objects.create(
             user=user,
             plan="pro",
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             current_period_end=timezone.now() + timedelta(days=9),
         )
         resp = authed_client.post("/billing/api/subscription/cancel")
         assert resp.status_code == 200
-        assert RecordingProvider.cancelled == ["sub_1"]
+        assert RecordingProvider.cancelled == [sid("sub", "1")]
 
         body = resp.json()
         assert body["cancel_at_period_end"] is True
@@ -532,7 +534,7 @@ class TestReconcileSubscriptions:
             user=user,
             plan="starter",
             status=SubscriptionStatus.ACTIVE,
-            stripe_subscription_id="sub_1",
+            stripe_subscription_id=sid("sub", "1"),
             current_period_start=None,
             current_period_end=None,
             **kwargs,
@@ -543,7 +545,7 @@ class TestReconcileSubscriptions:
 
         sub = self._drifted(user)
         RecordingProvider.subscriptions = {
-            "sub_1": _basil_subscription(cancel_at_period_end=True, canceled_at=PAST)
+            sid("sub", "1"): _basil_subscription(cancel_at_period_end=True, canceled_at=PAST)
         }
 
         results = services.reconcile_subscriptions(dry_run=True)
@@ -568,7 +570,7 @@ class TestReconcileSubscriptions:
 
         sub = self._drifted(user)
         RecordingProvider.subscriptions = {
-            "sub_1": _basil_subscription(cancel_at_period_end=True, canceled_at=PAST)
+            sid("sub", "1"): _basil_subscription(cancel_at_period_end=True, canceled_at=PAST)
         }
 
         (result,) = services.reconcile_subscriptions()
@@ -585,7 +587,7 @@ class TestReconcileSubscriptions:
         from stapel_billing import services
 
         self._drifted(user)
-        RecordingProvider.subscriptions = {"sub_1": _basil_subscription()}
+        RecordingProvider.subscriptions = {sid("sub", "1"): _basil_subscription()}
 
         first = services.reconcile_subscriptions()
         assert first[0].changed
@@ -610,7 +612,7 @@ class TestReconcileSubscriptions:
         lot = CreditLot.objects.get(granting_transaction=txn)
         assert lot.expires_at is None
 
-        RecordingProvider.subscriptions = {"sub_1": _basil_subscription()}
+        RecordingProvider.subscriptions = {sid("sub", "1"): _basil_subscription()}
         services.reconcile_subscriptions()
 
         lot.refresh_from_db()
@@ -629,7 +631,7 @@ class TestReconcileSubscriptions:
         from stapel_billing import services
 
         sub = self._drifted(user)
-        RecordingProvider.subscriptions = {"sub_1": None}
+        RecordingProvider.subscriptions = {sid("sub", "1"): None}
 
         (result,) = services.reconcile_subscriptions()
         assert result.missing is True
@@ -646,17 +648,17 @@ class TestReconcileSubscriptions:
             username="second", email="second@example.com", password="x"
         )
         Subscription.objects.create(
-            user=other, plan="starter", stripe_subscription_id="sub_2"
+            user=other, plan="starter", stripe_subscription_id=sid("sub", "2")
         )
         RecordingProvider.subscriptions = {
-            "sub_1": RuntimeError("stripe is down"),
-            "sub_2": _basil_subscription("sub_2"),
+            sid("sub", "1"): RuntimeError("stripe is down"),
+            sid("sub", "2"): _basil_subscription(sid("sub", "2")),
         }
 
         results = services.reconcile_subscriptions()
         by_id = {r.stripe_subscription_id: r for r in results}
-        assert "stripe is down" in by_id["sub_1"].error
-        assert by_id["sub_2"].applied is True
+        assert "stripe is down" in by_id[sid("sub", "1")].error
+        assert by_id[sid("sub", "2")].applied is True
 
     def test_it_can_be_narrowed_to_named_subscriptions(self, user, django_user_model):
         from stapel_billing import services
@@ -666,12 +668,12 @@ class TestReconcileSubscriptions:
             username="third", email="third@example.com", password="x"
         )
         Subscription.objects.create(
-            user=other, plan="starter", stripe_subscription_id="sub_2"
+            user=other, plan="starter", stripe_subscription_id=sid("sub", "2")
         )
-        RecordingProvider.subscriptions = {"sub_2": _basil_subscription("sub_2")}
+        RecordingProvider.subscriptions = {sid("sub", "2"): _basil_subscription(sid("sub", "2"))}
 
-        results = services.reconcile_subscriptions(stripe_subscription_ids=["sub_2"])
-        assert [r.stripe_subscription_id for r in results] == ["sub_2"]
+        results = services.reconcile_subscriptions(stripe_subscription_ids=[sid("sub", "2")])
+        assert [r.stripe_subscription_id for r in results] == [sid("sub", "2")]
 
     def test_a_provider_that_cannot_re_read_says_so_per_row(self, user, settings):
         """The default is NotImplementedError, not a false all-clear."""
@@ -694,15 +696,15 @@ class TestReconcileCommand:
         from django.core.management import call_command
 
         sub = Subscription.objects.create(
-            user=user, plan="starter", stripe_subscription_id="sub_1"
+            user=user, plan="starter", stripe_subscription_id=sid("sub", "1")
         )
-        RecordingProvider.subscriptions = {"sub_1": _basil_subscription()}
+        RecordingProvider.subscriptions = {sid("sub", "1"): _basil_subscription()}
 
         out = StringIO()
         call_command("billing_reconcile_subscriptions", "--dry-run", stdout=out)
         printed = out.getvalue()
 
-        assert "sub_1" in printed
+        assert sid("sub", "1") in printed
         assert "current_period_end: NULL -> " in printed
         assert "dry run — nothing was written" in printed
         sub.refresh_from_db()
@@ -713,9 +715,9 @@ class TestReconcileCommand:
         from django.core.management import call_command
 
         sub = Subscription.objects.create(
-            user=user, plan="starter", stripe_subscription_id="sub_1"
+            user=user, plan="starter", stripe_subscription_id=sid("sub", "1")
         )
-        RecordingProvider.subscriptions = {"sub_1": _basil_subscription()}
+        RecordingProvider.subscriptions = {sid("sub", "1"): _basil_subscription()}
 
         call_command("billing_reconcile_subscriptions", stdout=StringIO())
         sub.refresh_from_db()
@@ -732,9 +734,9 @@ class TestReconcileCommand:
         from django.core.management import call_command
 
         Subscription.objects.create(
-            user=user, plan="starter", stripe_subscription_id="sub_1"
+            user=user, plan="starter", stripe_subscription_id=sid("sub", "1")
         )
-        RecordingProvider.subscriptions = {"sub_1": RuntimeError("stripe is down")}
+        RecordingProvider.subscriptions = {sid("sub", "1"): RuntimeError("stripe is down")}
 
         with pytest.raises(SystemExit):
             call_command(

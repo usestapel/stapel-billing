@@ -369,6 +369,54 @@
     "real_money": {
       "kind": "gate_function",
       "intent": "Narrow a Transaction queryset to rows where money actually arrived. Use it rather than writing the filter: `exclude(metadata__simulated=True)` also drops rows whose metadata lacks the key — every purchase before 0.18.0 — so the obvious query under-reports revenue silently."
+    },
+    "extend_subscription": {
+      "kind": "factory",
+      "intent": "Give a customer subscription time on the house: a CompPeriod row the entitlement surface honours once the provider's period stops entitling, carrying who/when/why. Dry run unless apply=True. Use it instead of editing Subscription.current_period_end, which mirrors Stripe and is overwritten by the next webhook.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.current_period_end"
+      ]
+    },
+    "live_comp_period": {
+      "kind": "predicate",
+      "intent": "The comp window open for a subscription right now, or None — why an account is entitled to a plan the provider is not paying for.",
+      "instead_of": [
+        "stapel_billing.models.CompPeriod.objects.filter"
+      ]
+    },
+    "latest_comp_period": {
+      "kind": "predicate",
+      "intent": "The comp window running longest into the future, or None: what a second grant would stack on. Read it before offering comp time, so 'a month on us' twice is a decision, not an accident.",
+      "instead_of": [
+        "stapel_billing.models.CompPeriod.objects.filter"
+      ]
+    },
+    "comp_plan_for_user": {
+      "kind": "predicate",
+      "intent": "The plan an open comp window entitles a user to, or None. Call it if you resolve plans yourself, or comp time a support agent promised buys the customer nothing.",
+      "instead_of": []
+    },
+    "provider_event_time": {
+      "kind": "predicate",
+      "intent": "The provider's own clock for a webhook event (its `created`). Order lifecycle writes by this, never by arrival: Stripe does not promise delivery order.",
+      "instead_of": [
+        "django.utils.timezone.now"
+      ]
+    },
+    "note_stale_event": {
+      "kind": "gate_function",
+      "intent": "Say, from a webhook handler, that this payload was older than the state already applied and was deliberately not applied; the view records it as processed-and-ignored.",
+      "instead_of": []
+    },
+    "begin_event": {
+      "kind": "gate_function",
+      "intent": "Clear the stale mark before a handler runs. The webhook view calls it; so must anything else that drives handlers (a replay, a backfill).",
+      "instead_of": []
+    },
+    "consume_stale_event": {
+      "kind": "gate_function",
+      "intent": "Read and clear the stale mark after a handler ran — the value that becomes StripeWebhookEvent.ignored_stale.",
+      "instead_of": []
     }
   }
 }

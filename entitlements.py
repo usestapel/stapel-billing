@@ -181,16 +181,28 @@ def _effective_plan_entry(user_id: str):
     """
     from .catalog import PLANS_BY_SLUG
     from .models import Subscription
+    from .services import comp_plan_for_user
 
     sub = (
         Subscription.objects.filter(user_id=user_id)
-        .only("plan", "status")
+        .only("id", "plan", "status")
         .first()
     )
-    if sub is not None and sub.status in _granting_statuses():
-        slug = sub.plan
+    default = Subscription._meta.get_field("plan").get_default()
+    provider_slug = (
+        sub.plan if sub is not None and sub.status in _granting_statuses() else None
+    )
+    if provider_slug and provider_slug != default:
+        # A live, paid provider subscription governs. Comp time never
+        # overrides what somebody is actually paying for.
+        slug = provider_slug
     else:
-        slug = Subscription._meta.get_field("plan").get_default()
+        # The provider is not entitling this account to anything beyond the
+        # default plan. An open comp period is the operator's sanctioned way
+        # to keep it on a plan anyway (services.extend_subscription) — a
+        # separate row, so the next subscription webhook cannot quietly
+        # erase it the way editing `current_period_end` could.
+        slug = comp_plan_for_user(user_id) or provider_slug or default
     return PLANS_BY_SLUG.get(slug)
 
 

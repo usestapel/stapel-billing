@@ -24,6 +24,7 @@ credentials are read lazily at call time — nothing is frozen at import.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from uuid import uuid4
 from dataclasses import dataclass
@@ -2344,15 +2345,35 @@ def handle_checkout_completed(event: dict) -> None:
             scope=ProviderGrant.SCOPE_CHECKOUT_SESSION, external_id=session_id
         ):
             return
-        sub, _ = Subscription.objects.update_or_create(
-            user=user,
-            defaults={
-                "plan": plan_slug,
-                "status": SubscriptionStatus.ACTIVE,
-                "stripe_customer_id": obj.get("customer"),
-                "stripe_subscription_id": obj.get("subscription"),
-            },
-        )
+        defaults = {
+            "plan": plan_slug,
+            "status": SubscriptionStatus.ACTIVE,
+            "stripe_customer_id": obj.get("customer"),
+            "stripe_subscription_id": obj.get("subscription"),
+        }
+        existing = Subscription.objects.filter(user=user).first()
+        when = provider_event_time(event)
+        if existing is not None and _is_stale_lifecycle_event(existing, event, "active"):
+            # The checkout is older than a lifecycle event already applied —
+            # the subscription has moved on (cancelled, past_due) since this
+            # session completed. Grant the credits it paid for, but do not
+            # resurrect the status it had at the time.
+            note_stale_event()
+            logger.warning(
+                "checkout session %s is older (%s) than the provider state "
+                "already applied to subscription %s (%s) — granting the "
+                "purchase, leaving status %r alone",
+                session_id,
+                when,
+                existing.id,
+                existing.last_provider_event_at,
+                existing.status,
+            )
+            defaults.pop("status")
+        elif when is not None:
+            previous = existing.last_provider_event_at if existing else None
+            defaults["last_provider_event_at"] = max(when, previous or when)
+        sub, _ = Subscription.objects.update_or_create(user=user, defaults=defaults)
         # Stripe does not promise event order: the subscription event that
         # carries the billing period can land BEFORE this checkout. When it
         # did, its period is parked under the subscription id — claim it
@@ -2618,6 +2639,126 @@ def _map_stripe_status(raw, current=None):
     return current
 
 
+# ─── Provider-time ordering ─────────────────────────────────
+#
+# Stripe does not promise delivery order, and on a client host it did not
+# deliver one: `customer.subscription.created` (status `incomplete`,
+# created at T) arrived AFTER `customer.subscription.updated` (status
+# `active`, created at T+2). Both types share this module's
+# `handle_subscription_updated`, which wrote whatever the payload said in
+# DELIVERY order — so the older `incomplete` landed on top of `active`,
+# the plan stopped entitling (entitlements._granting_statuses), and a
+# paying customer was shown the paywall. Two of six provider-backed
+# subscriptions on that host were stuck that way, with every webhook
+# received, processed and green.
+#
+# The rule since 0.20.0: lifecycle state is applied in PROVIDER time, not
+# delivery time. An event older than the newest one already applied is
+# acknowledged, recorded as processed-and-ignored, logged, and dropped.
+
+#: How far along the provider's lifecycle each status sits. Used ONLY to
+#: break a tie between two events carrying the SAME ``created`` second —
+#: Stripe stamps whole seconds and a subscription object carries no
+#: version of its own, so two payloads can be genuinely indistinguishable
+#: in time. When that happens the more advanced status wins, because the
+#: lifecycle only ever runs in this direction: a subscription becomes
+#: active out of `incomplete`, never the other way round.
+LIFECYCLE_RANK = {
+    SubscriptionStatus.INCOMPLETE: 0,
+    SubscriptionStatus.INCOMPLETE_EXPIRED: 1,
+    SubscriptionStatus.TRIALING: 2,
+    SubscriptionStatus.ACTIVE: 3,
+    SubscriptionStatus.PAST_DUE: 4,
+    SubscriptionStatus.UNPAID: 5,
+    SubscriptionStatus.PAUSED: 6,
+    SubscriptionStatus.CANCELLED: 7,
+}
+
+#: Set by a handler that dropped a stale payload; read (and cleared) by
+#: the webhook view, which owns the event log row. A ContextVar rather
+#: than a return value because the handler signature is a published seam
+#: (STRIPE_WEBHOOK_HANDLERS): a host's own handler can call
+#: :func:`note_stale_event` and get the same bookkeeping.
+_stale_event = contextvars.ContextVar("stapel_billing_stale_event", default=False)
+
+
+def note_stale_event() -> None:
+    """Record that the event being handled was older than the local state."""
+    _stale_event.set(True)
+
+
+def begin_event() -> None:
+    """Clear the stale mark before a handler runs (the view calls this)."""
+    _stale_event.set(False)
+
+
+def consume_stale_event() -> bool:
+    """True if the handler dropped the event as stale. Clears the mark."""
+    value = _stale_event.get()
+    _stale_event.set(False)
+    return value
+
+
+def provider_event_time(event: dict) -> Optional[datetime]:
+    """The provider's own clock for this event (``created``), or None."""
+    return _epoch_to_datetime(event.get("created"))
+
+
+def _is_stale_lifecycle_event(
+    sub: Subscription, event: dict, incoming_status=None
+) -> bool:
+    """Would applying *event* to *sub* move its lifecycle BACKWARDS in time?
+
+    ``None`` on either side means "not comparable, accept": a row that has
+    never had a provider time applied (every row before 0.20.0) accepts the
+    next event and starts tracking from it, and an event without a
+    ``created`` is a payload we cannot order, which is not a reason to drop
+    a customer's activation.
+    """
+    when = provider_event_time(event)
+    last = sub.last_provider_event_at
+    if when is None or last is None:
+        return False
+    if when > last:
+        return False
+    if when < last:
+        return True
+    # Same second. The more advanced lifecycle status wins; an equal one is
+    # applied (re-applying the same state is a no-op, not a regression).
+    incoming = _map_stripe_status(incoming_status, None)
+    if incoming is None:
+        return False
+    return LIFECYCLE_RANK.get(incoming, -1) < LIFECYCLE_RANK.get(sub.status, -1)
+
+
+def _drop_stale(sub: Subscription, event: dict, obj: dict) -> bool:
+    """Guard every lifecycle write. True means the caller must do nothing."""
+    if not _is_stale_lifecycle_event(sub, event, obj.get("status")):
+        return False
+    note_stale_event()
+    logger.warning(
+        "ignoring %s for subscription %s: the provider stamped it %s, older "
+        "than the %s already applied to this row (status stays %r). Stripe "
+        "does not promise delivery order.",
+        event.get("type"),
+        obj.get("id"),
+        provider_event_time(event),
+        sub.last_provider_event_at,
+        sub.status,
+    )
+    return True
+
+
+def _advance_provider_clock(sub: Subscription, when: Optional[datetime]) -> list[str]:
+    """Move the row's provider clock forward (never backwards)."""
+    if when is None:
+        return []
+    if sub.last_provider_event_at is not None and when <= sub.last_provider_event_at:
+        return []
+    sub.last_provider_event_at = when
+    return ["last_provider_event_at"]
+
+
 def _resolve_local_subscription(obj: dict) -> Optional[Subscription]:
     """Find the local row a Stripe subscription object belongs to.
 
@@ -2665,7 +2806,9 @@ def _resolve_local_subscription(obj: dict) -> Optional[Subscription]:
     return None
 
 
-def _stash_subscription_period(obj: dict) -> Optional[PendingSubscriptionPeriod]:
+def _stash_subscription_period(
+    obj: dict, event: Optional[dict] = None
+) -> Optional[PendingSubscriptionPeriod]:
     """Park a period whose local subscription has not been created yet.
 
     The alternative — what this module did until 0.11.0 — is to return
@@ -2677,10 +2820,34 @@ def _stash_subscription_period(obj: dict) -> Optional[PendingSubscriptionPeriod]
     sub_id = obj.get("id")
     if not sub_id:
         return None
+    when = provider_event_time(event or {})
+    existing = PendingSubscriptionPeriod.objects.filter(
+        stripe_subscription_id=str(sub_id)
+    ).first()
+    if (
+        existing is not None
+        and when is not None
+        and existing.provider_event_at is not None
+        and when < existing.provider_event_at
+    ):
+        # Out-of-order delivery reaches the stash too: the checkout has not
+        # landed, two subscription events are already parked-and-replaced,
+        # and the older one must not be the last word.
+        note_stale_event()
+        logger.warning(
+            "not parking %s for subscription %s: a newer provider event "
+            "(%s) is already parked",
+            (event or {}).get("type"),
+            sub_id,
+            existing.provider_event_at,
+        )
+        return existing
     defaults = {
         "stripe_customer_id": str(obj.get("customer") or ""),
         "status": str(obj.get("status") or ""),
     }
+    if when is not None:
+        defaults["provider_event_at"] = when
     start, end = _stripe_period(obj)
     if start is not None:
         defaults["current_period_start"] = start
@@ -2723,10 +2890,21 @@ def _apply_pending_period(sub: Subscription) -> bool:
     ):
         sub.current_period_end = pending.current_period_end
         changed.append("current_period_end")
+    # The parked status is applied only if the event it came from is newer
+    # than what the row has already seen — a period parked before the
+    # checkout is normally the newest thing there is, but a reconcile (or a
+    # later event) can have moved the row on in the meantime.
+    stale_status = (
+        pending.provider_event_at is not None
+        and sub.last_provider_event_at is not None
+        and pending.provider_event_at < sub.last_provider_event_at
+    )
     mapped = _map_stripe_status(pending.status, sub.status)
-    if mapped is not None and mapped != sub.status:
+    if not stale_status and mapped is not None and mapped != sub.status:
         sub.status = mapped
         changed.append("status")
+    if not stale_status:
+        changed.extend(_advance_provider_clock(sub, pending.provider_event_at))
     if changed:
         sub.save(update_fields=[*changed, "updated_at"])
         _stamp_subscription_period(sub)
@@ -2747,7 +2925,13 @@ def handle_subscription_updated(event: dict) -> None:
         # Not "nothing to do": this payload carries the billing period, and
         # it is the only one that does. Park it for the checkout that has
         # not landed yet (see _stash_subscription_period).
-        _stash_subscription_period(obj)
+        _stash_subscription_period(obj, event)
+        return
+    # `customer.subscription.created` and `.updated` share this handler, so
+    # an out-of-order delivery is not a hypothetical: it is how a live
+    # `active` was overwritten by an older `incomplete` and a paying
+    # customer lost the plan.
+    if _drop_stale(sub, event, obj):
         return
     sub.status = _map_stripe_status(obj.get("status"), sub.status)
     fields = [
@@ -2755,6 +2939,7 @@ def handle_subscription_updated(event: dict) -> None:
         "updated_at",
         *_apply_stripe_period(sub, obj),
         *_apply_stripe_cancellation(sub, obj),
+        *_advance_provider_clock(sub, provider_event_time(event)),
     ]
     sub.save(update_fields=fields)
     _stamp_subscription_period(sub)
@@ -2765,7 +2950,12 @@ def handle_subscription_deleted(event: dict) -> None:
     obj = event["data"]["object"]
     sub = _resolve_local_subscription(obj)
     if not sub:
-        _stash_subscription_period(obj)
+        _stash_subscription_period(obj, event)
+        return
+    # A deletion is a lifecycle write like any other: a `.deleted` stamped
+    # BEFORE the `.updated` this row already applied is a replay of an old
+    # truth, not news.
+    if _drop_stale(sub, event, {**obj, "status": "canceled"}):
         return
     from django.utils import timezone
 
@@ -2782,6 +2972,7 @@ def handle_subscription_deleted(event: dict) -> None:
         "cancel_at_period_end",
         "updated_at",
         *_apply_stripe_period(sub, obj),
+        *_advance_provider_clock(sub, provider_event_time(event)),
     ]
     sub.save(update_fields=fields)
     # The cancellation is the last event that carries a period, so it is the
@@ -2921,13 +3112,26 @@ def reconcile_subscriptions(
             for field in RECONCILED_FIELDS
             if field in touched and result.after[field] != before[field]
         )
+        if not dry_run:
+            # The provider was just asked directly, so the row is current as
+            # of NOW in provider time. Stamping that is what stops a stale
+            # event — one created before this read and delivered after it —
+            # from undoing the repair the moment it lands.
+            clock = _advance_provider_clock(sub, timezone.now())
+        else:
+            clock = []
         if result.changed and not dry_run:
-            sub.save(update_fields=[*result.changed, "updated_at"])
+            sub.save(update_fields=[*result.changed, *clock, "updated_at"])
             # A period that was NULL until now is a bundle nothing could
             # expire. Stamping is the whole point of repairing the dates.
             _stamp_subscription_period(sub)
             _announce_subscription(sub)
             result.applied = True
+        elif clock:
+            # Nothing drifted, but the read still happened: record that this
+            # row was confirmed against the provider at this moment, or a
+            # stale event delivered a second later would be free to move it.
+            sub.save(update_fields=[*clock, "updated_at"])
         results.append(result)
     return results
 
@@ -3323,3 +3527,199 @@ def handle_charge_failed(event: dict) -> None:
             decline_reason=_decline_reason(obj),
         ),
     )
+
+
+# ─── Comp periods (subscription time given, not sold) ───────
+#
+# "Put them back on Pro for a month, on us" used to be done by editing
+# `Subscription.current_period_end`, which is a MIRROR of the provider's
+# period: the next subscription webhook re-reads it from Stripe and the
+# comp disappears without a trace. A comp period is its own row instead,
+# it names who gave it and why, and nothing the provider says can erase
+# it. No Stripe write happens here at all — this is local entitlement.
+
+
+@dataclass
+class CompPeriodPreview:
+    """What :func:`extend_subscription` did, or would do under a dry run.
+
+    Attributes:
+        subscription_id: The local row the comp belongs to.
+        plan: The plan the window entitles to.
+        starts_at / ends_at: The window.
+        days: Its length as asked for.
+        reason / granted_by: The audit half.
+        applied: False under a dry run (the default).
+        stacked_on: The live comp period this one was appended to, if any.
+        comp_period_id: The row written, when it was written.
+    """
+
+    subscription_id: str
+    plan: str
+    starts_at: datetime
+    ends_at: datetime
+    days: int
+    reason: str
+    granted_by: str = ""
+    applied: bool = False
+    stacked_on: Optional[str] = None
+    comp_period_id: Optional[str] = None
+
+
+def live_comp_period(subscription_id, now=None):
+    """The open comp window for a subscription row, or None."""
+    from .models import CompPeriod
+
+    now = now or timezone.now()
+    return (
+        CompPeriod.objects.filter(
+            subscription_id=subscription_id,
+            revoked_at=None,
+            starts_at__lte=now,
+            ends_at__gt=now,
+        )
+        .order_by("-ends_at")
+        .first()
+    )
+
+
+def latest_comp_period(subscription_id, now=None):
+    """The comp window that runs longest into the future, open or pending."""
+    from .models import CompPeriod
+
+    now = now or timezone.now()
+    return (
+        CompPeriod.objects.filter(
+            subscription_id=subscription_id, revoked_at=None, ends_at__gt=now
+        )
+        .order_by("-ends_at")
+        .first()
+    )
+
+
+def comp_plan_for_user(user_id, now=None) -> Optional[str]:
+    """The plan a live comp window entitles this user to, or None.
+
+    Read by :mod:`stapel_billing.entitlements`. Deliberately keyed on the
+    user rather than the subscription, because that is the question the
+    entitlement surface asks.
+    """
+    sub = Subscription.objects.filter(user_id=user_id).only("id").first()
+    if sub is None:
+        return None
+    comp = live_comp_period(sub.id, now=now)
+    return comp.plan if comp is not None else None
+
+
+def extend_subscription(
+    *,
+    subscription: Subscription,
+    days: int,
+    reason: str,
+    actor: str = "",
+    plan: Optional[str] = None,
+    stack: bool = False,
+    apply: bool = False,
+    now=None,
+) -> CompPeriodPreview:
+    """Give this subscription *days* of comp time. Dry run unless ``apply``.
+
+    The window opens when the paid-for one closes (or immediately, if the
+    provider period has already lapsed or was never known), so comp days
+    are added to the customer's service rather than spent underneath a
+    period they already paid for.
+
+    Refuses to stack silently: if a comp window is already open or
+    pending, ``stack=True`` is required, and the new window then starts
+    where that one ends — two people each granting "a month" without
+    knowing about the other is exactly how an account ends up comped
+    forever.
+
+    Args:
+        subscription: The local row to extend.
+        days: How many days of comp time. Must be positive.
+        reason: Why. Required — this is the audit.
+        actor: Who granted it (admin username, or the shell user).
+        plan: The plan to entitle to. Defaults to the subscription's own
+            plan, which must not be the default one.
+        stack: Append to an existing window instead of refusing.
+        apply: Write. The default computes and writes nothing.
+        now: Test seam.
+
+    Raises:
+        ValueError: on a non-positive length, an empty reason, a plan that
+            resolves to the default one, or an unrequested stack.
+    """
+    from .models import CompPeriod, Plan
+
+    now = now or timezone.now()
+    days = int(days)
+    if days <= 0:
+        raise ValueError("days must be positive — a comp period of nothing is not a grant")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("a reason is required: an unexplained comp is the row an audit stops on")
+
+    slug = plan or subscription.plan
+    default_plan = Subscription._meta.get_field("plan").get_default()
+    if slug == default_plan:
+        raise ValueError(
+            f"this subscription is on the default plan ({default_plan!r}), so "
+            f"comping it would entitle to nothing new — name the plan "
+            f"explicitly (plan=...) if that is what you mean"
+        )
+    if slug not in Plan.values:
+        raise ValueError(f"unknown plan {slug!r}")
+
+    existing = latest_comp_period(subscription.id, now=now)
+    if existing is not None and not stack:
+        raise ValueError(
+            f"subscription {subscription.id} already has comp time until "
+            f"{existing.ends_at.isoformat()} ({existing.reason!r}, granted by "
+            f"{existing.granted_by or 'unknown'}). Pass stack=True to add to "
+            f"it — comp time must never grow by accident."
+        )
+
+    if existing is not None:
+        starts_at = existing.ends_at
+    else:
+        # Start where the paid period ends, so the gift is not consumed by
+        # service the customer has already paid for.
+        period_end = subscription.current_period_end
+        starts_at = period_end if period_end and period_end > now else now
+    ends_at = starts_at + timedelta(days=days)
+
+    preview = CompPeriodPreview(
+        subscription_id=str(subscription.id),
+        plan=slug,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        days=days,
+        reason=reason,
+        granted_by=actor or "",
+        stacked_on=str(existing.id) if existing is not None else None,
+    )
+    if not apply:
+        return preview
+
+    comp = CompPeriod.objects.create(
+        subscription=subscription,
+        plan=slug,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        reason=reason,
+        granted_by=actor or "",
+    )
+    preview.applied = True
+    preview.comp_period_id = str(comp.id)
+    logger.info(
+        "comp period %s: subscription %s on %s from %s to %s (%s) granted by %s",
+        comp.id,
+        subscription.id,
+        slug,
+        starts_at,
+        ends_at,
+        reason,
+        actor or "unknown",
+    )
+    return preview

@@ -8,6 +8,7 @@ from django.utils import timezone
 from stapel_core.django.admin.base import StapelModelAdmin
 
 from .models import (
+    CompPeriod,
     CreditDebt,
     CreditHold,
     CreditLot,
@@ -336,11 +337,151 @@ class CreditDebtAdmin(admin.ModelAdmin):
     ]
 
 
+class ExtendSubscriptionActionForm(ActionForm):
+    """Days, why, and whether this is meant to add to comp time already given.
+
+    Same shape as the grant-credits form above and for the same reason: the
+    reason is what makes the act auditable, so it sits in the action bar
+    rather than in somebody's memory.
+    """
+
+    extend_days = forms.IntegerField(
+        required=False, min_value=1, label="Comp days"
+    )
+    extend_reason = forms.CharField(
+        required=False, max_length=255, label="Reason (recorded on the comp period)"
+    )
+    extend_stack = forms.BooleanField(
+        required=False,
+        label="Add to comp time this account already has",
+    )
+
+
 @admin.register(Subscription)
 class SubscriptionAdmin(admin.ModelAdmin):
-    list_display = ["user", "plan", "status", "current_period_end", "cancelled_at"]
+    list_display = [
+        "user",
+        "plan",
+        "status",
+        "current_period_end",
+        "cancelled_at",
+        "last_provider_event_at",
+    ]
     list_filter = ["plan", "status"]
     search_fields = ["user__email", "stripe_subscription_id", "stripe_customer_id"]
+    action_form = ExtendSubscriptionActionForm
+    actions = ["extend_subscription"]
+
+    def has_extend_subscription_permission(self, request):
+        """Backs ``permissions=["extend_subscription"]`` on the action below.
+
+        Literal codename, matching ``Subscription.Meta.permissions`` — the
+        derived ``extend_subscription_subscription`` would be a permission
+        nothing grants, and the gate would then refuse everybody.
+        """
+        return request.user.has_perm(f"{self.opts.app_label}.extend_subscription")
+
+    @admin.action(
+        description="Give comp subscription time (writes a comp period)",
+        permissions=["extend_subscription"],
+    )
+    def extend_subscription(self, request, queryset):
+        """Comp time through ``services.extend_subscription`` — one code path.
+
+        The same function the ``billing_extend_subscription`` command calls,
+        so a window granted from a browser and one granted from a terminal
+        are the same row with the same rules: the plan comes from the
+        subscription, the window starts when the paid period ends, and
+        stacking on comp time that already exists has to be asked for.
+
+        No Stripe write happens. Nothing here edits
+        ``current_period_end`` — the column the provider overwrites.
+        """
+        from . import services
+
+        days = request.POST.get("extend_days")
+        reason = (request.POST.get("extend_reason") or "").strip()
+        stack = bool(request.POST.get("extend_stack"))
+        if not days:
+            self.message_user(
+                request,
+                "Enter the number of comp days in the action bar.",
+                level=messages.ERROR,
+            )
+            return
+        if not reason:
+            self.message_user(
+                request,
+                "A reason is required — an unexplained comp is the row an "
+                "audit stops on.",
+                level=messages.ERROR,
+            )
+            return
+        actor = request.user.get_username()
+        granted = 0
+        for sub in queryset:
+            try:
+                preview = services.extend_subscription(
+                    subscription=sub,
+                    days=int(days),
+                    reason=reason,
+                    actor=actor,
+                    stack=stack,
+                    apply=True,
+                )
+            except ValueError as exc:
+                self.message_user(
+                    request, f"Subscription {sub.id}: {exc}", level=messages.ERROR
+                )
+                continue
+            granted += 1
+            self.log_change(
+                request,
+                sub,
+                f"Comp period {preview.comp_period_id}: {preview.days} day(s) "
+                f"of {preview.plan} until {preview.ends_at.isoformat()} "
+                f"({reason}).",
+            )
+            self.message_user(
+                request,
+                f"Subscription {sub.id}: {preview.plan} until "
+                f"{preview.ends_at.isoformat()} (comp period "
+                f"{preview.comp_period_id}).",
+                level=messages.INFO,
+            )
+        if granted:
+            self.message_user(
+                request,
+                f"Comp time given on {granted} subscription(s).",
+                level=messages.SUCCESS,
+            )
+
+
+@admin.register(CompPeriod)
+class CompPeriodAdmin(StapelModelAdmin):
+    """Read-mostly: the window is written by the action/command, not by hand."""
+
+    list_display = [
+        "subscription",
+        "plan",
+        "starts_at",
+        "ends_at",
+        "reason",
+        "granted_by",
+        "revoked_at",
+    ]
+    list_filter = ["plan"]
+    search_fields = ["subscription__user__email", "reason", "granted_by"]
+    readonly_fields = [
+        "id",
+        "subscription",
+        "plan",
+        "starts_at",
+        "ends_at",
+        "reason",
+        "granted_by",
+        "created_at",
+    ]
 
 
 @admin.register(StripeWebhookEvent)

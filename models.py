@@ -28,6 +28,49 @@ from stapel_core.access import access
 
 
 # =====================================================================
+# Provider-owned strings
+# =====================================================================
+
+#: Width of every column whose CONTENT the payment provider chooses.
+#:
+#: Stripe documents object ids as opaque strings of up to 255 characters
+#: and reserves the right to grow them; the same is true of the status
+#: and event-type strings it sends. A column narrower than that is a
+#: decision this library is not entitled to make, and the cost of getting
+#: it wrong is not a truncated string — Postgres refuses the INSERT, the
+#: webhook answers 500, and the subscription behind it never activates.
+PROVIDER_STRING_MAX_LENGTH = 255
+
+
+class ProviderStringField(models.CharField):
+    """A column holding a string the payment provider chose, never we.
+
+    Ids (``sub_``/``cus_``/``in_``/``cs_``/``evt_``…), the raw status
+    word, the event type: values we echo, do not generate, and cannot
+    bound. They are all 255 by construction, so "how wide should this
+    one be?" stops being a per-field judgement call — which is exactly
+    the judgement call this class was added to retire, after a
+    ``varchar(16)`` copy of a local enum's width was handed the
+    provider's raw status and killed a paying customer's activation.
+
+    ``tests/test_provider_string_widths.py`` fails on any new field that
+    looks like a provider string and is not one of these.
+
+    Deconstructs as a plain ``CharField`` on purpose: migrations stay
+    readable and portable, and nothing in a host's migration history has
+    to import this class.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("max_length", PROVIDER_STRING_MAX_LENGTH)
+        super().__init__(*args, **kwargs)
+
+    def deconstruct(self):
+        name, _path, args, kwargs = super().deconstruct()
+        return name, "django.db.models.CharField", args, kwargs
+
+
+# =====================================================================
 # Enums
 # =====================================================================
 
@@ -603,8 +646,22 @@ class Subscription(models.Model):
             "'incomplete_expired' is 18 — the old 16 could not hold it."
         ),
     )
-    stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
-    stripe_customer_id = models.CharField(max_length=255, null=True, blank=True)
+    stripe_subscription_id = ProviderStringField(null=True, blank=True)
+    stripe_customer_id = ProviderStringField(null=True, blank=True)
+    last_provider_event_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Provider-clock time of the newest lifecycle event already "
+            "applied to this row (the event's `created`, or the moment a "
+            "reconcile re-read the provider). Stripe does not promise "
+            "delivery order: without this, a `customer.subscription.created` "
+            "carrying `incomplete` that arrives AFTER an `.updated` carrying "
+            "`active` overwrites the live plan with the older word, and the "
+            "paying subscriber is shown the paywall. NULL means 'nothing "
+            "applied yet — accept the next event'."
+        ),
+    )
     current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
     cancel_at_period_end = models.BooleanField(
@@ -649,6 +706,10 @@ class Subscription(models.Model):
                 name="billing_subscription_unique_stripe_subscription",
             ),
         ]
+        # The gate is WHO, never a setting: comp time is service given away,
+        # so it is its own permission rather than a side effect of being
+        # able to open the changelist (same canon as Wallet.grant_credits).
+        permissions = [("extend_subscription", "Can give comp subscription time")]
 
     def __str__(self):
         return f"{self.user_id}: {self.plan} ({self.status})"
@@ -730,7 +791,7 @@ class ProviderGrant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     provider = models.CharField(max_length=32, default="stripe")
     scope = models.CharField(max_length=32)
-    external_id = models.CharField(max_length=255)
+    external_id = ProviderStringField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -764,16 +825,35 @@ class PendingSubscriptionPeriod(models.Model):
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    stripe_subscription_id = models.CharField(max_length=255, unique=True)
-    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
-    status = models.CharField(
-        max_length=16,
+    stripe_subscription_id = ProviderStringField(unique=True)
+    stripe_customer_id = ProviderStringField(blank=True, default="")
+    #: The provider's RAW status word — not our mapped enum, which is why
+    #: it is a provider string and not a 16/32-wide local column. It was
+    #: born as a copy of Subscription.status's then-16, and when 0.13.0
+    #: widened THAT field to hold 'incomplete_expired' (18 chars) this
+    #: copy was left behind: on Postgres the stash INSERT then failed with
+    #: StringDataRightTruncation, the webhook answered 500, and the
+    #: subscription whose period it was carrying never activated. 0.19.1.
+    status = ProviderStringField(
         blank=True,
         default="",
-        help_text="Provider-side status string, applied when the row lands.",
+        help_text=(
+            "Provider-side status string, applied when the row lands. "
+            "Stored raw and full-width: the provider picks this word."
+        ),
     )
     current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
+    provider_event_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Provider-clock time of the event this stash was written from. "
+            "A stash is overwritten only by a NEWER event, and applied only "
+            "if it is newer than what the subscription already carries — "
+            "out-of-order delivery must not park a stale period either."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -790,13 +870,106 @@ class StripeWebhookEvent(models.Model):
     """Idempotency log for incoming Stripe webhooks."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    stripe_event_id = models.CharField(max_length=255, unique=True)
-    event_type = models.CharField(max_length=64)
+    stripe_event_id = ProviderStringField(unique=True)
+    #: Also the provider's own string. 64 has never truncated a Stripe
+    #: event type, but "has not yet" is not a width — the provider adds
+    #: event types without asking, and this column is on the path every
+    #: webhook takes.
+    event_type = ProviderStringField()
     payload = models.JSONField()
     processed_at = models.DateTimeField(null=True, blank=True)
+    ignored_stale = models.BooleanField(
+        default=False,
+        help_text=(
+            "The event was accepted and acknowledged, but its lifecycle "
+            "payload was OLDER than what had already been applied, so it "
+            "was not applied. Processed and ignored is a third outcome: "
+            "without it, 'processed_at is set' would claim the row reflects "
+            "this event when it deliberately does not."
+        ),
+    )
     error = models.TextField(null=True, blank=True)
     received_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "billing_stripe_webhook_event"
         indexes = [models.Index(fields=["event_type", "-received_at"])]
+
+
+@access.ops
+class CompPeriod(models.Model):
+    """Subscription time the operator gave away, not the provider sold.
+
+    "Put this customer back on Pro for a month, on us" had no sanctioned
+    shape before 0.20.0. What people reached for was
+    ``current_period_end``, which is a MIRROR of the provider's period:
+    the next subscription webhook re-reads it from Stripe and the comp
+    quietly disappears, usually days later, usually noticed by the
+    customer first.
+
+    A comp period is its own row, so nothing the provider says can erase
+    it, and it is honoured by ``entitlements`` only while the subscription
+    itself is not entitling — the paid plan governs whenever there is one,
+    and comp time is what carries the account after the provider period
+    lapses.
+
+    Written by ``services.extend_subscription`` (the management command
+    ``billing_extend_subscription`` and the admin action are both callers
+    of that one function), never by hand: the row records WHO granted it,
+    WHEN and WHY, and those three are the reason it is allowed to exist.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    #: CASCADE on purpose: a comp period is an attribute of the local
+    #: subscription row, and carries no personal data of its own — the
+    #: subject's name lives on Subscription/Wallet, which erasure handles.
+    subscription = models.ForeignKey(
+        Subscription,
+        on_delete=models.CASCADE,
+        related_name="comp_periods",
+        help_text="The local subscription this comp time belongs to.",
+    )
+    plan = models.CharField(
+        max_length=16,
+        choices=Plan.choices,
+        help_text=(
+            "The plan the comp window entitles to. Stored rather than read "
+            "from the subscription: the comp is usually granted BECAUSE the "
+            "subscription stopped saying 'pro', and a window that resolved "
+            "its plan at read time would hand back the free one."
+        ),
+    )
+    starts_at = models.DateTimeField(help_text="When the comp window opens.")
+    ends_at = models.DateTimeField(help_text="When the comp window closes.")
+    reason = models.CharField(
+        max_length=255,
+        help_text="Why this was given. Required — an unexplained comp is the row an audit stops on.",
+    )
+    granted_by = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="The operator who granted it (admin username, or the shell user for a command run).",
+    )
+    revoked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set to withdraw the window without deleting the record of it.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "billing_comp_period"
+        indexes = [models.Index(fields=["subscription", "-ends_at"])]
+
+    def __str__(self):
+        return f"CompPeriod({self.subscription_id}: {self.plan} until {self.ends_at})"
+
+    def is_live(self, now=None) -> bool:
+        """Is this window open right now?"""
+        from django.utils import timezone
+
+        now = now or timezone.now()
+        return (
+            self.revoked_at is None and self.starts_at <= now < self.ends_at
+        )

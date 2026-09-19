@@ -83,6 +83,47 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # The column-width gate (the idiom is stapel-core's / stapel-auth's).
+  # SQLite does not enforce varchar length: it stored an 18-character
+  # provider status in a varchar(16) column happily, while Postgres refused
+  # the INSERT, the webhook answered 500 and a paying customer's
+  # subscription never activated. The whole suite was green throughout.
+  # This job is where that class of defect is actually reproducible.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: stapel
+          POSTGRES_DB: billing_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[all]" || pip install -e .
+      - name: Install test dependencies
+        run: pip install pytest pytest-django "psycopg[binary]"
+      - name: Provider column widths against Postgres
+        env:
+          STAPEL_TEST_DATABASE_URL: postgres://postgres:stapel@127.0.0.1:5432/billing_test
+        # The tests assert the variable was honoured (connection.vendor),
+        # so this job cannot go green by quietly running on SQLite.
+        run: python -m pytest tests/test_truncation_postgres.py -q -v
+      - name: The lifecycle suites against Postgres
+        env:
+          STAPEL_TEST_DATABASE_URL: postgres://postgres:stapel@127.0.0.1:5432/billing_test
+        run: |
+          python -m pytest tests/test_webhooks.py tests/test_provider_event_order.py \
+            tests/test_subscription_state.py tests/test_comp_periods.py -q
+
   core-main:
     # Advisory / early-warning job — installs stapel-core (and any sibling)
     # from git main so a breaking change on core's main branch shows up here

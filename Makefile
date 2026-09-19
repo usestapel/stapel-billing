@@ -70,7 +70,17 @@ PYTHON ?= python3
 # this release, and the only symptom is a revenue number quietly too low. An
 # agent that cannot see `real_money` here writes the wrong query. Both intents
 # were trimmed twice first; the ceiling moved by 200.
-LLMS_BUDGET ?= 6700
+# Raised again in 0.20.0, by eight entries that are two capabilities: comp
+# periods (`extend_subscription` and the three reads around it) and the
+# provider-time ordering guard (`provider_event_time`, `note_stale_event`,
+# `begin_event`, `consume_stale_event`). Both exist because an agent that
+# cannot see them writes the code that broke production: editing
+# `current_period_end` for a comp, which the next webhook overwrites, and
+# applying lifecycle payloads in DELIVERY order, which is how an `active`
+# subscription was reset to `incomplete` and a paying customer was shown the
+# paywall. Every intent was cut to one or two sentences first; the ceiling
+# moved by 450, less than the entries cost.
+LLMS_BUDGET ?= 7150
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs

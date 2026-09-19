@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -108,6 +108,12 @@
       "intent": "Did this ledger row come out of the meter-only branch — the filter a usage or revenue report uses to include or exclude the deployment's own testing."
     },
     {
+      "name": "begin_event",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.begin_event",
+      "intent": "Clear the stale mark before a handler runs. The webhook view calls it; so must anything else that drives handlers (a replay, a backfill)."
+    },
+    {
       "name": "can_afford",
       "kind": "gate_function",
       "path": "stapel_billing.services.can_afford",
@@ -152,6 +158,18 @@
       "instead_of": [
         "stapel_billing.services.debit"
       ]
+    },
+    {
+      "name": "comp_plan_for_user",
+      "kind": "predicate",
+      "path": "stapel_billing.services.comp_plan_for_user",
+      "intent": "The plan an open comp window entitles a user to, or None. Call it if you resolve plans yourself, or comp time a support agent promised buys the customer nothing."
+    },
+    {
+      "name": "consume_stale_event",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.consume_stale_event",
+      "intent": "Read and clear the stale mark after a handler ran — the value that becomes StripeWebhookEvent.ignored_stale."
     },
     {
       "name": "create_checkout_session",
@@ -207,6 +225,15 @@
       "intent": "The stock answer to 'who gets a non-provider bundle': every wallet whose plan bundles credits Stripe is not already granting. Wrap it when writing your own resolver instead of re-deriving the Stripe-vs-local rule that stops a subscriber being granted twice.",
       "instead_of": [
         "stapel_billing.models.Subscription.objects.filter"
+      ]
+    },
+    {
+      "name": "extend_subscription",
+      "kind": "factory",
+      "path": "stapel_billing.services.extend_subscription",
+      "intent": "Give a customer subscription time on the house: a CompPeriod row the entitlement surface honours once the provider's period stops entitling, carrying who/when/why. Dry run unless apply=True. Use it instead of editing Subscription.current_period_end, which mirrors Stripe and is overwritten by the next webhook.",
+      "instead_of": [
+        "stapel_billing.models.Subscription.current_period_end"
       ]
     },
     {
@@ -311,6 +338,24 @@
       ]
     },
     {
+      "name": "latest_comp_period",
+      "kind": "predicate",
+      "path": "stapel_billing.services.latest_comp_period",
+      "intent": "The comp window running longest into the future, or None: what a second grant would stack on. Read it before offering comp time, so 'a month on us' twice is a decision, not an accident.",
+      "instead_of": [
+        "stapel_billing.models.CompPeriod.objects.filter"
+      ]
+    },
+    {
+      "name": "live_comp_period",
+      "kind": "predicate",
+      "path": "stapel_billing.services.live_comp_period",
+      "intent": "The comp window open for a subscription right now, or None — why an account is entitled to a plan the provider is not paying for.",
+      "instead_of": [
+        "stapel_billing.models.CompPeriod.objects.filter"
+      ]
+    },
+    {
       "name": "live_lots",
       "kind": "factory",
       "path": "stapel_billing.services.live_lots",
@@ -333,6 +378,12 @@
       "instead_of": [
         "stapel_billing.services.credit"
       ]
+    },
+    {
+      "name": "note_stale_event",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.note_stale_event",
+      "intent": "Say, from a webhook handler, that this payload was older than the state already applied and was deliberately not applied; the view records it as processed-and-ignored."
     },
     {
       "name": "open_debts",
@@ -368,6 +419,15 @@
       "intent": "The configured entitlement resolver, normalised to {user_id, plan} rows and tolerant of one bad row. Call this, not the setting's callable, if you drive the grants from your own scheduler.",
       "instead_of": [
         "django.conf.settings.STAPEL_BILLING[\"PLAN_BUNDLE_ENTITLEMENTS\"]"
+      ]
+    },
+    {
+      "name": "provider_event_time",
+      "kind": "predicate",
+      "path": "stapel_billing.services.provider_event_time",
+      "intent": "The provider's own clock for a webhook event (its `created`). Order lifecycle writes by this, never by arrival: Stripe does not promise delivery order.",
+      "instead_of": [
+        "django.utils.timezone.now"
       ]
     },
     {

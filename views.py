@@ -616,13 +616,22 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
                 # override cannot opt out of the guarantees that keep a paid
                 # checkout from being credited twice.
                 handler = get_stripe_handler(event_type)
+                services.begin_event()
                 if handler is not None:
                     handler(event)
                 else:
                     logger.info("Unhandled Stripe event %s", event_type)
                 locked.processed_at = timezone.now()
+                # Processed-and-ignored is a third outcome, and it has to be
+                # visible: a handler that dropped this payload as OLDER than
+                # the state already applied did the right thing, but
+                # `processed_at` alone would claim the row now reflects this
+                # event. It deliberately does not.
+                locked.ignored_stale = services.consume_stale_event()
                 locked.error = ""
-                locked.save(update_fields=["processed_at", "error"])
+                locked.save(
+                    update_fields=["processed_at", "ignored_stale", "error"]
+                )
         except Exception as exc:
             logger.exception("Stripe webhook handler failed")
             log.error = str(exc)

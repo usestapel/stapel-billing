@@ -1,8 +1,8 @@
-# stapel-billing 0.19.0
+# stapel-billing 0.20.0
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 52 · extension points 6 · operations 11 · error codes 56.
+Contract: axes 1 · surface 60 · extension points 6 · operations 11 · error codes 56.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -13,6 +13,8 @@ Settings keys; `default` is what you get by saying nothing. Turning an axis off 
 ## Usage surface — call these before writing your own
 This is the answer to "does Stapel already have something for X?". `instead of` names the outside symbol this one displaces.
 ### gate_function
+- begin_event — stapel_billing.services.begin_event
+  Clear the stale mark before a handler runs. The webhook view calls it; so must anything else that drives handlers (a replay, a backfill).
 - can_afford — stapel_billing.services.can_afford
   instead of: stapel_billing.models.Wallet.balance, stapel_billing.services.hold
   Ask whether a charge of N credits would go through — a pure read over the live lots: no lock, no hold, no row written. Use it for pre-flight refusals and for showing or hiding an action. Never probe with a real hold you then release: each probe returns the credits as a NEW lot, fragmenting the wallet without bound.
@@ -25,6 +27,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - claw_back_grant — stapel_billing.services.claw_back_grant
   instead of: stapel_billing.services.debit
   Take the credits of one grant back after a refund, dispute or credit note: consumes only that grant's lots, forgives what already expired unspent, records what was already spent as a debt the next top-up collects. The three refund webhooks call it; reach for it when money goes back some other way.
+- consume_stale_event — stapel_billing.services.consume_stale_event
+  Read and clear the stale mark after a handler ran — the value that becomes StripeWebhookEvent.ignored_stale.
 - expire_credit_lots — stapel_billing.tasks.expire_credit_lots
   The task that makes credit expiry real: zeroes lots past expires_at, one EXPIRATION ledger row each. Wire it via get_billing_beat_schedule — nothing else enforces the deadline subscription credits are sold with (check stapel_billing.W105).
 - expire_holds — stapel_billing.tasks.expire_holds
@@ -55,6 +59,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The deterministic ledger key merge_wallets writes for one pair of accounts. Recompute it to ask whether a merge has already been applied, or to find the row that explains a survivor's balance.
 - meter_only — stapel_billing.internal.meter_only
   Should this user's spend be recorded at zero cost — the question the wallet services ask before charging. True only when the deployment opted into 'meter_only' AND the account is internal. Use it rather than reimplementing the two-part test.
+- note_stale_event — stapel_billing.services.note_stale_event
+  Say, from a webhook handler, that this payload was older than the state already applied and was deliberately not applied; the view records it as processed-and-ignored.
 - policy — stapel_billing.internal.policy
   The deployment's internal-account policy: 'charge' (default) or 'meter_only'. Anything unrecognised reads as 'charge' — a typo must not turn the meter off.
 - real_money — stapel_billing.services.real_money
@@ -73,6 +79,18 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The authenticity gate for an inbound provider callback: verifies the signature through the configured provider and returns the parsed event, raising on anything unsigned or on an unconfigured processor. Every endpoint that accepts webhooks must pass through it — a hand-rolled HMAC comparison is how an anonymous POST turns into a free credit grant.
 - was_waived — stapel_billing.internal.was_waived
   Did this ledger row come out of the meter-only branch — the filter a usage or revenue report uses to include or exclude the deployment's own testing.
+### predicate
+- comp_plan_for_user — stapel_billing.services.comp_plan_for_user
+  The plan an open comp window entitles a user to, or None. Call it if you resolve plans yourself, or comp time a support agent promised buys the customer nothing.
+- latest_comp_period — stapel_billing.services.latest_comp_period
+  instead of: stapel_billing.models.CompPeriod.objects.filter
+  The comp window running longest into the future, or None: what a second grant would stack on. Read it before offering comp time, so 'a month on us' twice is a decision, not an accident.
+- live_comp_period — stapel_billing.services.live_comp_period
+  instead of: stapel_billing.models.CompPeriod.objects.filter
+  The comp window open for a subscription right now, or None — why an account is entitled to a plan the provider is not paying for.
+- provider_event_time — stapel_billing.services.provider_event_time
+  instead of: django.utils.timezone.now
+  The provider's own clock for a webhook event (its `created`). Order lifecycle writes by this, never by arrival: Stripe does not promise delivery order.
 ### factory
 - capture — stapel_billing.services.capture
   instead of: stapel_billing.services.debit
@@ -95,6 +113,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - default_plan_bundle_entitlements — stapel_billing.services.default_plan_bundle_entitlements
   instead of: stapel_billing.models.Subscription.objects.filter
   The stock answer to 'who gets a non-provider bundle': every wallet whose plan bundles credits Stripe is not already granting. Wrap it when writing your own resolver instead of re-deriving the Stripe-vs-local rule that stops a subscriber being granted twice.
+- extend_subscription — stapel_billing.services.extend_subscription
+  instead of: stapel_billing.models.Subscription.current_period_end
+  Give a customer subscription time on the house: a CompPeriod row the entitlement surface honours once the provider's period stops entitling, carrying who/when/why. Dry run unless apply=True. Use it instead of editing Subscription.current_period_end, which mirrors Stripe and is overwritten by the next webhook.
 - get_billing_beat_schedule — stapel_billing.tasks.get_billing_beat_schedule
   Spread `**get_billing_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all three billing workers at once (credit expiry, abandoned-hold release, reconciliation). Hand-authoring the entries is how expire_credit_lots gets silently dropped.
 - get_credit_packages — stapel_billing.catalog.get_credit_packages

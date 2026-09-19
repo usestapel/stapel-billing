@@ -1,5 +1,119 @@
 # Changelog
 
+## [0.20.0] — 2026-09-19
+
+### Fixed — a paid subscription could be left inactive by out-of-order events
+
+Measured on a client host. Stripe delivered `customer.subscription.created`
+(object status `incomplete`, event `created` = T) **after**
+`customer.subscription.updated` (status `active`, `created` = T+2). Both
+event types share one handler, which wrote whatever the payload said in
+**delivery** order — so the older `incomplete` landed on top of `active`,
+the plan stopped entitling (`incomplete` is not a granting status), and a
+paying customer was shown the paywall. Two of six provider-backed
+subscriptions on that host were stuck that way, with every webhook
+received, processed and green. Stripe does not promise event order, and
+nothing here had ever said what to do when it did not.
+
+Lifecycle state is now applied in **provider time**. `Subscription.
+last_provider_event_at` records the provider clock of the newest event
+already applied; an event older than that is acknowledged (a 500 would
+make Stripe retry it for three days), recorded on the event log as
+`ignored_stale`, logged, and not applied. On a tie — Stripe stamps whole
+seconds — the more advanced status wins, per an explicit ordering
+(`services.LIFECYCLE_RANK`): `incomplete` < `incomplete_expired` <
+`trialing` < `active` < `past_due` < `unpaid` < `paused` < `cancelled`.
+The lifecycle only ever runs in that direction.
+
+Every webhook path that writes subscription or period state carries the
+guard: `customer.subscription.created` / `.updated` / `.deleted`, the
+checkout that creates the row (a stale checkout still grants the credits
+it paid for — money is a separate fact — but does not resurrect the
+status it saw), and the stash a period is parked in when its subscription
+row does not exist yet. `invoice.paid`, `invoice.payment_failed` and
+`charge.failed` are untouched: they grant or notify, and neither writes
+lifecycle state. `services.reconcile_subscriptions` stamps the clock too,
+so an event created before a repair and delivered after it can no longer
+undo it.
+
+### Fixed — a paying customer's subscription could never activate
+
+`PendingSubscriptionPeriod.status` was `varchar(16)`. It stores the
+provider's **raw** status word, and `incomplete_expired` is 18 characters:
+on Postgres the INSERT raised `StringDataRightTruncation`, the webhook
+answered 500, Stripe retried the same event for ~3 days, and every attempt
+died the same way. The column was a copy of `Subscription.status`'s width
+from before 0.13.0 widened *that* one to 32 for exactly this word; the
+copy was missed.
+
+Every column the provider fills is now a `models.ProviderStringField` —
+255, the length Stripe documents its ids to — and that is the only place
+the width is decided: `stripe_subscription_id`, `stripe_customer_id`
+(both models), `stripe_event_id`, `ProviderGrant.external_id` (already
+255, now declared), the raw `status` word and `StripeWebhookEvent.
+event_type` (64 → 255; it has never truncated, but the provider adds
+event types without asking).
+
+Two mechanisms keep it closed. `tests/test_provider_string_widths.py`
+introspects every model: a field whose name says provider-issued id, or
+any `ProviderStringField`, must be ≥ 255, and the two columns that mirror
+the status vocabulary must be at least as wide as its longest member —
+derived from the enum and the translation table, not typed in. And the
+webhook fixtures now use **real-length** ids (`tests/stripe_ids.py`:
+`sub_` + 24 opaque characters, not `sub_1`) — six-character fakes are how
+a column too narrow for a real id passed a whole suite. A `postgres` CI
+job runs the lifecycle suites against a real server, because SQLite does
+not enforce varchar length and never saw any of this.
+
+### Added — comp periods: subscription time given, not sold
+
+"Put them back on Pro for a month, on us" had no sanctioned shape, so it
+was done by editing `Subscription.current_period_end` — a column that
+mirrors the provider, which the next subscription webhook overwrites. The
+gift disappeared days later, usually noticed by the customer first.
+
+`CompPeriod` is its own row, honoured by `entitlements` while the
+provider subscription is not entitling anything beyond the default plan,
+and untouchable by any webhook. It records who granted it, when and why.
+The window opens when the paid-for period closes, so comp days are added
+to the customer's service rather than spent underneath a period they had
+already paid for. A live paid plan always governs: comp time never
+overrides what somebody is actually paying for.
+
+    manage.py billing_extend_subscription --user <id> --days 60 --reason "..."
+    manage.py billing_extend_subscription --user <id> --days 60 --reason "..." --apply
+
+Dry run by default. `--subscription <stripe id>` selects by provider id
+instead, `--plan` names the plan when the row is on the default one, and
+a second grant while comp time is already running is an **error** unless
+`--stack` is passed — two people each granting "a month" without knowing
+about the other is how an account ends up comped forever. Stacked time
+starts where the existing window ends. No Stripe write happens anywhere
+in this path.
+
+The same function backs an admin action on Subscription, gated by a new
+`billing.extend_subscription` permission (the gate is WHO, never a
+setting). Grant it in the same fixture as the rest of the operator's
+permissions or the action is offered to nobody.
+
+### Migration
+
+`0009_provider_time_and_comp_periods` — expand-only, safe to apply while
+serving: three added columns, two widened, one new table. The widenings
+are binary-coercible on Postgres, so neither table is rewritten; they take
+a brief ACCESS EXCLUSIVE lock, and `event_type` is the leading column of
+the `(event_type, -received_at)` index, which Postgres rebuilds — the one
+part worth timing on a large webhook log. A backfill seeds
+`last_provider_event_at` from the newest processed lifecycle event per
+provider subscription id, using the webhook log this module already keeps;
+rows with no such event stay NULL, which means "accept the next event".
+
+After deploying, the repair for a subscription left inactive by the
+ordering defect is the command that already existed:
+
+    manage.py billing_reconcile_subscriptions --dry-run
+    manage.py billing_reconcile_subscriptions --subscription <stripe id>
+
 ## [0.19.0] — 2026-09-18
 
 ### Changed — the erasure protocol is core's; `erase_subject` stays ours
