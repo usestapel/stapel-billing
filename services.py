@@ -52,6 +52,7 @@ from .models import (
     LotSource,
     PendingSubscriptionPeriod,
     ProviderGrant,
+    StripeWebhookEvent,
     Subscription,
     SubscriptionStatus,
     Transaction,
@@ -2719,6 +2720,158 @@ def consume_stale_event() -> bool:
 def provider_event_time(event: dict) -> Optional[datetime]:
     """The provider's own clock for this event (``created``), or None."""
     return _epoch_to_datetime(event.get("created"))
+
+
+#: The three outcomes of running one stored event through its handler.
+#: ``duplicate`` is not an error: the claim was already marked processed,
+#: so there is nothing to run and nothing to record.
+EVENT_PROCESSED = "processed"
+EVENT_IGNORED_STALE = "ignored_stale"
+EVENT_DUPLICATE = "duplicate"
+
+
+def apply_stored_event(log, event: Optional[dict] = None) -> str:
+    """Run ONE ``StripeWebhookEvent`` row through the handler registry.
+
+    This is the whole of the delivery path that is not HTTP: the lock on
+    the idempotency claim, the registry lookup, the handler call, the
+    stale mark and the processed mark — one atomic block, so the handler's
+    effects and the claim commit together or not at all.
+
+    It lives here rather than inline in ``StripeWebhookView`` because a
+    replay that re-implements the wrapping is a second delivery path, and
+    two paths drift: one of them ends up without the lock, or marking
+    ``processed_at`` on a handler that raised, or forgetting that
+    "processed and ignored as stale" is a third outcome. The view passes
+    the payload it just verified; a replay passes nothing and the stored
+    payload is used (the signature was verified when the row was written,
+    and the row is the only copy left once the provider stops retrying).
+
+    Args:
+        log: The event row to run. Only its primary key is trusted; the
+            row is re-read under ``select_for_update``.
+        event: The verified payload, when the caller has one. Defaults to
+            the payload stored on the row.
+
+    Returns:
+        ``EVENT_PROCESSED``, ``EVENT_IGNORED_STALE``, or
+        ``EVENT_DUPLICATE`` when the claim was already processed.
+
+    Raises:
+        Exception: whatever the handler raises. The caller owns what to
+            write into ``error`` — the transaction is already rolled back
+            by then, so recording it is a separate write.
+    """
+    from .webhooks import get_stripe_handler
+
+    with transaction.atomic():
+        locked = StripeWebhookEvent.objects.select_for_update().get(pk=log.pk)
+        if locked.processed_at is not None:
+            return EVENT_DUPLICATE
+        payload = locked.payload if event is None else event
+        handler = get_stripe_handler(locked.event_type)
+        begin_event()
+        if handler is not None:
+            handler(payload)
+        else:
+            logger.info("Unhandled Stripe event %s", locked.event_type)
+        locked.processed_at = timezone.now()
+        # Processed-and-ignored is a third outcome, and it has to be
+        # visible: a handler that dropped this payload as OLDER than the
+        # state already applied did the right thing, but `processed_at`
+        # alone would claim the row now reflects this event. It
+        # deliberately does not.
+        locked.ignored_stale = consume_stale_event()
+        locked.error = ""
+        locked.save(update_fields=["processed_at", "ignored_stale", "error"])
+        return EVENT_IGNORED_STALE if locked.ignored_stale else EVENT_PROCESSED
+
+
+@dataclass
+class ReplayedEvent:
+    """What replaying one stored webhook event did.
+
+    Attributes:
+        stripe_event_id: The provider's event id.
+        event_type: The provider's event type string.
+        received_at: When the row was first written.
+        previous_error: The error the row carried before this replay.
+        outcome: ``processed`` / ``ignored_stale`` / ``duplicate``, or
+            ``pending`` under a dry run, or ``error`` when it failed again.
+        error: The failure of THIS replay, when there was one.
+    """
+
+    stripe_event_id: str
+    event_type: str
+    received_at: Optional[datetime] = None
+    previous_error: str = ""
+    outcome: str = "pending"
+    error: Optional[str] = None
+
+
+def replayable_events(*, event_ids=None, unprocessed: bool = False):
+    """The event rows a replay would run, oldest first.
+
+    ``event_ids`` names rows explicitly — including already-processed ones,
+    which is what makes "a replay of a processed event is a no-op" a thing
+    a caller can actually ask for. ``unprocessed`` selects every row the
+    delivery path never finished: no ``processed_at``. Both may be given.
+    """
+    query = Q(pk__in=[])
+    if event_ids:
+        query |= Q(stripe_event_id__in=list(event_ids))
+    if unprocessed:
+        query |= Q(processed_at__isnull=True)
+    return StripeWebhookEvent.objects.filter(query).order_by("received_at", "pk")
+
+
+def replay_webhook_events(
+    *, event_ids=None, unprocessed: bool = False, dry_run: bool = False
+) -> list[ReplayedEvent]:
+    """Re-run stored webhook events through the live handler path.
+
+    The case this exists for: a delivery that failed on a defect the
+    deployment has since fixed. The provider retries for about three days
+    and then stops for good, so the stored row is the last copy of an
+    event that was never applied — and until it is run again, the local
+    state is missing whatever it carried.
+
+    Safety comes from the path, not from this function: the handler is the
+    same one live delivery uses (:func:`apply_stored_event`), grants are
+    claimed once through ``ProviderGrant``, and the provider-time guard
+    records a payload older than the state it would overwrite as
+    ``ignored_stale`` instead of applying it. Replaying an event that was
+    already processed does nothing at all.
+
+    ``dry_run`` lists what WOULD run and runs no handler. It deliberately
+    does not execute-and-roll-back: a handler's reach is not only the
+    database, and a rehearsal that sends a letter is not a rehearsal.
+    """
+    results: list[ReplayedEvent] = []
+    for log in replayable_events(event_ids=event_ids, unprocessed=unprocessed):
+        result = ReplayedEvent(
+            stripe_event_id=log.stripe_event_id,
+            event_type=log.event_type,
+            received_at=log.received_at,
+            previous_error=log.error or "",
+        )
+        if dry_run:
+            result.outcome = (
+                EVENT_DUPLICATE if log.processed_at is not None else "pending"
+            )
+            results.append(result)
+            continue
+        try:
+            result.outcome = apply_stored_event(log)
+        except Exception as exc:  # noqa: BLE001 — recorded, then reported
+            logger.exception("Replay of Stripe event %s failed", log.stripe_event_id)
+            result.outcome = "error"
+            result.error = str(exc)
+            # The claim's transaction is rolled back; the error is a
+            # separate write, exactly as the view records it.
+            StripeWebhookEvent.objects.filter(pk=log.pk).update(error=str(exc))
+        results.append(result)
+    return results
 
 
 def _is_stale_lifecycle_event(

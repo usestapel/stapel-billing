@@ -35,7 +35,6 @@ rewriting each view's ``permission_classes`` — see that class for why.
 
 import logging
 
-from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -91,7 +90,6 @@ from .models import (
     Wallet,
 )
 from .providers.base import ProviderNotConfiguredError
-from .webhooks import get_stripe_handler
 from .serializers import (
     SimulatedCheckoutRequestSerializer,
     SimulatedCheckoutResponseSerializer,
@@ -599,38 +597,26 @@ class StripeWebhookView(SerializerSeamMixin, APIView):
             return StapelResponse({"status": "duplicate"}, status=status.HTTP_200_OK)  # noqa: R006
 
         try:
-            with transaction.atomic():
-                # Lock the claim so a concurrent retry of the same event
-                # cannot run the handler twice; the processed mark commits
-                # atomically with the handler's effects.
-                locked = StripeWebhookEvent.objects.select_for_update().get(pk=log.pk)
-                if locked.processed_at is not None:
-                    return StapelResponse(  # noqa: R006
-                        {"status": "duplicate"}, status=status.HTTP_200_OK
-                    )
-                # Routing is a registry, not an if/elif chain: a host adds
-                # or replaces one event type through
-                # STAPEL_BILLING["STRIPE_WEBHOOK_HANDLERS"] instead of
-                # forking this view. Everything around the call — signature,
-                # idempotency claim, lock, processed mark — stays here, so an
-                # override cannot opt out of the guarantees that keep a paid
-                # checkout from being credited twice.
-                handler = get_stripe_handler(event_type)
-                services.begin_event()
-                if handler is not None:
-                    handler(event)
-                else:
-                    logger.info("Unhandled Stripe event %s", event_type)
-                locked.processed_at = timezone.now()
-                # Processed-and-ignored is a third outcome, and it has to be
-                # visible: a handler that dropped this payload as OLDER than
-                # the state already applied did the right thing, but
-                # `processed_at` alone would claim the row now reflects this
-                # event. It deliberately does not.
-                locked.ignored_stale = services.consume_stale_event()
-                locked.error = ""
-                locked.save(
-                    update_fields=["processed_at", "ignored_stale", "error"]
+            # Lock the claim so a concurrent retry of the same event cannot
+            # run the handler twice; the processed mark commits atomically
+            # with the handler's effects. Routing is a registry, not an
+            # if/elif chain: a host adds or replaces one event type through
+            # STAPEL_BILLING["STRIPE_WEBHOOK_HANDLERS"] instead of forking
+            # this view. Everything around the call — signature, idempotency
+            # claim, lock, processed mark — stays outside the handler, so an
+            # override cannot opt out of the guarantees that keep a paid
+            # checkout from being credited twice.
+            #
+            # The wrapping itself lives in services.apply_stored_event, and
+            # not here, because `billing_replay_webhook_events` runs the very
+            # same rows: a replay with its own copy of this block is a second
+            # delivery path, and the copy is the one that ends up without the
+            # lock. The view still passes the payload it VERIFIED rather than
+            # the stored one.
+            outcome = services.apply_stored_event(log, event)
+            if outcome == services.EVENT_DUPLICATE:
+                return StapelResponse(  # noqa: R006
+                    {"status": "duplicate"}, status=status.HTTP_200_OK
                 )
         except Exception as exc:
             logger.exception("Stripe webhook handler failed")

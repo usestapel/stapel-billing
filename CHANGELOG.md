@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.21.1] — 2026-09-19
+
+### Added — replaying a webhook the provider will never send again
+
+A live `customer.subscription.updated` failed on every delivery with
+`value too long for type character varying(16)` — the
+`PendingSubscriptionPeriod.status` defect 0.20.1 widened. Stripe retried
+for its ~3 days, backed off, and stopped. The column was widened the next
+day, and **nothing re-delivered the event**: the stored
+`StripeWebhookEvent` row was by then the only copy of a payload that had
+never been applied, and this module had no way to run it. The host's
+`webhook_unprocessed` invariant counted it, correctly, forever.
+
+    manage.py billing_replay_webhook_events --unprocessed --dry-run
+    manage.py billing_replay_webhook_events --unprocessed
+    manage.py billing_replay_webhook_events --event evt_...
+
+The replay's safety is that it is **not a second delivery path**. The
+wrapping the webhook view used to carry inline — the lock on the
+idempotency claim, the handler registry lookup, the stale mark, the
+processed mark, one atomic block — moved into
+`services.apply_stored_event`, and the view now calls it. A replay that
+re-implemented that block is a copy, and the copy is the one that ends up
+without the lock, or marking `processed_at` on a handler that raised.
+
+So the guarantees hold under replay because they are the same objects:
+the signature was verified when the row was written; grants are claimed
+once through `ProviderGrant`, so a double replay of a paid checkout
+credits the wallet once; and the 0.20.0 provider-time guard records a
+payload older than the state it would overwrite as `ignored_stale`
+instead of walking a live subscription backwards. An event that already
+has `processed_at` is a no-op.
+
+`--dry-run` lists what would run and runs no handler. It deliberately
+does not execute-and-roll-back: a handler's reach is not only the
+database, and a rehearsal that sends a letter is not a rehearsal.
+
+Selecting nothing is refused rather than defaulted — "replay every event
+ever received" is not something anyone means.
+
 ## [0.21.0] — 2026-09-19
 
 ### Fixed — the comp command could not comp a real customer

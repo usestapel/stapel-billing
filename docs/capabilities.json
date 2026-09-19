@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.21.0",
+  "version": "0.21.1",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -137,6 +137,15 @@
       "kind": "gate_function",
       "path": "stapel_billing.internal.was_waived",
       "intent": "Did this ledger row come out of the meter-only branch — the filter a usage or revenue report uses to include or exclude the deployment's own testing."
+    },
+    {
+      "name": "apply_stored_event",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.apply_stored_event",
+      "intent": "Run ONE stored StripeWebhookEvent through the handler registry under the lock on its idempotency claim, the stale mark and the processed mark, in one atomic block. This is the delivery path minus HTTP: the webhook view calls it, and so must anything else that drives handlers. A second copy of the wrapping is how one path ends up without the lock.",
+      "instead_of": [
+        "stapel_billing.webhooks.get_stripe_handler"
+      ]
     },
     {
       "name": "begin_event",
@@ -508,6 +517,21 @@
       "instead_of": [
         "stapel_billing.services.credit"
       ]
+    },
+    {
+      "name": "replay_webhook_events",
+      "kind": "gate_function",
+      "path": "stapel_billing.services.replay_webhook_events",
+      "intent": "Re-run stored webhook events through the live handler path: the repair for a delivery that failed on a defect since fixed, once the provider's retry window closed and the stored row is the only copy left. Idempotent, and a payload older than the state it would overwrite is recorded ignored_stale, never applied. dry_run=True lists without running a handler. Never re-apply a payload by hand in a shell.",
+      "instead_of": [
+        "stapel_billing.models.StripeWebhookEvent.objects.update"
+      ]
+    },
+    {
+      "name": "replayable_events",
+      "kind": "predicate",
+      "path": "stapel_billing.services.replayable_events",
+      "intent": "The event rows a replay would run, oldest first: named ids, or every row the delivery path never finished (what billing_invariants counts as webhook_unprocessed)."
     },
     {
       "name": "resolve_account",

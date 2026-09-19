@@ -1,8 +1,8 @@
-# stapel-billing 0.21.0
+# stapel-billing 0.21.1
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 66 · extension points 6 · operations 11 · error codes 56.
+Contract: axes 1 · surface 69 · extension points 6 · operations 11 · error codes 56.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -13,6 +13,9 @@ Settings keys; `default` is what you get by saying nothing. Turning an axis off 
 ## Usage surface — call these before writing your own
 This is the answer to "does Stapel already have something for X?". `instead of` names the outside symbol this one displaces.
 ### gate_function
+- apply_stored_event — stapel_billing.services.apply_stored_event
+  instead of: stapel_billing.webhooks.get_stripe_handler
+  Run ONE stored StripeWebhookEvent through the handler registry under the lock on its idempotency claim, the stale mark and the processed mark, in one atomic block. This is the delivery path minus HTTP: the webhook view calls it, and so must anything else that drives handlers. A second copy of the wrapping is how one path ends up without the lock.
 - begin_event — stapel_billing.services.begin_event
   Clear the stale mark before a handler runs. The webhook view calls it; so must anything else that drives handlers (a replay, a backfill).
 - can_afford — stapel_billing.services.can_afford
@@ -72,6 +75,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Report every wallet whose cached balance disagrees with the lots it summarises. Read-only on purpose: a balance rewritten to match destroys the evidence that something wrote it from outside this module.
 - reconcile_wallets — stapel_billing.tasks.reconcile_wallets
   Daily task over reconcile_wallet_balances: logs at ERROR every wallet whose balance cache no longer matches its lots — how a deployment learns something wrote Wallet.balance directly.
+- replay_webhook_events — stapel_billing.services.replay_webhook_events
+  instead of: stapel_billing.models.StripeWebhookEvent.objects.update
+  Re-run stored webhook events through the live handler path: the repair for a delivery that failed on a defect since fixed, once the provider's retry window closed and the stored row is the only copy left. Idempotent, and a payload older than the state it would overwrite is recorded ignored_stale, never applied. dry_run=True lists without running a handler. Never re-apply a payload by hand in a shell.
 - staff_is_internal — stapel_billing.internal.staff_is_internal
   The default INTERNAL_ACCOUNT_RESOLVER: is_staff or is_superuser. Point the setting at your own callable when 'ours' means something else here.
 - verify_stripe_signature — stapel_billing.services.verify_stripe_signature
@@ -104,6 +110,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - provider_event_time — stapel_billing.services.provider_event_time
   instead of: django.utils.timezone.now
   The provider's own clock for a webhook event (its `created`). Order lifecycle writes by this, never by arrival: Stripe does not promise delivery order.
+- replayable_events — stapel_billing.services.replayable_events
+  The event rows a replay would run, oldest first: named ids, or every row the delivery path never finished (what billing_invariants counts as webhook_unprocessed).
 ### factory
 - capture — stapel_billing.services.capture
   instead of: stapel_billing.services.debit

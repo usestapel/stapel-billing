@@ -90,7 +90,18 @@ PYTHON ?= python3
 # cannot see these writes the gate that shipped in 0.20.0 and could not comp a
 # single real customer. Intents were trimmed twice first; the ceiling moved by
 # 550, close to what the entries cost.
-LLMS_BUDGET ?= 7700
+# Raised again in 0.21.1, by three entries that are one capability: replaying a
+# webhook the provider will never send again (`apply_stored_event`,
+# `replay_webhook_events`, `replayable_events`). The release exists because a
+# real event failed on a column since widened, the provider's ~3-day retry
+# window closed, and the stored row became the only copy of a payload that was
+# never applied — with nothing in the module able to run it. An agent that
+# cannot see these writes the repair by hand in a shell, which re-applies a
+# payload without the lock, without the grant claim and without the
+# provider-time guard: the two ways this module has already lost a paying
+# customer's activation. Intents were trimmed twice first; the ceiling moved by
+# 300, less than the entries cost.
+LLMS_BUDGET ?= 8000
 
 contract:
 	$(PYTHON) -m stapel_billing._codegen --out docs
