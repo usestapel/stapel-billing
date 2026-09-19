@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.20.2] — 2026-09-19
+
+### Fixed — a reconciliation repair announced itself from outside its transaction
+
+Observed on a client host during a real `billing_reconcile_subscriptions`
+run. The sweep repaired a drifted subscription with three statements in
+autocommit — `save()`, then the bundle stamp, then
+`emit("subscription.changed")` — and stapel-core said so:
+
+    emit('subscription.changed') called outside transaction.atomic():
+    the outbox row commits detached from the mutation it describes
+
+That is the one thing the transactional outbox exists to prevent. The
+outbox row is only a promise about a mutation while the two commit or
+roll back together; written from autocommit it is an independent fact, so
+a crash one statement later leaves either a repair nobody was told about
+or an announcement of a repair that was never made. The repair and its
+announcement are now one `transaction.atomic()`. The provider read stays
+outside it — a network call must not hold a row open.
+
+### Fixed — the six webhook handlers now carry their own atomic block
+
+Same defect, one level up, and the reason it could happen twice. Each
+handler mutates and then emits, and every one of them was atomic only
+because the webhook view happened to wrap it. A second caller that did
+not know that reproduced the defect in one line once already (the
+simulated purchase, 0.18.1) and the reconciliation sweep is the third
+instance. `handle_checkout_completed`, `handle_invoice_paid`,
+`handle_subscription_updated`, `handle_subscription_deleted`,
+`handle_invoice_payment_failed` and `handle_charge_failed` are now
+`@transaction.atomic` themselves, so no caller can take the guarantee
+away; nesting inside the view's existing block is a free savepoint.
+
+### Added — the suite is red on any emit outside a transaction
+
+A rule with no gate is a rule that gets re-broken, and here the obvious
+gate proves nothing: stapel-core's `EMIT_OUTSIDE_ATOMIC` guard only runs
+with the outbox on, and pytest-django wraps every `django_db` test in
+`transaction.atomic()`, so `in_atomic_block` is True inside a test
+whatever the code under test does. `conftest.py` therefore measures
+atomic **depth** against a baseline taken after fixture setup: an
+`emit()` from library code is accepted only from a block the code under
+test opened itself, and refused with core's own
+`EmitOutsideAtomicError`. Eight tests fail on the pre-fix reconcile path.
+`tests/test_emit_atomicity.py` asserts the gate is live, so it cannot rot
+back into inertness unnoticed.
+
+### Upstream ask — stapel-core has no public bus flush
+
+The same run ended with the Kafka client's `Producer terminating with 1
+message (464 bytes) still in queue`: the announcement may never have left
+the process. The message is produced by the outbox's first-chance
+dispatch after commit (`stapel_core/comm/actions.py:196` →
+`stapel_core/django/outbox/relay.py:44` → `stapel_core/bus/__init__.py:27`),
+inside the management command's own process, and a short-lived command
+then exits before librdkafka drains its queue.
+
+Nothing in this library can close that, and no management command in the
+fleet can: `BusBackend` (`stapel_core/bus/base.py:12`) declares only
+`publish` and `consume`, `KafkaBus` (`stapel_core/bus/backends/kafka.py:33`)
+keeps its producer in `self._producer` with no `flush()`, no `close()`
+and no `atexit` hook, and `get_bus()` (`stapel_core/bus/router.py:61`)
+hands back the backend with nothing flushable on it. Asked upstream:
+a `flush(timeout)` on `BusBackend` returning the number of messages still
+undelivered, so a command can drain in a `finally` and say what it lost.
+Reaching into `_producer` from here would be a private-attribute
+workaround in every command in the fleet instead of one fix in core.
+
 ## [0.20.1] — 2026-09-19
 
 ### Fixed — the new Postgres job could not build its test database

@@ -434,6 +434,7 @@ class TestTheFactsCarryWhatTheLetterNeeds:
     def test_subscription_changed_always_states_cancel_at_period_end(self, payer):
         """Not inferable from status — so it is emitted, not guessed."""
         import jsonschema
+        from django.db import transaction
 
         from stapel_billing import services
         from stapel_billing.models import Subscription, SubscriptionStatus
@@ -448,7 +449,10 @@ class TestTheFactsCarryWhatTheLetterNeeds:
             user=payer, plan="pro", status=SubscriptionStatus.ACTIVE,
             cancel_at_period_end=True,
         )
-        services._announce_subscription(sub)
+        # Calling the announcer by hand still has to obey the rule it exists
+        # to serve: the fact and the row it describes commit together.
+        with transaction.atomic():
+            services._announce_subscription(sub)
 
         assert received
         payload = received[-1].payload

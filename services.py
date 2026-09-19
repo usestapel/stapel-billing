@@ -2219,8 +2219,19 @@ def _reconcile_checkout_session(
 
 
 # ─── Webhook handlers ──────────────────────────────────────
+#
+# Every handler below is `@transaction.atomic`, and that is a property of
+# the handler, not of the view that usually calls it. Each one mutates and
+# then emits, and the outbox guarantee — the event leaves iff the mutation
+# commits — holds only while both happen in ONE transaction. The webhook
+# view supplies such a block (views.py), so for a long time these functions
+# were correct by the grace of their caller; a second caller that did not
+# know that (the simulated purchase, 0.18.1) reproduced the defect in one
+# line. The atomic belongs where the emit is, so no caller can take it away
+# and nesting inside the view's block stays a free savepoint.
 
 
+@transaction.atomic
 def handle_checkout_completed(event: dict) -> None:
     """Award credits for a one-off package purchase."""
     obj = event["data"]["object"]
@@ -2519,6 +2530,7 @@ def simulate_checkout_completed(*, user, package: str, actor: str) -> dict:
     }
 
 
+@transaction.atomic
 def handle_invoice_paid(event: dict) -> None:
     """Grant the monthly plan credits on each renewal invoice.
 
@@ -2918,6 +2930,7 @@ def _apply_pending_period(sub: Subscription) -> bool:
     return bool(changed)
 
 
+@transaction.atomic
 def handle_subscription_updated(event: dict) -> None:
     obj = event["data"]["object"]
     sub = _resolve_local_subscription(obj)
@@ -2946,6 +2959,7 @@ def handle_subscription_updated(event: dict) -> None:
     _announce_subscription(sub)
 
 
+@transaction.atomic
 def handle_subscription_deleted(event: dict) -> None:
     obj = event["data"]["object"]
     sub = _resolve_local_subscription(obj)
@@ -3121,11 +3135,21 @@ def reconcile_subscriptions(
         else:
             clock = []
         if result.changed and not dry_run:
-            sub.save(update_fields=[*result.changed, *clock, "updated_at"])
-            # A period that was NULL until now is a bundle nothing could
-            # expire. Stamping is the whole point of repairing the dates.
-            _stamp_subscription_period(sub)
-            _announce_subscription(sub)
+            # ONE transaction for the repair and its announcement. The
+            # provider read above is deliberately outside it — a network
+            # call must never hold a row open — but everything that follows
+            # is the outbox pattern's whole point: the `subscription.changed`
+            # row commits iff the repair it describes commits. Emitting it
+            # from autocommit announced a repair that a crash one statement
+            # later would have left unmade, and stapel-core said so on a
+            # client host mid-sweep ("emit('subscription.changed') called
+            # outside transaction.atomic()").
+            with transaction.atomic():
+                sub.save(update_fields=[*result.changed, *clock, "updated_at"])
+                # A period that was NULL until now is a bundle nothing could
+                # expire. Stamping is the whole point of repairing the dates.
+                _stamp_subscription_period(sub)
+                _announce_subscription(sub)
             result.applied = True
         elif clock:
             # Nothing drifted, but the read still happened: record that this
@@ -3460,6 +3484,7 @@ def _announce_payment_failed(*, user, amount_cents, currency, **extra) -> None:
     )
 
 
+@transaction.atomic
 def handle_invoice_payment_failed(event: dict) -> None:
     """``invoice.payment_failed`` — a renewal was declined.
 
@@ -3499,6 +3524,7 @@ def handle_invoice_payment_failed(event: dict) -> None:
     )
 
 
+@transaction.atomic
 def handle_charge_failed(event: dict) -> None:
     """``charge.failed`` — a card was declined outside the invoice flow.
 

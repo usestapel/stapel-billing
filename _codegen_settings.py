@@ -127,6 +127,15 @@ def settings_kwargs(
             "OUTBOX_ENABLED": False,
             "ACTION_TRANSPORT": "inprocess",
             "VALIDATE_SCHEMAS": True,
+            # An emit outside a transaction is a defect in this module, not a
+            # log line: money moved and the fact that says so must commit or
+            # roll back together. Honest about its own reach — core only runs
+            # this guard when the outbox is on, so with OUTBOX_ENABLED False
+            # the line below binds a host that flips the outbox on, and NOT
+            # this suite. What makes the suite red is the depth guard in
+            # conftest.py, which is the one that can see through
+            # pytest-django's own atomic wrapper.
+            "EMIT_OUTSIDE_ATOMIC": "error",
         },
         MIDDLEWARE=[
             "django.middleware.common.CommonMiddleware",
