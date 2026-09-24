@@ -230,6 +230,20 @@ class TestWebhookProcessing:
         assert sub.stripe_subscription_id == sid("sub", "1")
         assert Wallet.objects.get(user=user).balance == 300  # pro monthly bonus
 
+    def test_plan_bonus_row_carries_the_amount_charged(self, api_client, user):
+        """The row is the ledger's only record that this bundle was paid for.
+
+        Without an amount a subscription purchase is indistinguishable from
+        a free signup grant of the same type, so a reader looking for sales
+        either misses every subscription or counts every signup.
+        """
+        event = _checkout_event(user, event_id=sid("evt", "plan_amt"), plan="pro")
+        event["data"]["object"]["amount_total"] = 700  # a coupon took some off
+        assert _post(api_client, event).status_code == 200
+        txn = Transaction.objects.get(wallet__user=user)
+        assert txn.type == "subscription_bonus"
+        assert txn.amount_cents == 700
+
 
 @pytest.mark.django_db
 class TestSubscriptionLifecycleEvents:
@@ -258,6 +272,7 @@ class TestSubscriptionLifecycleEvents:
         assert wallet.balance == 300
         txn = Transaction.objects.get(wallet=wallet)
         assert txn.metadata["stripe_invoice_id"] == sid("in", "9")
+        assert txn.amount_cents == 1500
 
     def test_invoice_for_initial_checkout_does_not_double_grant(self, api_client, user):
         self._make_sub(user)

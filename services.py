@@ -2395,10 +2395,17 @@ def handle_checkout_completed(event: dict) -> None:
         # Initial monthly credit grant for plans that bundle credits.
         monthly = plan_entry.monthly_credits_included
         if monthly:
+            # What the first invoice actually charged (coupon, trial and
+            # proration included) — the row is where a ledger reader learns
+            # this bundle was paid for, and how much.
+            charged = obj.get("amount_total")
+            if not isinstance(charged, int) or isinstance(charged, bool):
+                charged = plan_entry.price_cents
             txn = credit(
                 user=user,
                 credits=monthly,
                 type=TransactionType.SUBSCRIPTION_BONUS,
+                amount_cents=charged,
                 # The plan's bundle lives as long as the period that pays for
                 # it. The checkout session does not carry that period yet —
                 # ``_stamp_subscription_period`` dates the lot from the
@@ -2420,7 +2427,7 @@ def handle_checkout_completed(event: dict) -> None:
             _announce_payment(
                 user=user,
                 txn=txn,
-                amount_cents=plan_entry.price_cents,
+                amount_cents=charged,
                 currency=plan_entry.currency.lower(),
                 plan=plan_slug,
             )
@@ -2580,10 +2587,14 @@ def handle_invoice_paid(event: dict) -> None:
         scope=ProviderGrant.SCOPE_INVOICE, external_id=invoice_id
     ):
         return
+    amount = obj.get("amount_paid")
+    if not isinstance(amount, int) or isinstance(amount, bool):
+        amount = plan_entry.price_cents
     txn = credit(
         user=sub.user,
         credits=monthly,
         type=TransactionType.SUBSCRIPTION_BONUS,
+        amount_cents=amount,
         # The renewal's period end is already in hand (_apply_stripe_period),
         # so the month's bundle expires with the month it belongs to.
         source=LotSource.SUBSCRIPTION,
@@ -2597,9 +2608,6 @@ def handle_invoice_paid(event: dict) -> None:
             "stripe_invoice_id": invoice_id,
         },
     )
-    amount = obj.get("amount_paid")
-    if not isinstance(amount, int):
-        amount = plan_entry.price_cents
     period_start = _invoice_period_start(obj)
     period_end = _invoice_period_end(obj)
     _announce_payment(

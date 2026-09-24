@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.21.2] — 2026-09-24
+
+### Fixed — a subscription purchase now says how much it charged
+
+The ledger row a paid plan writes (`subscription_bonus`, "Plan bonus" on
+checkout and "Plan renewal" on `invoice.paid`) carried `amount_cents=None`.
+The same type is also written by free signup grants and plan bundles, so a
+reader looking for sales could not tell a paying subscriber from a new free
+account: it either missed every subscription or counted every signup. The
+row now records what the provider actually charged — `amount_total` of the
+checkout session, `amount_paid` of the renewal invoice, falling back to the
+catalogue price only when the provider did not say — and `payment.completed`
+announces the same figure, so a coupon is no longer reported at full price.
+
 ## [0.21.1] — 2026-09-19
 
 ### Added — replaying a webhook the provider will never send again
