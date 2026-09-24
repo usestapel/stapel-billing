@@ -26,8 +26,10 @@ which is the defect, stated as a number, from the same code path the stand
 runs. Twenty-three of the twenty-five tests here failed on that tree.
 """
 import uuid
+from datetime import timedelta
 
 import pytest
+from django.utils import timezone
 
 from stapel_billing.models import ProviderGrant
 
@@ -114,7 +116,9 @@ def _payment_completed(payer, **overrides):
         "amount_cents": 2100,
         "currency": "usd",
         "transaction_id": str(uuid.uuid4()),
-        "created_at": "2026-09-16T10:00:00+00:00",
+        # Relative, never a literal: the freshness gate refuses facts older
+        # than NOTIFY_MAX_AGE_SECONDS, so a fixed date expires in a week.
+        "created_at": (timezone.now() - timedelta(hours=1)).isoformat(),
         "plan": "pro",
         "period_start": "2026-09-09T00:00:00+00:00",
         "period_end": "2026-10-09T00:00:00+00:00",

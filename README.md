@@ -24,7 +24,7 @@ pip install stapel-billing
 
 | Fact | Value |
 |---|---|
-| Version | `0.21.2` |
+| Version | `0.21.3` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 11 |
 | Config axes | 1 |

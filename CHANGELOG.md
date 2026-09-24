@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.3] — 2026-09-24
+
+0.21.2 was tagged but never published: its CI failed on nine receipt tests
+whose `payment.completed` fixture carried a literal `created_at` of
+2026-09-16. The freshness gate (`NOTIFY_MAX_AGE_SECONDS`, seven days)
+started refusing it on 2026-09-23, so the suite went red on an unchanged
+tree. The fixture is now relative to the clock. Contents otherwise as 0.21.2.
+
 ## [0.21.2] — 2026-09-24
 
 ### Fixed — a subscription purchase now says how much it charged
