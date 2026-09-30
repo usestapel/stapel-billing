@@ -1,12 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "billing.can_afford",
-  "description": "Payload for the billing.can_afford comm Function — would a debit or hold of `credits` succeed right now? A pure READ over the wallet's live credit lots (wrapper over stapel_billing.services.can_afford): no hold is taken, no lot is created, no allocation is written and no row is locked. It exists so consumers stop pre-flighting with a real hold they immediately release — every such probe returned the credits as a NEW hold_release lot, so an affordability check on each request grew the wallet's lot table without bound and slowed every later spend. Because nothing is locked, two callers can both be told yes: the caller that needs the answer to STAY true takes billing.hold instead. Returns {\"ok\": bool, \"affordable\": bool, \"balance\": int|null, \"shortfall\": int|null, \"reason\": str|null}; ok=false means the question could not be answered (reason user_not_found), while affordable=false with ok=true is the real answer 'no' (reason insufficient_credits).",
+  "description": "Payload for the billing.can_afford comm Function — would a debit or hold of `credits` succeed right now? A pure READ over the wallet's live credit lots (wrapper over stapel_billing.services.can_afford): no hold is taken, no lot is created, no allocation is written and no row is locked. It exists so consumers stop pre-flighting with a real hold they immediately release — every such probe returned the credits as a NEW hold_release lot, so an affordability check on each request grew the wallet's lot table without bound and slowed every later spend. Because nothing is locked, two callers can both be told yes: the caller that needs the answer to STAY true takes billing.hold instead. Returns {\"ok\": bool, \"affordable\": bool, \"balance\": int|null, \"shortfall\": int|null, \"reason\": str|null}; ok=false means the question could not be answered (reason user_unknown — no row and no identity to create one — or user_inactive), while affordable=false with ok=true is the real answer 'no' (reason insufficient_credits).",
   "type": "object",
-  "required": ["user_id", "credits"],
+  "required": [
+    "user_id",
+    "credits"
+  ],
   "properties": {
-    "user_id": { "type": "string", "format": "uuid" },
-    "credits": { "type": "integer", "minimum": 1 }
+    "user_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "credits": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "identity": {
+      "type": "object",
+      "description": "Who user_id is, so a user billing has not met yet can be materialised instead of refused (0.22.0). Only these keys; a bare id never creates a row.",
+      "properties": {
+        "is_anonymous": {
+          "type": "boolean"
+        },
+        "auth_type": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

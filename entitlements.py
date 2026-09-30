@@ -131,7 +131,14 @@ CAN_AFFORD = "billing.can_afford"
 REASON_NOT_IN_PLAN = "not_in_plan"
 REASON_LIMIT_EXCEEDED = "limit_exceeded"
 REASON_INSUFFICIENT_CREDITS = "insufficient_credits"
-REASON_USER_NOT_FOUND = "user_not_found"
+#: No local row for this user and the caller sent no identity to create one
+#: from — the question could not be asked. (``user_not_found`` until 0.22.0,
+#: when it was also the answer for a guest billing had simply not met yet.)
+REASON_USER_UNKNOWN = "user_unknown"
+#: The account was deleted or deactivated at the issuer.
+REASON_USER_INACTIVE = "user_inactive"
+#: Retired name, kept importable. Same value as :data:`REASON_USER_UNKNOWN`.
+REASON_USER_NOT_FOUND = REASON_USER_UNKNOWN
 REASON_UNKNOWN_KEY = "unknown_key"
 REASON_UNKNOWN_PLAN = "unknown_plan"
 REASON_HOLD_NOT_FOUND = "hold_not_found"
@@ -276,14 +283,12 @@ def debit(payload: dict) -> dict:
     done the work uses this instead of choosing between refusing a
     completed job and giving it away unrecorded.
     """
-    from django.contrib.auth import get_user_model
-
     from . import services
     from .models import TransactionType
 
-    user = get_user_model().objects.filter(id=payload["user_id"]).first()
+    user, reason = _resolve_user(payload)
     if user is None:
-        return {"ok": False, "balance": None, "reason": REASON_USER_NOT_FOUND}
+        return {"ok": False, "balance": None, "reason": reason}
 
     allow_partial = bool(payload.get("allow_partial"))
     try:
@@ -340,14 +345,14 @@ def can_afford(payload: dict) -> dict:
     """
     from . import services
 
-    user = _resolve_user(payload["user_id"])
+    user, reason = _resolve_user(payload)
     if user is None:
         return {
             "ok": False,
             "affordable": False,
             "balance": None,
             "shortfall": None,
-            "reason": REASON_USER_NOT_FOUND,
+            "reason": reason,
         }
     answer = services.can_afford(user=user, credits=payload["credits"])
     return {
@@ -359,10 +364,43 @@ def can_afford(payload: dict) -> dict:
     }
 
 
-def _resolve_user(user_id):
+def _resolve_user(payload: dict):
+    """``(user, None)`` or ``(None, reason)`` for a money function's caller.
+
+    FIRST CONTACT IS NOT "NOT FOUND". Users are mirrored here lazily — on
+    their first request to billing, or by a host's event handler — so a
+    peer asking about a brand-new account (a guest who uploads before the
+    browser has ever called billing) used to get ``user_not_found``, and the
+    caller could only guess. Measured on a client fleet (2026-09-28..30):
+    20 guests, 40 faults, 10 pages, every one an account that existed.
+
+    So a caller that knows WHO it is asking about sends ``identity`` (the
+    principal's ``is_anonymous`` / ``auth_type`` / ``username``), and the row
+    is materialised the same way the JWT seam would on the next request —
+    :func:`stapel_core.django.users.ensure_shadow_user`: tombstone- and
+    deactivation-aware, gated on ``JWT_CREATE_USERS_FROM_TOKEN``, race-safe.
+    A bare id never creates a row.
+    """
     from django.contrib.auth import get_user_model
 
-    return get_user_model().objects.filter(id=user_id).first()
+    uid = payload["user_id"]
+    user = get_user_model().objects.filter(id=uid).first()
+    if user is not None:
+        return user, None
+    identity = payload.get("identity")
+    if not isinstance(identity, dict):
+        return None, REASON_USER_UNKNOWN
+
+    from stapel_core.django.jwt.deactivation import is_user_deactivated
+    from stapel_core.django.jwt.tombstone import is_user_tombstoned
+    from stapel_core.django.users import ensure_shadow_user
+
+    if is_user_tombstoned(uid) or is_user_deactivated(uid):
+        return None, REASON_USER_INACTIVE
+    user = ensure_shadow_user(uid, identity)
+    if user is None:
+        return None, REASON_USER_UNKNOWN
+    return user, None
 
 
 def hold(payload: dict) -> dict:
@@ -388,10 +426,10 @@ def hold(payload: dict) -> dict:
     from . import services
     from .models import TransactionType
 
-    user = _resolve_user(payload["user_id"])
+    user, reason = _resolve_user(payload)
     if user is None:
         return {"ok": False, "hold_id": None, "balance": None,
-                "reason": REASON_USER_NOT_FOUND}
+                "reason": reason}
     ttl = payload.get("expires_in_seconds")
     try:
         held = services.hold(

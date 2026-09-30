@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.22.0] — 2026-10-01
+
+### Changed — a user billing has not met yet is met, not "not found"
+
+Measured on a client fleet (2026-09-28..30): guests upload before their
+browser has ever called billing, so a peer's `billing.can_afford` asked about
+accounts billing had no row for yet. Every answer was `user_not_found`; the
+caller could only treat it as "affordable" and page — 20 guests, 40 faults,
+10 pages, each about an account that existed, and a real provider outage
+page lost among them for 28 hours.
+
+- `billing.can_afford`, `billing.hold` and `billing.debit` accept an optional
+  `identity` (`is_anonymous`, `auth_type`, `username`; nothing else — the
+  schema refuses privilege keys). With it, a missing row is materialised
+  through `stapel_core.django.users.ensure_shadow_user` — the same seam the
+  JWT path uses: tombstone/deactivation-aware, gated on
+  `JWT_CREATE_USERS_FROM_TOKEN`, race-safe — and the question is answered on
+  the real wallet (a host's signup grant lands at that moment). A bare id
+  never creates a row.
+- `user_not_found` is retired. `user_unknown`: no row and no identity to
+  create one from (or creation refused). `user_inactive`: deleted or
+  deactivated at the issuer. `REASON_USER_NOT_FOUND` stays importable as an
+  alias of `REASON_USER_UNKNOWN`.
+
+### Fixed — a notification test that expired on 2026-09-28
+
+`TestASubscriptionThatWillNotRenewIsAnnounced` carried a literal period end
+of 2026-09-28; once it passed, a period that had already ended earned no
+letter and two tests went red on unchanged code. The dates are relative to
+the clock now.
+
 ## [0.21.3] — 2026-09-24
 
 0.21.2 was tagged but never published: its CI failed on nine receipt tests

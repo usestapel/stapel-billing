@@ -285,7 +285,7 @@ class TestDebitFunction:
                 "idempotency_key": "op-3",
             },
         )
-        assert result == {"ok": False, "balance": None, "reason": "user_not_found"}
+        assert result == {"ok": False, "balance": None, "reason": "user_unknown"}
 
     def test_debit_optional_type_description_metadata(self, user):
         self._fund(user, 10)
@@ -377,7 +377,7 @@ class TestCanAffordFunction:
             "billing.can_afford", {"user_id": str(uuid.uuid4()), "credits": 5}
         )
         assert answer["ok"] is False
-        assert answer["reason"] == "user_not_found"
+        assert answer["reason"] == "user_unknown"
 
     def test_payload_schema_enforced_through_comm_call(self, user):
         with pytest.raises(SchemaValidationError):

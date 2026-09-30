@@ -364,6 +364,17 @@ class TestADeclinedChargeIsAnnounced:
 
 
 @pytest.mark.django_db
+def _period_end(*, days: int) -> str:
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    end = (timezone.now() + timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return end.isoformat()
+
+
 class TestASubscriptionThatWillNotRenewIsAnnounced:
 
     def _changed(self, payer, **overrides):
@@ -371,7 +382,9 @@ class TestASubscriptionThatWillNotRenewIsAnnounced:
             "user_id": str(payer.id),
             "plan": "pro",
             "status": "active",
-            "current_period_end": "2026-09-28T00:00:00+00:00",
+            # Relative to the clock: a period that already ended earns no
+            # "access stops on" letter, so a literal date expires the test.
+            "current_period_end": _period_end(days=10),
             "cancel_at_period_end": True,
         }
         payload.update(overrides)
@@ -390,7 +403,7 @@ class TestASubscriptionThatWillNotRenewIsAnnounced:
         _deliver("subscription.changed", self._changed(payer))
         variables = notifier.variables_of("billing.subscription_ending")
 
-        assert variables["period_end"] == "2026-09-28"
+        assert variables["period_end"] == _period_end(days=10)[:10]
         assert variables["item_name"] == "Pro"
 
     def test_a_subscription_that_is_simply_active_says_nothing(
@@ -414,7 +427,7 @@ class TestASubscriptionThatWillNotRenewIsAnnounced:
         _deliver("subscription.changed", self._changed(payer))
         _deliver(
             "subscription.changed",
-            self._changed(payer, current_period_end="2026-10-28T00:00:00+00:00"),
+            self._changed(payer, current_period_end=_period_end(days=40)),
         )
 
         assert len(notifier.calls) == 2
