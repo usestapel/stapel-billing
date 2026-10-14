@@ -233,3 +233,117 @@ class TestClawbackWebhooks:
         assert ProviderGrant.objects.filter(
             scope=ProviderGrant.SCOPE_CLAWBACK
         ).count() == 0
+
+
+@pytest.mark.django_db
+class TestCumulativeRefunds:
+    """Stripe's ``amount_refunded`` is cumulative: a second partial refund
+    describes both. Clawing back the whole proportion again took the first
+    refund's credits twice (audit M7, 2026-10-15)."""
+
+    def _refund(self, event_id, refunded):
+        return {
+            "id": event_id,
+            "type": "charge.refunded",
+            "data": {"object": {"id": "ch_1", "payment_intent": "pi_1",
+                                "amount": 1000, "amount_refunded": refunded}},
+        }
+
+    def _balance(self, user):
+        wallet = services.get_or_create_wallet(user)
+        wallet.refresh_from_db()
+        return wallet.balance
+
+    def test_a_second_partial_refund_takes_only_the_delta(self, api_client, user):
+        _granted(user, 100)
+
+        _post(api_client, self._refund("evt_r1", 250))
+        assert self._balance(user) == 75
+        _post(api_client, self._refund("evt_r2", 500))
+
+        assert self._balance(user) == 50
+        assert not CreditDebt.objects.exists()
+
+    def test_a_full_refund_after_a_partial_one_takes_the_rest(self, api_client, user):
+        _granted(user, 100)
+
+        _post(api_client, self._refund("evt_r1", 250))
+        _post(api_client, self._refund("evt_r2", 1000))
+
+        assert self._balance(user) == 0
+        assert not CreditDebt.objects.exists()
+
+    def test_a_dispute_after_a_partial_refund_takes_only_the_rest(
+        self, api_client, user
+    ):
+        _granted(user, 100, stripe_charge_id="ch_1")
+
+        _post(api_client, self._refund("evt_r1", 250))
+        _post(api_client, {
+            "id": "evt_d1", "type": "charge.dispute.created",
+            "data": {"object": {"id": "dp_1", "charge": "ch_1"}},
+        })
+
+        assert self._balance(user) == 0
+        assert not CreditDebt.objects.exists()
+
+
+@pytest.mark.django_db
+class TestDisputeWon:
+    def _open(self, api_client):
+        return _post(api_client, {
+            "id": "evt_d1", "type": "charge.dispute.created",
+            "data": {"object": {"id": "dp_1", "charge": "ch_d"}},
+        })
+
+    def _close(self, api_client, status="won", event_id="evt_d2"):
+        return _post(api_client, {
+            "id": event_id, "type": "charge.dispute.closed",
+            "data": {"object": {"id": "dp_1", "charge": "ch_d", "status": status}},
+        })
+
+    def _balance(self, user):
+        wallet = services.get_or_create_wallet(user)
+        wallet.refresh_from_db()
+        return wallet.balance
+
+    def test_a_won_dispute_restores_the_credits(self, api_client, user):
+        _granted(user, 60, stripe_charge_id="ch_d")
+        self._open(api_client)
+        assert self._balance(user) == 0
+
+        assert self._close(api_client).status_code == 200
+
+        assert self._balance(user) == 60
+        row = Transaction.objects.get(metadata__dispute_won=True)
+        assert row.credits_delta == 60
+
+    def test_a_won_dispute_cancels_the_debt_it_opened(self, api_client, user):
+        _granted(user, 60, stripe_charge_id="ch_d")
+        services.debit(user=user, credits=50, type=TransactionType.AI_CHARGE)
+        self._open(api_client)
+        debt = CreditDebt.objects.get()
+        assert debt.credits_outstanding == 50
+
+        self._close(api_client)
+
+        debt.refresh_from_db()
+        assert debt.credits_outstanding == 0
+        assert self._balance(user) == 10
+
+    def test_a_lost_dispute_changes_nothing(self, api_client, user):
+        _granted(user, 60, stripe_charge_id="ch_d")
+        self._open(api_client)
+
+        self._close(api_client, status="lost")
+
+        assert self._balance(user) == 0
+
+    def test_a_won_dispute_is_restored_once(self, api_client, user):
+        _granted(user, 60, stripe_charge_id="ch_d")
+        self._open(api_client)
+
+        self._close(api_client, event_id="evt_d2")
+        self._close(api_client, event_id="evt_d3")
+
+        assert self._balance(user) == 60

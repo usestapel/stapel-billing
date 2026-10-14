@@ -535,6 +535,8 @@ class TestStripeHandlerRegistry:
         from stapel_billing.webhooks import registered_stripe_events
 
         assert registered_stripe_events() == [
+            # 0.23.0 — a won dispute restores what its clawback took.
+            "charge.dispute.closed",
             "charge.dispute.created",
             # 0.14.0 — money that did NOT arrive. Neither grants nor claws
             # back; both exist so a declined card produces a fact, and the

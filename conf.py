@@ -140,6 +140,14 @@ DEFAULTS = {
     # Who counts as internal: a dotted path to callable(user) -> bool.
     # Defaults to Django's own is_staff/is_superuser.
     "INTERNAL_ACCOUNT_RESOLVER": "stapel_billing.internal.staff_is_internal",
+    # Lot sources that do NOT travel when one account is folded into another
+    # (``user.merged``). A grant is given to an ACCOUNT — a signup bonus, a
+    # trial — so moving it would let anyone mint throwaway accounts and merge
+    # their grants into one wallet. Unspent credits from these lots (and
+    # credits a released hold returned to them) are expired on the merged
+    # wallet instead of moved; the survivor keeps its own grants. An empty
+    # list moves every lot.
+    "MERGE_FORFEIT_LOT_SOURCES": ["grant"],
 }
 
 billing_settings = AppSettings(
@@ -273,3 +281,16 @@ __all__ = [
     "allow_unvalidated_redirect_urls",
     "strict_checkout_reconciliation",
 ]
+
+
+def merge_forfeit_lot_sources() -> list[str]:
+    """``MERGE_FORFEIT_LOT_SOURCES`` as a list of lot-source strings.
+
+    A comma-separated env value is accepted; ``None`` means none.
+    """
+    value = billing_settings.MERGE_FORFEIT_LOT_SOURCES
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return [str(part) for part in value]

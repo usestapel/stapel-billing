@@ -226,11 +226,15 @@
     },
     "handle_charge_refunded": {
       "kind": "gate_function",
-      "intent": "Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated when the refund was partial. Name it only to wrap or replace it."
+      "intent": "Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated and net of earlier clawbacks. Name it only to wrap or replace it."
     },
     "handle_dispute_created": {
       "kind": "gate_function",
-      "intent": "Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a dispute won later is one manual credit, a dispute lost after the credits are spent is unrecoverable."
+      "intent": "Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a won dispute is restored by handle_dispute_closed."
+    },
+    "handle_dispute_closed": {
+      "kind": "gate_function",
+      "intent": "Built-in handler for `charge.dispute.closed`: a won dispute restores what its clawback took."
     },
     "handle_credit_note_created": {
       "kind": "gate_function",

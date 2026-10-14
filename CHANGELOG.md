@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.23.0] — 2026-10-15
+
+Minor: a merge no longer moves grant credits, and two webhook behaviours
+change. No migration.
+
+### Changed — grants stay with the account they were given to
+
+`merge_wallets` (the `user.merged` consumer) expires the merged wallet's
+unspent lots whose source is in the new `MERGE_FORFEIT_LOT_SOURCES` setting
+(default `["grant"]`) instead of moving them, one EXPIRATION row each with
+`metadata.merge_forfeit`. Moving them let anyone mint throwaway accounts and
+fold their signup grants into one wallet. The survivor keeps its own grants;
+purchases and subscription bundles move as before. `[]` restores the old
+behaviour. The counts dict gains `forfeited`.
+
+`hold_release` lots now carry the `granting_transaction` of the lot they came
+back to, so credits a released reservation returned to a grant are forfeited
+with it, and a refund of a grant reclaims them too.
+
+### Fixed — a second partial refund took the first one's credits again
+
+Stripe reports `amount_refunded` cumulatively. The refund clawback now takes
+the proportion minus what earlier clawbacks of the same grant already
+requested; a full refund or a dispute after a partial refund takes only the
+rest.
+
+### Added — `charge.dispute.closed`
+
+`handle_dispute_closed`: a dispute closed as `won` restores what its clawback
+took — the reclaimed credits come back as a lot with the grant's source and
+expiry, the debt it opened is closed and what that debt already collected is
+credited back. Idempotent per event and per clawback row. Any other outcome
+changes nothing.
+
 ## [0.22.0] — 2026-10-01
 
 ### Changed — a user billing has not met yet is met, not "not found"

@@ -538,6 +538,10 @@ def _refund_allocations(hold: CreditHold, credits: int) -> int:
             credits_initial=amount,
             credits_remaining=amount,
             expires_at=alloc.lot.expires_at,
+            # Returned credits stay attributable to the grant that created
+            # them: a refund of that grant reclaims them, and a merge that
+            # forfeits grants forfeits them too.
+            granting_transaction_id=alloc.lot.granting_transaction_id,
         )
         alloc.credits -= amount
         alloc.save(update_fields=["credits"])
@@ -1406,6 +1410,7 @@ def merge_wallets(*, from_user_id, into_user_id) -> dict[str, int]:
         "credit_holds": 0,
         "credit_debts": 0,
         "subscriptions": 0,
+        "forfeited": 0,
     }
     key = merge_idempotency_key(from_user_id, into_user_id)
     if Transaction.objects.filter(idempotency_key=key).exists():
@@ -1438,6 +1443,7 @@ def merge_wallets(*, from_user_id, into_user_id) -> dict[str, int]:
     # Before counting: credits that died of old age must not travel as live
     # ones, and the EXPIRATION rows belong on the wallet that held them.
     _expire_due_lots(merged, now=now)
+    counts["forfeited"] = _forfeit_lots_on_merge(merged, now=now)
     moved_credits = _live_balance(merged, now=now)
 
     # A hold's idempotency key is unique per wallet, so two accounts that
@@ -1497,6 +1503,69 @@ def merge_wallets(*, from_user_id, into_user_id) -> dict[str, int]:
     # credits arrived, then any debt the survivor carries took its share.
     _settle_debts(survivor, now=now)
     return counts
+
+
+def _forfeit_lots_on_merge(wallet, *, now) -> int:
+    """Expire the merged wallet's account-bound credits. Returns credits forfeited.
+
+    Lots whose source is in ``MERGE_FORFEIT_LOT_SOURCES`` — and the
+    ``hold_release`` lots that carry credits back to them — belong to the
+    account they were given to. Moving them on a merge turns every throwaway
+    account into a transferable grant. Each forfeited lot gets an EXPIRATION
+    row on the wallet that held it, so the ledger says where they went.
+    """
+    from .conf import merge_forfeit_lot_sources
+
+    sources = merge_forfeit_lot_sources()
+    if not sources:
+        return 0
+    grant_txn_ids = set(
+        CreditLot.objects.filter(wallet=wallet, source__in=sources)
+        .exclude(granting_transaction_id__isnull=True)
+        .values_list("granting_transaction_id", flat=True)
+    )
+    condition = Q(source__in=sources)
+    if grant_txn_ids:
+        condition |= Q(
+            source=LotSource.HOLD_RELEASE, granting_transaction_id__in=grant_txn_ids
+        )
+    lots = list(
+        CreditLot.objects.select_for_update()
+        .filter(condition, wallet=wallet, credits_remaining__gt=0)
+        .order_by("created_at", "id")
+    )
+    if not lots:
+        return 0
+    running = _live_balance(wallet, now=now)
+    total = 0
+    for lot in lots:
+        amount = lot.credits_remaining
+        lot.credits_remaining = 0
+        lot.save(update_fields=["credits_remaining"])
+        running -= amount
+        total += amount
+        Transaction.objects.create(
+            wallet=wallet,
+            lot=lot,
+            type=TransactionType.EXPIRATION,
+            amount_cents=None,
+            credits_delta=-amount,
+            balance_after=running,
+            description="Credits not transferable on account merge",
+            metadata={
+                "lot_id": str(lot.id),
+                "source": lot.source,
+                "merge_forfeit": True,
+            },
+        )
+    _sync_balance(wallet, now=now)
+    logger.info(
+        "merge: forfeited %s account-bound credit(s) in %s lot(s) on wallet %s",
+        total,
+        len(lots),
+        wallet.id,
+    )
+    return total
 
 
 def _merge_subscription(from_user_id, into_user_id) -> int:
@@ -3492,6 +3561,24 @@ def claw_back_grant(
     )
 
 
+def _already_clawed_back(txn: Transaction) -> int:
+    """Credits earlier clawbacks of *txn* already requested, net of reversals.
+
+    Stripe reports refunds CUMULATIVELY (``amount_refunded`` on the charge),
+    so the second partial refund of a charge describes both refunds; the
+    clawback for it is the difference, never the whole proportion again.
+    """
+    total = 0
+    for meta in Transaction.objects.filter(
+        type=TransactionType.REFUND, metadata__clawback_of=str(txn.id)
+    ).values_list("metadata", flat=True):
+        try:
+            total += int(meta.get("requested") or 0) - int(meta.get("reversed") or 0)
+        except (TypeError, ValueError):
+            continue
+    return max(total, 0)
+
+
 def _handle_clawback(event: dict, *, label: str) -> None:
     """Shared body of the three money-back webhooks.
 
@@ -3520,16 +3607,37 @@ def _handle_clawback(event: dict, *, label: str) -> None:
     ):
         return
     for txn in grants:
-        claw_back_grant(
-            txn=txn,
-            credits=_clawback_credits(obj, txn),
-            description=f"{label}: {txn.description or txn.type}",
-            metadata={
-                "clawback_reason": label,
-                "stripe_event_id": event_id,
-                "stripe_object_id": obj.get("id"),
-            },
+        _claw_back_remaining(obj, txn, label=label, event_id=event_id)
+
+
+@transaction.atomic
+def _claw_back_remaining(obj: dict, txn: Transaction, *, label: str, event_id) -> None:
+    """Claw back what *obj* says is refunded of *txn*, minus earlier clawbacks."""
+    # Locked so two refund events for one charge cannot both read the same
+    # "already clawed back" total.
+    Wallet.objects.select_for_update().filter(pk=txn.wallet_id).first()
+    target = min(_clawback_credits(obj, txn), txn.credits_delta)
+    credits = target - _already_clawed_back(txn)
+    if credits <= 0:
+        logger.info(
+            "%s event %s: grant %s already clawed back to %s credit(s) — "
+            "nothing more to take",
+            label,
+            event_id,
+            txn.id,
+            target,
         )
+        return
+    claw_back_grant(
+        txn=txn,
+        credits=credits,
+        description=f"{label}: {txn.description or txn.type}",
+        metadata={
+            "clawback_reason": label,
+            "stripe_event_id": event_id,
+            "stripe_object_id": obj.get("id"),
+        },
+    )
 
 
 def handle_charge_refunded(event: dict) -> None:
@@ -3546,6 +3654,112 @@ def handle_dispute_created(event: dict) -> None:
     spent is unrecoverable.
     """
     _handle_clawback(event, label="dispute")
+
+
+def handle_dispute_closed(event: dict) -> None:
+    """``charge.dispute.closed`` — a WON dispute gives the credits back.
+
+    The clawback ran when the dispute opened. When the merchant wins, the
+    money stays, so the credits the dispute took come back: what was taken
+    out of the grant's lots is re-credited with the grant's expiry, and the
+    debt it opened is closed (what that debt already collected is credited
+    back too). Any other outcome changes nothing — a lost dispute was
+    already clawed back. Idempotent per event and per clawback row.
+    """
+    obj = event.get("data", {}).get("object") or {}
+    event_id = event.get("id")
+    status = obj.get("status")
+    dispute_id = obj.get("id")
+    if status != "won" or not dispute_id:
+        logger.info(
+            "dispute %s closed with status %r — nothing to give back", dispute_id, status
+        )
+        return
+    rows = list(
+        Transaction.objects.filter(
+            type=TransactionType.REFUND,
+            metadata__clawback_reason="dispute",
+            metadata__stripe_object_id=dispute_id,
+        ).order_by("created_at", "id")
+    )
+    if not rows:
+        logger.warning(
+            "won dispute %s (event %s) matches no clawback of ours", dispute_id, event_id
+        )
+        return
+    if not claim_provider_object(
+        scope=ProviderGrant.SCOPE_CLAWBACK, external_id=event_id
+    ):
+        return
+    for row in rows:
+        _reverse_clawback(row, event_id=event_id)
+
+
+@transaction.atomic
+def _reverse_clawback(row: Transaction, *, event_id) -> int:
+    """Undo one clawback row. Returns the credits given back."""
+    now = timezone.now()
+    wallet = Wallet.objects.select_for_update().get(pk=row.wallet_id)
+    row = Transaction.objects.select_for_update().get(pk=row.pk)
+    meta = dict(row.metadata or {})
+    if meta.get("reversed"):
+        return 0
+    grant = Transaction.objects.filter(pk=meta.get("clawback_of")).first()
+    reclaimed = int(meta.get("reclaimed") or 0)
+    collected = 0
+    debt_id = meta.get("debt_id")
+    if debt_id:
+        debt = CreditDebt.objects.select_for_update().filter(pk=debt_id).first()
+        if debt is not None:
+            collected = max(debt.credits_initial - debt.credits_outstanding, 0)
+            if debt.credits_outstanding > 0:
+                debt.credits_outstanding = 0
+                debt.settled_at = now
+                debt.metadata = {**(debt.metadata or {}), "cancelled_by": event_id}
+                debt.save(update_fields=["credits_outstanding", "settled_at", "metadata"])
+    given_back = reclaimed + collected
+    if given_back > 0:
+        template = (
+            CreditLot.objects.filter(granting_transaction=grant)
+            .order_by("created_at", "id")
+            .first()
+            if grant is not None
+            else None
+        )
+        lot = CreditLot.objects.create(
+            wallet=wallet,
+            source=template.source if template else LotSource.ADJUSTMENT,
+            credits_initial=given_back,
+            credits_remaining=given_back,
+            expires_at=template.expires_at if template else None,
+            granting_transaction=grant,
+        )
+        _expire_due_lots(wallet, now=now)
+        balance = _sync_balance(wallet, now=now)
+        Transaction.objects.create(
+            wallet=wallet,
+            lot=lot,
+            type=TransactionType.ADJUSTMENT,
+            amount_cents=None,
+            credits_delta=given_back,
+            balance_after=balance,
+            description="Dispute won: credits restored",
+            metadata={
+                "dispute_won": True,
+                "reverses": str(row.id),
+                "stripe_event_id": event_id,
+            },
+        )
+    meta["reversed"] = int(meta.get("requested") or 0)
+    meta["reversed_by"] = event_id
+    row.metadata = meta
+    row.save(update_fields=["metadata"])
+    if given_back > 0:
+        _settle_debts(wallet, now=now)
+    logger.info(
+        "dispute won: restored %s credit(s) from clawback %s", given_back, row.id
+    )
+    return given_back
 
 
 def handle_credit_note_created(event: dict) -> None:

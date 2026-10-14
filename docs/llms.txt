@@ -1,8 +1,8 @@
-# stapel-billing 0.22.0
+# stapel-billing 0.23.0
 
 Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.
 
-Contract: axes 1 · surface 69 · extension points 6 · operations 11 · error codes 56.
+Contract: axes 1 · surface 70 · extension points 6 · operations 11 · error codes 56.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -41,13 +41,15 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - handle_charge_failed — stapel_billing.services.handle_charge_failed
   Built-in handler for `charge.failed`, the one-off-purchase half of the above. A bare charge names no subscription, so an unattributable failure is dropped rather than mailed at a guess.
 - handle_charge_refunded — stapel_billing.services.handle_charge_refunded
-  Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated when the refund was partial. Name it only to wrap or replace it.
+  Built-in handler for `charge.refunded`: claws the granted credits back out of that grant's lots, prorated and net of earlier clawbacks. Name it only to wrap or replace it.
 - handle_checkout_completed — stapel_billing.services.handle_checkout_completed
   The exact reconciliation this module performs when checkout.session.completed fires: award the package's credits, or open/refresh the Subscription and grant the plan's first monthly bundle, each with its payment.completed / subscription.changed announcement. Read it before writing a parallel handler for the same event, and never call it outside StripeWebhookView's StripeWebhookEvent claim + row lock — at-least-once delivery double-grants otherwise.
 - handle_credit_note_created — stapel_billing.services.handle_credit_note_created
   Built-in handler for `credit_note.created`: an invoice credited back takes its bundle back too. Name it only to wrap or replace it.
+- handle_dispute_closed — stapel_billing.services.handle_dispute_closed
+  Built-in handler for `charge.dispute.closed`: a won dispute restores what its clawback took.
 - handle_dispute_created — stapel_billing.services.handle_dispute_created
-  Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a dispute won later is one manual credit, a dispute lost after the credits are spent is unrecoverable.
+  Built-in handler for `charge.dispute.created`: claws back when the dispute OPENS, not when it resolves — a won dispute is restored by handle_dispute_closed.
 - handle_invoice_paid — stapel_billing.services.handle_invoice_paid
   The renewal grant on invoice.paid — the month-two-onward credits a subscriber would otherwise never receive; skips the initial invoice (already granted at checkout) and claims the invoice through claim_provider_object, so the several distinct events Stripe sends for one paid invoice credit it exactly once. Read it instead of writing a product-side renewal grant, and call it only under the same webhook claim protocol as its siblings.
 - handle_invoice_payment_failed — stapel_billing.services.handle_invoice_payment_failed

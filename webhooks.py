@@ -76,6 +76,7 @@ BUILTIN_STRIPE_HANDLERS: dict[str, str] = {
     "charge.failed": "stapel_billing.services.handle_charge_failed",
     "charge.refunded": "stapel_billing.services.handle_charge_refunded",
     "charge.dispute.created": "stapel_billing.services.handle_dispute_created",
+    "charge.dispute.closed": "stapel_billing.services.handle_dispute_closed",
     "credit_note.created": "stapel_billing.services.handle_credit_note_created",
 }
 

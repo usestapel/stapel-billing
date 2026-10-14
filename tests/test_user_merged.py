@@ -223,7 +223,80 @@ class TestExactlyOnce:
             "credit_holds": 0,
             "credit_debts": 0,
             "subscriptions": 0,
+            "forfeited": 0,
         }
+
+
+def _grant(user, credits):
+    return services.credit(
+        user=user,
+        credits=credits,
+        type=TransactionType.SUBSCRIPTION_BONUS,
+        source=LotSource.GRANT,
+    )
+
+
+@pytest.mark.django_db
+class TestGrantsStayWithTheirAccount:
+    """A grant belongs to the account it was given to. Moving it on a merge
+    let anyone mint throwaway accounts and fold their signup grants into one
+    wallet (audit C3, 2026-10-15)."""
+
+    def test_a_guests_unspent_grant_does_not_move(self, guest, survivor):
+        _grant(guest, 150)
+        _fund(guest, 20)
+        _grant(survivor, 150)
+
+        handle_user_merged(_merge(guest, survivor))
+
+        survivor_wallet = Wallet.objects.get(user=survivor)
+        assert survivor_wallet.balance == 170
+        # The ledger moves with the account, so the forfeit row is readable
+        # on the survivor's history next to the merge row.
+        forfeit = Transaction.objects.get(
+            type=TransactionType.EXPIRATION, metadata__merge_forfeit=True
+        )
+        assert forfeit.credits_delta == -150
+        merge_row = Transaction.objects.get(
+            wallet=survivor_wallet, type=TransactionType.ADJUSTMENT
+        )
+        assert merge_row.credits_delta == 20
+
+    def test_grant_credits_returned_by_a_released_hold_do_not_move(
+        self, guest, survivor
+    ):
+        _grant(guest, 150)
+        held = services.hold(
+            user=guest, credits=40, type=TransactionType.AI_CHARGE,
+            idempotency_key="k1",
+        )
+        services.release(hold_id=held.id)
+        assert CreditLot.objects.filter(source=LotSource.HOLD_RELEASE).exists()
+
+        counts = services.merge_wallets(
+            from_user_id=str(guest.id), into_user_id=str(survivor.id)
+        )
+
+        assert counts["forfeited"] == 150
+        assert counts["credits"] == 0
+        assert Wallet.objects.get(user=survivor).balance == 0
+
+    def test_an_empty_source_list_moves_everything(self, guest, survivor, settings):
+        from stapel_billing.conf import billing_settings
+
+        settings.STAPEL_BILLING = {"MERGE_FORFEIT_LOT_SOURCES": []}
+        billing_settings.reload()
+        try:
+            _grant(guest, 150)
+            counts = services.merge_wallets(
+                from_user_id=str(guest.id), into_user_id=str(survivor.id)
+            )
+        finally:
+            settings.STAPEL_BILLING = {}
+            billing_settings.reload()
+
+        assert counts["forfeited"] == 0
+        assert Wallet.objects.get(user=survivor).balance == 150
 
 
 @pytest.mark.django_db
