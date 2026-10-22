@@ -569,6 +569,30 @@ class TestADeclinedRenewalBecomesAFact:
         assert payload["plan"] == "pro"
         assert payload["decline_reason"] == "insufficient_funds"
 
+    def test_a_failed_renewal_in_the_current_api_shape_is_attributed(self, payer):
+        """API versions from 2025-03-31 drop ``invoice.subscription``; the
+        id is under ``parent.subscription_details``. No customer id here, so
+        only the subscription route can find the payer."""
+        from stapel_billing import services
+
+        self._subscription(payer)
+        received = self._emitted()
+        services.handle_invoice_payment_failed({
+            "type": "invoice.payment_failed",
+            "data": {"object": {
+                "id": "in_failed_dahlia",
+                "parent": {
+                    "type": "subscription_details",
+                    "subscription_details": {"metadata": {}, "subscription": "sub_live_1"},
+                },
+                "currency": "usd",
+                "amount_due": 900,
+            }},
+        })
+        assert len(received) == 1
+        assert received[-1].payload["user_id"] == str(payer.id)
+        assert received[-1].payload["plan"] == "pro"
+
     def test_a_failure_nobody_can_be_attributed_to_emits_nothing(self, payer):
         """Better silent than mailing the wrong payer about a stranger's card."""
         from stapel_billing import services

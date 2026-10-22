@@ -549,11 +549,13 @@ def _portal(call):
 
 
 @empty_state("GET", "/portal")
-def _portal_no_customer(call):
-    """An account with no subscription row at all, so ``customer_id`` is the
-    empty string — the state a portal link is asked for in most often, and
-    the one where a null ``portal_url`` would show up if it ever could."""
-    return call(client_for(make_user()))
+def _portal_fresh_customer(call):
+    """The emptiest account that HAS a portal: a subscriber with nothing else
+    on the ledger. An account with no provider customer at all is not this
+    DTO's empty state — it is ``409 error.409.no_billing_account``, asserted
+    in test_endpoints, because a made-up link is not a portal."""
+    user, _sub = paid_subscription()
+    return call(client_for(user))
 
 
 # ── the subscription ─────────────────────────────────────────────────────────

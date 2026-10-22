@@ -7,6 +7,8 @@ from stapel_billing.conf import billing_settings
 from stapel_billing.models import LotSource, Subscription, TransactionType, Wallet
 from stapel_billing.providers.base import PaymentProvider
 
+from .stripe_ids import sid
+
 
 @pytest.fixture(autouse=True)
 def _reset_billing_settings():
@@ -154,14 +156,25 @@ class TestCustomerPortalEndpoint:
     def test_requires_auth(self, api_client):
         assert api_client.get("/billing/api/portal").status_code in (401, 403)
 
-    def test_portal_without_subscription(
+    def test_portal_without_a_provider_customer_is_409_not_a_made_up_link(
         self, authed_client, stripe_placeholders_allowed
     ):
+        """A free account has nothing at the provider to manage.
+
+        It used to get ``200 {"portal_url": "https://example.invalid/..."}``,
+        and the browser followed it to a dead page — the "Manage" button of
+        every account that had never paid.
+        """
         resp = authed_client.get("/billing/api/portal")
-        assert resp.status_code == 200
-        assert resp.json()["portal_url"] == (
-            "https://example.invalid/stripe-portal-not-configured"
-        )
+        assert resp.status_code == 409
+        assert resp.json()["localizable_error"] == "error.409.no_billing_account"
+        assert "portal_url" not in resp.json()
+
+    def test_free_row_without_customer_is_409(self, authed_client, user):
+        Subscription.objects.create(user=user, plan="free", status="active")
+        resp = authed_client.get("/billing/api/portal")
+        assert resp.status_code == 409
+        assert resp.json()["localizable_error"] == "error.409.no_billing_account"
 
     def test_portal_with_subscription_but_unconfigured_stripe(
         self, authed_client, user, stripe_placeholders_allowed, settings
@@ -180,6 +193,31 @@ class TestCustomerPortalEndpoint:
         )
         assert resp.status_code == 200
         assert "example.invalid" in resp.json()["portal_url"]
+
+    def test_portal_refused_by_stripe_is_502_not_500(
+        self, authed_client, user, settings, monkeypatch
+    ):
+        """Live mode refuses every portal session until the operator saves
+        the portal settings once. That is the deployment's configuration,
+        answered as "the upstream cannot serve this", never a crash."""
+        import stripe
+
+        from stapel_billing.providers.stripe import StripeProvider
+
+        Subscription.objects.create(user=user, stripe_customer_id="cus_77")
+        settings.STAPEL_BILLING = {"STRIPE_SECRET_KEY": "sk_test_dummy"}
+
+        def refuse(**kwargs):
+            raise stripe.InvalidRequestError(
+                "No configuration provided and your live mode default "
+                "configuration has not been created.",
+                param=None,
+            )
+
+        monkeypatch.setattr(stripe.billing_portal.Session, "create", refuse)
+        assert StripeProvider().is_configured()
+        resp = authed_client.get("/billing/api/portal")
+        assert resp.status_code == 502
 
 
 @pytest.mark.django_db
@@ -401,7 +439,8 @@ class TestRedirectUrlResolution:
             "cancel_url": "https://req.example/c",
         }
 
-    def test_portal_uses_portal_return_url_fallback(self, authed_client, settings):
+    def test_portal_uses_portal_return_url_fallback(self, authed_client, user, settings):
+        Subscription.objects.create(user=user, stripe_customer_id=sid("cus", "portal"))
         settings.STAPEL_BILLING = {
             "PAYMENT_PROVIDER": RECORDING_PATH,
             "PORTAL_RETURN_URL": "https://app.example/billing",

@@ -145,7 +145,7 @@
     "/billing/api/v1/portal": {
       "get": {
         "operationId": "billing_api_v1_portal_retrieve",
-        "description": "Overridable serializer seam for every billing APIView.\n\nHost projects can swap the request/response serializer of any view by\nsubclassing and setting ``request_serializer_class`` /\n``response_serializer_class`` (or overriding the getters for\nper-request decisions) — no need to rewrite the HTTP method bodies.\n\n**Permissions:** `IsAuthenticated`",
+        "description": "A one-time customer-portal link. 409 `error.409.no_billing_account` when the account never paid (offer it only when `is_paid`); 502 when the provider cannot open one.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Checkout"
         ],

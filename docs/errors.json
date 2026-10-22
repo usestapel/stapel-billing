@@ -386,6 +386,14 @@
     "owner": "stapel_billing"
   },
   {
+    "code": "error.409.no_billing_account",
+    "status": 409,
+    "params": [],
+    "remediation": "verify",
+    "en": "There is no billing account at the payment provider to manage yet",
+    "owner": "stapel_billing"
+  },
+  {
     "code": "error.409.subscription_not_paid",
     "status": 409,
     "params": [],

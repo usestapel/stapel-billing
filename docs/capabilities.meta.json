@@ -72,7 +72,7 @@
   "surface": {
     "get_or_create_wallet": {
       "kind": "factory",
-      "intent": "The one way to reach a user's Wallet — created on first touch, so no caller has to decide what \"a user who never paid\" means. Read balances through it instead of querying or creating Wallet rows yourself; a hand-made row is harmless, a hand-set balance is a ledger its transactions no longer explain.",
+      "intent": "The one way to reach a user's Wallet — created on first touch, so no caller has to decide what \"a user who never paid\" means. Read balances through it instead of querying or creating Wallet rows yourself.",
       "instead_of": [
         "stapel_billing.models.Wallet.objects.get_or_create"
       ]

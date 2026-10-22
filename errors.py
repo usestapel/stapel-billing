@@ -16,6 +16,7 @@ ERR_400_INVALID_WEBHOOK_PAYLOAD = "error.400.invalid_webhook_payload"
 ERR_403_FORBIDDEN_BILLING = "error.403.forbidden_billing"
 ERR_409_DUPLICATE_WEBHOOK = "error.409.duplicate_webhook_event"
 ERR_409_SUBSCRIPTION_NOT_PAID = "error.409.subscription_not_paid"
+ERR_409_NO_BILLING_ACCOUNT = "error.409.no_billing_account"
 
 BILLING_ERRORS = {
     ERR_404_WALLET_NOT_FOUND: "Wallet not found",
@@ -36,6 +37,9 @@ BILLING_ERRORS = {
     ERR_403_FORBIDDEN_BILLING: "Forbidden: cannot manage this billing account",
     ERR_409_DUPLICATE_WEBHOOK: "Stripe event already processed",
     ERR_409_SUBSCRIPTION_NOT_PAID: "There is no paid subscription to cancel",
+    ERR_409_NO_BILLING_ACCOUNT: (
+        "There is no billing account at the payment provider to manage yet"
+    ),
 }
 
 # Machine-readable recovery hints (remediation) — the canonical "what to do"
@@ -85,6 +89,10 @@ BILLING_ERRORS = {
 #     render from `is_paid`. `verify` is the "your state is stale, go look
 #     again" signal; fix_input would point the user at a field that does not
 #     exist, and retry would loop a request that cannot start succeeding.
+#   * 409 no_billing_account → verify, for the same reason: the portal call
+#     takes no input, and the account has never paid, so there is nothing at
+#     the provider to open. Re-read GET /subscription and offer the portal
+#     only when `is_paid` is true.
 BILLING_REMEDIATION = {
     ERR_404_WALLET_NOT_FOUND: "fix_input",
     ERR_404_SUBSCRIPTION_NOT_FOUND: "fix_input",
@@ -100,6 +108,7 @@ BILLING_REMEDIATION = {
     ERR_403_FORBIDDEN_BILLING: "contact_support",
     ERR_409_DUPLICATE_WEBHOOK: "retry",
     ERR_409_SUBSCRIPTION_NOT_PAID: "verify",
+    ERR_409_NO_BILLING_ACCOUNT: "verify",
 }
 
 register_service_errors(BILLING_ERRORS, remediation=BILLING_REMEDIATION)

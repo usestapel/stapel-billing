@@ -29,6 +29,16 @@ class ProviderNotConfiguredError(RuntimeError):
     """
 
 
+class NoProviderCustomerError(LookupError):
+    """The account has no customer at the payment provider.
+
+    Someone who never paid has nothing at the provider to manage. A link
+    to a made-up address is not an answer: the browser follows it to a
+    dead page, which is what a customer pressing "Manage" used to get.
+    Views translate it into ``409 error.409.no_billing_account``.
+    """
+
+
 class PaymentProvider(ABC):
     """Base class for payment backends (Stripe by default)."""
 

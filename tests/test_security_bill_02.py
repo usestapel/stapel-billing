@@ -170,7 +170,10 @@ class TestPortalRedirectAllowlist:
         assert ERR_400_REDIRECT_URL_NOT_ALLOWED in resp.content.decode()
         assert recording_provider.seen == {}
 
-    def test_frontend_return_url_is_accepted(self, authed_client, recording_provider):
+    def test_frontend_return_url_is_accepted(self, authed_client, user, recording_provider):
+        from stapel_billing.models import Subscription
+
+        Subscription.objects.create(user=user, stripe_customer_id="cus_sec_portal")
         resp = authed_client.get(PORTAL_URL, {"return_url": "https://front.example/b"})
         assert resp.status_code == 200
         assert recording_provider.seen["return_url"] == "https://front.example/b"

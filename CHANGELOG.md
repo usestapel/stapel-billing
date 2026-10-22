@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.24.0] — 2026-10-22
+
+Minor: the portal endpoint answers 409 where it used to fabricate a link.
+No migration.
+
+### Fixed — renewals on current Stripe API versions granted nothing
+
+From API version 2025-03-31 an invoice no longer carries a top-level
+`subscription`; the id is at `parent.subscription_details.subscription`
+and on each line at `parent.subscription_item_details.subscription`.
+`handle_invoice_paid` read only the old field, so on an account using a
+current API version every renewal invoice was acknowledged, marked
+processed, and granted no credits. The new private resolver reads every
+shape (top level, parent, lines); `invoice.payment_failed` attribution uses
+it too. A paid subscription invoice that names no readable subscription, or
+a subscription no local row holds, now logs an ERROR instead of returning
+silently. Re-running a stored renewal through `handle_invoice_paid` stays
+idempotent per invoice (`ProviderGrant`, scope `invoice`).
+
+### Changed — `GET /portal` refuses instead of inventing a URL
+
+An account with no provider customer used to get
+`200 {"portal_url": "https://example.invalid/stripe-portal-not-configured"}`,
+which a client followed to a dead page. It now gets
+`409 error.409.no_billing_account` (remediation `verify`: offer the portal
+only when `GET /subscription` says `is_paid`). `StripeProvider
+.create_portal_session` raises `NoProviderCustomerError` for an empty
+customer id, and turns Stripe's refusal (for example a live account whose
+portal settings were never saved) into `ProviderNotConfiguredError`, which
+the view answers with 502 instead of a 500.
+
 ## [0.23.0] — 2026-10-15
 
 Minor: a merge no longer moves grant credits, and two webhook behaviours

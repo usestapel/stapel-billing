@@ -274,6 +274,108 @@ class TestSubscriptionLifecycleEvents:
         assert txn.metadata["stripe_invoice_id"] == sid("in", "9")
         assert txn.amount_cents == 1500
 
+    @staticmethod
+    def _dahlia_invoice(invoice_id, sub_id, *, reason="subscription_cycle", status="paid"):
+        """An invoice as API versions from 2025-03-31 shape it.
+
+        Captured from a live ``invoice.paid`` (API 2026-06-24.dahlia), keys
+        only: there is NO top-level ``subscription``; the id is under
+        ``parent.subscription_details`` and on each line under
+        ``parent.subscription_item_details``.
+        """
+        return {
+            "id": invoice_id,
+            "object": "invoice",
+            "billing_reason": reason,
+            "status": status,
+            "amount_paid": 900,
+            "currency": "usd",
+            "parent": {
+                "type": "subscription_details",
+                "quote_details": None,
+                "subscription_details": {"metadata": {}, "subscription": sub_id},
+            },
+            "lines": {
+                "data": [
+                    {
+                        "id": sid("il", invoice_id),
+                        "parent": {
+                            "type": "subscription_item_details",
+                            "invoice_item_details": None,
+                            "subscription_item_details": {
+                                "proration": False,
+                                "invoice_item": None,
+                                "subscription": sub_id,
+                                "subscription_item": sid("si", invoice_id),
+                            },
+                        },
+                        "period": {"start": 1792152181, "end": 4102444800},
+                    }
+                ]
+            },
+        }
+
+    def test_renewal_in_the_current_api_shape_is_granted(self, api_client, user):
+        """The live defect: every renewal on a dahlia-version account was
+        acknowledged, marked processed, and granted nothing."""
+        self._make_sub(user)
+        event = {
+            "id": sid("evt", "inv_dahlia"),
+            "type": "invoice.paid",
+            "data": {"object": self._dahlia_invoice(sid("in", "dahlia"), sid("sub", "lc"))},
+        }
+        assert _post(api_client, event).status_code == 200
+        wallet = Wallet.objects.get(user=user)
+        assert wallet.balance == 300
+        txn = Transaction.objects.get(wallet=wallet)
+        assert txn.metadata["stripe_invoice_id"] == sid("in", "dahlia")
+        assert txn.metadata["stripe_subscription_id"] == sid("sub", "lc")
+        assert txn.amount_cents == 900
+        # The twin event Stripe sends for the same invoice grants nothing more.
+        twin = {**event, "id": sid("evt", "inv_dahlia_twin"), "type": "invoice.payment_succeeded"}
+        assert _post(api_client, twin).status_code == 200
+        assert Transaction.objects.filter(wallet=wallet).count() == 1
+
+    def test_renewal_found_from_the_line_when_parent_is_absent(self, api_client, user):
+        self._make_sub(user)
+        obj = self._dahlia_invoice(sid("in", "line_only"), sid("sub", "lc"))
+        obj.pop("parent")
+        event = {"id": sid("evt", "inv_line"), "type": "invoice.paid", "data": {"object": obj}}
+        assert _post(api_client, event).status_code == 200
+        assert Wallet.objects.get(user=user).balance == 300
+
+    def test_current_shape_initial_invoice_does_not_double_grant(self, api_client, user):
+        self._make_sub(user)
+        obj = self._dahlia_invoice(sid("in", "first"), sid("sub", "lc"), reason="subscription_create")
+        event = {"id": sid("evt", "inv_first"), "type": "invoice.paid", "data": {"object": obj}}
+        assert _post(api_client, event).status_code == 200
+        assert not Wallet.objects.filter(user=user).exists()
+
+    def test_paid_renewal_nobody_can_place_is_an_error_not_silence(
+        self, api_client, user, caplog
+    ):
+        obj = self._dahlia_invoice(sid("in", "orphan"), sid("sub", "nobody"))
+        event = {"id": sid("evt", "inv_orphan"), "type": "invoice.paid", "data": {"object": obj}}
+        with caplog.at_level("ERROR", logger="stapel_billing.services"):
+            assert _post(api_client, event).status_code == 200
+        assert Wallet.objects.count() == 0
+        assert any(
+            r.levelname == "ERROR" and "renewal grant is NOT made" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_subscription_invoice_in_an_unknown_shape_is_an_error(
+        self, api_client, user, caplog
+    ):
+        obj = {"id": sid("in", "unknown"), "billing_reason": "subscription_cycle", "status": "paid"}
+        event = {"id": sid("evt", "inv_unknown"), "type": "invoice.paid", "data": {"object": obj}}
+        with caplog.at_level("ERROR", logger="stapel_billing.services"):
+            assert _post(api_client, event).status_code == 200
+        assert any(
+            r.levelname == "ERROR" and "names no subscription" in r.getMessage()
+            for r in caplog.records
+        )
+
     def test_invoice_for_initial_checkout_does_not_double_grant(self, api_client, user):
         self._make_sub(user)
         event = {

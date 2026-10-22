@@ -1,6 +1,6 @@
 {
   "module": "stapel-billing",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "provides": "Payments and billing: per-user credit wallets held as expiry-aware credit lots over an immutable ledger, reservations (hold/capture/release) for work priced only after it runs, partial charges that record what a wallet could not cover as a collectable debt, plan bundles granted with or without a payment provider, one-off credit packages and subscription plans, Stripe-backed checkout, customer portal and refund clawback, idempotent webhooks and a service-to-service debit endpoint.",
   "axes": [
     {
@@ -289,7 +289,7 @@
       "name": "get_or_create_wallet",
       "kind": "factory",
       "path": "stapel_billing.services.get_or_create_wallet",
-      "intent": "The one way to reach a user's Wallet — created on first touch, so no caller has to decide what \"a user who never paid\" means. Read balances through it instead of querying or creating Wallet rows yourself; a hand-made row is harmless, a hand-set balance is a ledger its transactions no longer explain.",
+      "intent": "The one way to reach a user's Wallet — created on first touch, so no caller has to decide what \"a user who never paid\" means. Read balances through it instead of querying or creating Wallet rows yourself.",
       "instead_of": [
         "stapel_billing.models.Wallet.objects.get_or_create"
       ]

@@ -80,6 +80,7 @@ from .errors import (
     ERR_402_INSUFFICIENT_CREDITS,
     ERR_404_SUBSCRIPTION_NOT_FOUND,
     ERR_404_WALLET_NOT_FOUND,
+    ERR_409_NO_BILLING_ACCOUNT,
     ERR_409_SUBSCRIPTION_NOT_PAID,
 )
 from .models import (
@@ -89,7 +90,7 @@ from .models import (
     Subscription,
     Wallet,
 )
-from .providers.base import ProviderNotConfiguredError
+from .providers.base import NoProviderCustomerError, ProviderNotConfiguredError
 from .serializers import (
     SimulatedCheckoutRequestSerializer,
     SimulatedCheckoutResponseSerializer,
@@ -423,21 +424,35 @@ class CustomerPortalView(SerializerSeamMixin, GuestDeniedMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     response_serializer_class = CustomerPortalResponseSerializer
 
-    @extend_schema(responses={200: CustomerPortalResponseSerializer})
+    @extend_schema(
+        responses={200: CustomerPortalResponseSerializer},
+        description=(
+            "A one-time customer-portal link. 409 `error.409.no_billing_account` "
+            "when the account never paid (offer it only when `is_paid`); 502 "
+            "when the provider cannot open one."
+        ),
+    )
     def get(self, request):  # noqa: R007
         sub = getattr(request.user, "subscription", None)
         customer_id = sub.stripe_customer_id if sub else ""
+        # The return URL is validated first: a foreign origin is refused the
+        # same way whether or not the account could have opened a portal.
+        return_url = _redirect_url(
+            request.query_params.get("return_url"),
+            "PORTAL_RETURN_URL",
+            "/billing",
+        )
+        if not customer_id:
+            return StapelErrorResponse(409, ERR_409_NO_BILLING_ACCOUNT)
         try:
             url = services.create_customer_portal(
                 customer_id=customer_id,
-                return_url=_redirect_url(
-                    request.query_params.get("return_url"),
-                    "PORTAL_RETURN_URL",
-                    "/billing",
-                ),
+                return_url=return_url,
             )
-        except ProviderNotConfiguredError:
-            return _provider_unavailable("the customer portal")
+        except NoProviderCustomerError:
+            return StapelErrorResponse(409, ERR_409_NO_BILLING_ACCOUNT)
+        except ProviderNotConfiguredError as exc:
+            return _provider_unavailable(f"the customer portal ({exc})")
         response_cls = self.get_response_serializer_class()
         return StapelResponse(response_cls(CustomerPortalResponse(portal_url=url)))
 

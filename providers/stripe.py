@@ -18,7 +18,7 @@ import logging
 from typing import Optional, Tuple
 
 from ..catalog import CREDIT_PACKAGES_BY_SLUG, get_plan
-from .base import PaymentProvider, ProviderNotConfiguredError
+from .base import NoProviderCustomerError, PaymentProvider, ProviderNotConfiguredError
 
 logger = logging.getLogger(__name__)
 
@@ -168,13 +168,21 @@ class StripeProvider(PaymentProvider):
             return "https://example.invalid/stripe-portal-not-configured"
         if not customer_id:
             # Configured, but this user has no provider-side customer yet:
-            # there is no portal to open. Unchanged behaviour — the deployment
-            # is fine, the user simply has never paid.
-            return "https://example.invalid/stripe-portal-not-configured"
-        portal = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=return_url,
-        )
+            # there is no portal to open, and saying so is the answer.
+            raise NoProviderCustomerError("no provider customer to open a portal for")
+        try:
+            portal = stripe.billing_portal.Session.create(
+                customer=customer_id,
+                return_url=return_url,
+            )
+        except stripe.InvalidRequestError as exc:
+            # In live mode Stripe refuses every portal session until the
+            # account's portal settings have been saved once; that is the
+            # operator's configuration, and the caller gets a 502 that says
+            # the upstream cannot serve this, not a 500.
+            raise ProviderNotConfiguredError(
+                f"the customer portal was refused by Stripe: {exc.user_message or exc}"
+            ) from exc
         return portal["url"]
 
     # ── subscription ───────────────────────────────────────

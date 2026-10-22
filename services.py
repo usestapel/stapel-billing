@@ -1967,6 +1967,47 @@ def _future_or_none(value):
     return value if value > timezone.now() else None
 
 
+def _provider_id(value) -> Optional[str]:
+    """A provider id from a bare string or an expanded object, else None."""
+    if isinstance(value, dict):
+        value = value.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+def _invoice_subscription_id(obj: dict) -> Optional[str]:
+    """The subscription an invoice bills, whichever API version shaped it.
+
+    Stripe API versions before 2025-03-31 put it at the top level
+    (``invoice.subscription``). From that version on the field is gone and
+    the id lives at ``invoice.parent.subscription_details.subscription``,
+    and on each line at ``line.parent.subscription_item_details
+    .subscription``. The account's API version decides which shape a
+    webhook carries, and it changes on the provider's side without a
+    deploy here — so every shape is read, newest first.
+
+    Reading only the old field is not a crash: the renewal handler sees
+    "no subscription", returns, and the paid month is never granted, with
+    every webhook recorded as processed.
+    """
+    found = _provider_id(obj.get("subscription"))
+    if found:
+        return found
+    parent = obj.get("parent") or {}
+    found = _provider_id((parent.get("subscription_details") or {}).get("subscription"))
+    if found:
+        return found
+    for line in (obj.get("lines") or {}).get("data") or []:
+        line_parent = line.get("parent") or {}
+        for key in ("subscription_item_details", "invoice_item_details"):
+            found = _provider_id((line_parent.get(key) or {}).get("subscription"))
+            if found:
+                return found
+        found = _provider_id(line.get("subscription"))
+        if found:
+            return found
+    return None
+
+
 def _invoice_period_end(obj: dict):
     """The service period a renewal invoice covers, as a datetime or None.
 
@@ -2620,13 +2661,23 @@ def handle_invoice_paid(event: dict) -> None:
     handler subscribers receive credits only in month one.
     """
     obj = event["data"]["object"]
-    subscription_id = obj.get("subscription")
+    subscription_id = _invoice_subscription_id(obj)
     invoice_id = obj.get("id")
+    billing_reason = obj.get("billing_reason") or ""
     if not subscription_id:
+        if billing_reason.startswith("subscription"):
+            # A subscription invoice whose subscription cannot be read is a
+            # payload shape this module does not know, not a one-off sale.
+            logger.error(
+                "invoice %s (%s) names no subscription this module can read "
+                "— the renewal grant is NOT made",
+                invoice_id,
+                billing_reason,
+            )
         return
     # Stripe sends an invoice for the initial checkout too — that grant is
     # already handled by checkout.session.completed.
-    if obj.get("billing_reason") == "subscription_create":
+    if billing_reason == "subscription_create":
         return
     # The credits come from our catalog, but the reason to hand them over is
     # that this invoice was actually settled. An invoice object that carries
@@ -2643,6 +2694,15 @@ def handle_invoice_paid(event: dict) -> None:
     sub = Subscription.objects.filter(stripe_subscription_id=subscription_id).first()
     plan_entry = get_plan(sub.plan) if sub else None
     if plan_entry is None:
+        logger.error(
+            "invoice %s paid for subscription %s, but %s — the renewal "
+            "grant is NOT made",
+            invoice_id,
+            subscription_id,
+            "no local subscription names it"
+            if sub is None
+            else f"its plan {sub.plan!r} is not in the catalogue",
+        )
         return
     monthly = plan_entry.monthly_credits_included
     if not monthly:
@@ -3784,9 +3844,7 @@ def _failed_payment_user(obj: dict):
     write to anybody, and a notice sent to the wrong payer about a card
     that is not theirs is worse than the silence.
     """
-    subscription_id = obj.get("subscription")
-    if isinstance(subscription_id, dict):  # expanded object
-        subscription_id = subscription_id.get("id")
+    subscription_id = _invoice_subscription_id(obj)
     if subscription_id:
         sub = Subscription.objects.filter(
             stripe_subscription_id=subscription_id

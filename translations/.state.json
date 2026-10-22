@@ -52,6 +52,10 @@
       "hash": "687547e333bb140a",
       "origin": "seed:stapel-builtin"
     },
+    "error.409.no_billing_account": {
+      "hash": "e613268ec455271f",
+      "origin": "imported"
+    },
     "error.409.subscription_not_paid": {
       "hash": "dd0b8642be6296f1",
       "origin": "imported"
@@ -109,6 +113,10 @@
     "error.409.duplicate_webhook_event": {
       "hash": "687547e333bb140a",
       "origin": "seed:stapel-builtin"
+    },
+    "error.409.no_billing_account": {
+      "hash": "e613268ec455271f",
+      "origin": "imported"
     },
     "error.409.subscription_not_paid": {
       "hash": "dd0b8642be6296f1",

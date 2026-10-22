@@ -150,11 +150,11 @@ class TestConfiguredSdkDelegation:
             "return_url": "https://r",
         }
 
-    def test_portal_without_customer_id_falls_back(self, fake_stripe):
-        url = StripeProvider().create_portal_session(
-            customer_id="", return_url="https://r"
-        )
-        assert url == "https://example.invalid/stripe-portal-not-configured"
+    def test_portal_without_customer_id_is_refused_not_faked(self, fake_stripe):
+        from stapel_billing.providers.base import NoProviderCustomerError
+
+        with pytest.raises(NoProviderCustomerError):
+            StripeProvider().create_portal_session(customer_id="", return_url="https://r")
         assert "portal" not in fake_stripe.calls
 
     def test_cancel_via_sdk(self, fake_stripe):
