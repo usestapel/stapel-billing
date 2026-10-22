@@ -41,6 +41,11 @@
       "type": "string",
       "description": "Provider-hosted invoice, when the payload carried one."
     },
+    "final_attempt": {
+      "type": "boolean",
+      "const": true,
+      "description": "Present (true) when the provider will not retry this invoice by itself. Absent otherwise. A consumer that sends one notice per invoice sends one more for this attempt, with copy that does not promise another try."
+    },
     "created_at": {
       "type": "string",
       "format": "date-time",

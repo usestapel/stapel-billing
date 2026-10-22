@@ -202,6 +202,24 @@ credits the customer bought for cash. Idempotent per **event** (scope
 `clawback`) rather than per charge: a partial refund followed later by a second
 partial refund of the same charge is two real clawbacks.
 
+On provider API versions from 2025-03-31 a charge no longer names its invoice,
+and a renewal grant records only the invoice. A `charge.refunded` for a renewal
+charge therefore matches nothing: the credits stay with the customer and a
+WARNING names the event, for a person to decide about. Package refunds still
+match through the payment intent; a `credit_note.created` names its invoice and
+still claws a renewal back.
+
+## Declined payments (since 0.14.0; final attempt since 0.24.1)
+
+`invoice.payment_failed` emits `payment.failed`; the bundled subscriber sends
+`billing.payment_failed` once per invoice however often the provider retries,
+and once more (`final_attempt: true`, copy that does not promise another try)
+when the invoice says `next_payment_attempt: null` on automatic collection.
+`charge.failed` is for one-off purchases only: a charge that names an invoice
+is skipped, and because current API versions no longer put the invoice on a
+charge, a host that sells subscriptions should not subscribe its endpoint to
+`charge.failed` at all — the same declined renewal would be told twice.
+
 ## Read-only affordability (since 0.11.0)
 
 `services.can_afford(user=..., credits=N)` / `billing.can_afford` answers "would

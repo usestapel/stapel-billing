@@ -306,6 +306,13 @@ def handle_payment_failed_notification(event):
         )
         return
 
+    # At most two letters per invoice: the first failure, and the attempt
+    # after which the provider stops retrying. The final one has its own
+    # claim, so it is sent even when the first letter already went out, and
+    # only once however often the last attempt is redelivered.
+    if payload.get("final_attempt") and payload.get("invoice_id"):
+        external_id = f"{external_id}:final"
+
     _claim_and_send(
         scope=ProviderGrant.SCOPE_NOTIFY_PAYMENT_FAILED,
         external_id=external_id,

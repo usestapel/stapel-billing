@@ -3652,9 +3652,15 @@ def _handle_clawback(event: dict, *, label: str) -> None:
     event_id = event.get("id")
     grants = _grant_transactions(obj)
     if not grants:
+        # Not an error and never a guess. On current provider API versions a
+        # charge no longer names its invoice, so the refund of a renewal
+        # charge cannot be tied to the renewal grant (which recorded only the
+        # invoice): the credits stay with the customer, and this line is how
+        # a person finds the refund to decide about by hand.
         logger.warning(
             "%s event %s does not name any grant this deployment made "
-            "(invoice=%r payment_intent=%r charge=%r) — nothing to claw back",
+            "(invoice=%r payment_intent=%r charge=%r) — nothing clawed back, "
+            "the credits stay with the customer",
             label,
             event_id,
             obj.get("invoice"),
@@ -3958,8 +3964,27 @@ def handle_invoice_payment_failed(event: dict) -> None:
             plan=plan,
             decline_reason=_decline_reason(obj),
             invoice_url=_invoice_document_url(obj),
+            final_attempt=True if _is_final_attempt(obj) else None,
         ),
     )
+
+
+def _is_final_attempt(obj: dict) -> bool:
+    """True when the provider will not retry this invoice by itself.
+
+    Stripe sets ``next_payment_attempt`` to null once its retry schedule is
+    spent. Only a key that is PRESENT and null counts: a payload that does
+    not carry the field says nothing, and telling a customer "we will not
+    try again" when we will is worse than the ordinary notice. Invoices sent
+    for manual payment never have an automatic attempt, and the first
+    invoice of a subscription is paid while the customer is at checkout, so
+    neither of those is a "last attempt".
+    """
+    if "next_payment_attempt" not in obj or obj["next_payment_attempt"] is not None:
+        return False
+    if (obj.get("collection_method") or "charge_automatically") != "charge_automatically":
+        return False
+    return (obj.get("billing_reason") or "") != "subscription_create"
 
 
 @transaction.atomic
@@ -3973,6 +3998,13 @@ def handle_charge_failed(event: dict) -> None:
     rather than mailed at a guess.
     """
     obj = event["data"]["object"]
+    if _provider_id(obj.get("invoice")):
+        # The invoice's own failure event tells this payer, keyed on the
+        # invoice; a second letter keyed on the charge would be a duplicate.
+        # Current API versions no longer put the invoice on a charge, which
+        # is why hosts with subscriptions should not subscribe to
+        # charge.failed at all (MODULE.md).
+        return
     user, plan = _failed_payment_user(obj)
     if not user:
         logger.warning(

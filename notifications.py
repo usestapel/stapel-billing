@@ -361,6 +361,9 @@ def payment_failed_variables(payload: dict) -> dict | None:
     reason = _humanise_decline(payload.get("decline_reason") or "")
     if reason:
         variables["decline_reason"] = reason
+    # Switches the template to the copy that does not promise another try.
+    if payload.get("final_attempt") is True:
+        variables["final_attempt"] = True
     retry_url = billing_page_url()
     if retry_url:
         variables["retry_url"] = retry_url

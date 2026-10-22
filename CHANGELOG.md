@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.24.1] — 2026-10-22
+
+Patch. No migration. Pair with stapel-notifications 0.27.1 for the final-attempt copy
+(an older notifications module renders the ordinary notice instead).
+
+### Added — one more notice when the provider stops retrying
+
+`invoice.payment_failed` with `next_payment_attempt: null` on automatic
+collection (not the subscription's first invoice) now carries
+`final_attempt: true` on `payment.failed`, and the bundled subscriber sends it
+under its own send-once claim (`<invoice>:final`). A declined renewal is told
+at most twice: on the first failure and on the last attempt, never once per
+provider retry.
+
+### Fixed — a charge that names its invoice is not told twice
+
+`charge.failed` for a charge that names an invoice is skipped; the invoice's
+own event tells the payer. Current API versions no longer put the invoice on a
+charge, so a host selling subscriptions should leave `charge.failed` off its
+endpoint (MODULE.md, "Declined payments").
+
+### Changed — an unmatched refund says the credits stayed
+
+A refund, dispute or credit note naming no grant of ours (for example a
+renewal charge refunded on a current API version, where the charge names no
+invoice) still claws nothing back; the WARNING now says the credits stay with
+the customer. Tests cover both refund shapes on the current API.
+
 ## [0.24.0] — 2026-10-22
 
 Minor: the portal endpoint answers 409 where it used to fabricate a link.
