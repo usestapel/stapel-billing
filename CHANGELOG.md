@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased] — proposed 0.24.2
+
+Patch. No migration. Requires stapel-core 0.96.0.
+
+### Security — a blank `STRICT_CHECKOUT_RECONCILIATION=` keeps the reconciliation on
+
+With stapel-core 0.93.0 through 0.95.x, a boolean setting supplied as an empty
+environment variable was read as False, so `STRICT_CHECKOUT_RECONCILIATION=`
+(the blank line an env-file template leaves) switched the checkout
+reconciliation off, and `LEGACY_IDEMPOTENCY_JSON_LOOKUP=` switched off the
+pre-0.11.0 idempotency-key lookup. The floor moves to `stapel-core>=0.96.0`, where a
+blank value is "unset" and the default applies; only `0` / `false` / `no` /
+`off` turns either gate off. An unrecognised word keeps the default and fails
+`manage.py check` with `stapel_core.conf.E004`.
+
+**Check your deployment:** if the environment carries
+`STRICT_CHECKOUT_RECONCILIATION` or `LEGACY_IDEMPOTENCY_JSON_LOOKUP` with an
+empty value and ran with stapel-core 0.93.0 or newer, checkout sessions were
+granted without reconciliation for that period.
+
 ## [0.24.1] — 2026-10-22
 
 Patch. No migration. Pair with stapel-notifications 0.27.1 for the final-attempt copy
