@@ -79,7 +79,7 @@
     },
     "credit": {
       "kind": "factory",
-      "intent": "Add credits to a wallet AND write the immutable ledger row that explains them — one transaction, under the wallet's row lock. This is the only sanctioned way credits come into existence: a product that creates its own Transaction, or bumps Wallet.balance, breaks the balance_after invariant that every audit, refund and GDPR export reads back.",
+      "intent": "Add credits to a wallet AND write the immutable ledger row that explains them — one transaction, under the wallet's row lock. The only sanctioned way credits come into existence (a hand-made Transaction or Wallet.balance bump breaks balance_after); another service calls the billing.credit comm Function, idempotency_key required.",
       "instead_of": [
         "stapel_billing.models.Transaction.objects.create",
         "stapel_billing.models.Wallet.balance"

@@ -126,7 +126,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   URL of the processor's self-service billing portal for a customer id — the sanctioned destination for "manage my card, invoices and cancellation". Reach for it instead of calling the provider's portal API directly, and instead of rebuilding those screens in a product.
 - credit — stapel_billing.services.credit
   instead of: stapel_billing.models.Transaction.objects.create, stapel_billing.models.Wallet.balance
-  Add credits to a wallet AND write the immutable ledger row that explains them — one transaction, under the wallet's row lock. This is the only sanctioned way credits come into existence: a product that creates its own Transaction, or bumps Wallet.balance, breaks the balance_after invariant that every audit, refund and GDPR export reads back.
+  Add credits to a wallet AND write the immutable ledger row that explains them — one transaction, under the wallet's row lock. The only sanctioned way credits come into existence (a hand-made Transaction or Wallet.balance bump breaks balance_after); another service calls the billing.credit comm Function, idempotency_key required.
 - current_period_key — stapel_billing.services.current_period_key
   instead of: datetime.datetime.strftime
   The key naming the current bundle period ('2026-08'). It is grant_plan_bundle's idempotency unit, so spell it with this rather than formatting a date: two spellings of one month are two bundles.

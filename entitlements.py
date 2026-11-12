@@ -125,6 +125,7 @@ HOLD = "billing.hold"
 CAPTURE = "billing.capture"
 RELEASE = "billing.release"
 CAN_AFFORD = "billing.can_afford"
+CREDIT = "billing.credit"
 
 # Denial reasons (structural — mapped to error keys by the caller, e.g.
 # workspaces' error.402.entitlement_required / error.402.member_limit_reached).
@@ -147,6 +148,12 @@ REASON_HOLD_NOT_HELD = "hold_not_held"
 # so the key is spent. A released or expired hold is re-armed under the same
 # key instead (0.12.1) — nothing was charged, nothing delivered.
 REASON_HOLD_ALREADY_RESOLVED = "hold_already_resolved"
+#: ``billing.credit``: the idempotency key already names a different ledger
+#: operation on this wallet (another amount or source, or a debit). Nothing
+#: moved; a new operation needs a new key.
+REASON_IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+#: ``billing.credit``: ``expires_at`` is unparseable or not in the future.
+REASON_INVALID_EXPIRES_AT = "invalid_expires_at"
 
 # Single source of truth for the payload contracts: the committed schema
 # files (registered by the schemas/ autoloader too; passing them at
@@ -164,6 +171,7 @@ HOLD_SCHEMA = _load_schema(HOLD)
 CAPTURE_SCHEMA = _load_schema(CAPTURE)
 RELEASE_SCHEMA = _load_schema(RELEASE)
 CAN_AFFORD_SCHEMA = _load_schema(CAN_AFFORD)
+CREDIT_SCHEMA = _load_schema(CREDIT)
 
 #: Which subscription statuses entitle at all is ONE fact, and it lives in
 #: ``services._GRANTING_SUBSCRIPTION_STATUSES`` (``past_due`` is Stripe's
@@ -324,6 +332,82 @@ def debit(payload: dict) -> dict:
         "debited": result.debited,
         "shortfall": result.shortfall,
         "debt_id": result.debt_id,
+    }
+
+
+def _parse_expires_at(raw):
+    """``(datetime | None, ok)`` for the optional ``expires_at`` of a credit."""
+    from datetime import timezone as dt_timezone
+
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+
+    if raw is None:
+        return None, True
+    try:
+        moment = parse_datetime(raw)
+    except (TypeError, ValueError):
+        return None, False
+    if moment is None:
+        return None, False
+    if timezone.is_naive(moment):
+        moment = timezone.make_aware(moment, dt_timezone.utc)
+    if moment <= timezone.now():
+        return None, False
+    return moment, True
+
+
+def credit(payload: dict) -> dict:
+    """Provider for ``billing.credit``.
+
+    Payload: ``{"user_id": str, "credits": int, "idempotency_key": str,
+    "source": "grant" | "adjustment", "type": str = "adjustment",
+    "description": str = None, "metadata": dict = {}, "expires_at": str = None,
+    "identity": dict = None}``
+    Returns: ``{"ok": bool, "balance": int | None, "reason": str | None}``
+    plus ``transaction_id`` on success.
+
+    A replay (same key, same wallet) answers with the first call's
+    transaction and the balance it left, and grants nothing: the wallet row
+    lock in :func:`services.credit` serialises concurrent duplicates. A key
+    that names a different operation is a conflict, not a replay.
+    """
+    from . import services
+    from .models import TransactionType
+
+    user, reason = _resolve_user(payload)
+    if user is None:
+        return {"ok": False, "balance": None, "reason": reason}
+    expires_at, valid = _parse_expires_at(payload.get("expires_at"))
+    if not valid:
+        return {"ok": False, "balance": None, "reason": REASON_INVALID_EXPIRES_AT}
+
+    credits = payload["credits"]
+    source = payload["source"]
+    txn = services.credit(
+        user=user,
+        credits=credits,
+        type=payload.get("type", TransactionType.ADJUSTMENT),
+        source=source,
+        description=payload.get("description"),
+        metadata=payload.get("metadata") or {},
+        expires_at=expires_at,
+        idempotency_key=payload["idempotency_key"],
+    )
+    if txn.credits_delta != credits or txn.lot is None or txn.lot.source != source:
+        logger.warning(
+            "billing.credit: idempotency_key=%s already names transaction %s "
+            "(delta %s) on this wallet — refusing, nothing credited.",
+            payload["idempotency_key"],
+            txn.id,
+            txn.credits_delta,
+        )
+        return {"ok": False, "balance": None, "reason": REASON_IDEMPOTENCY_CONFLICT}
+    return {
+        "ok": True,
+        "balance": txn.balance_after,
+        "reason": None,
+        "transaction_id": str(txn.id),
     }
 
 
@@ -540,3 +624,4 @@ def register() -> None:
     register_function(CAPTURE, capture, schema=CAPTURE_SCHEMA)
     register_function(RELEASE, release, schema=RELEASE_SCHEMA)
     register_function(CAN_AFFORD, can_afford, schema=CAN_AFFORD_SCHEMA)
+    register_function(CREDIT, credit, schema=CREDIT_SCHEMA)

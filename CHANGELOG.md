@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — proposed 0.25.0
+
+Minor: a new comm Function. No migration.
+
+### Added — `billing.credit`, the service-to-service grant
+
+A peer that rewards a user (a referral bonus, a goodwill grant) can now put
+credits on a wallet by name, over `services.credit()`, with the same posture as
+`billing.debit`: no user-facing route, structural failures, and a REQUIRED
+`idempotency_key` — a replay returns the first transaction and the balance it
+left and never credits twice (a Postgres test races eight duplicates). `source`
+is required (`grant` / `adjustment`), `expires_at` optional. A key already
+spent on another amount, source or a debit answers `idempotency_conflict` and
+moves nothing. Contract: `schemas/functions/billing.credit.json`.
+
 ## [0.24.1] — 2026-10-22
 
 Patch. No migration. Pair with stapel-notifications 0.27.1 for the final-attempt copy

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "billing.credit",
+  "description": "Payload for the billing.credit comm Function — service-to-service wallet credit (wrapper over stapel_billing.services.credit), for a peer that rewards or compensates a user (a referral bonus, a goodwill grant). Service-to-service only: there is no user-facing route to it, the same posture as billing.debit. idempotency_key is REQUIRED and unique per wallet across every ledger row: comm delivery is at-least-once and a retry with the same key returns the original transaction (same transaction_id, the balance it left) instead of crediting twice. A key already spent on a different operation (another amount, or a debit) answers ok=false, reason=idempotency_conflict, and moves nothing. source is the credit lot's LotSource (only the two a peer may claim: grant, adjustment); type mirrors stapel_billing.models.TransactionType. expires_at (ISO 8601, in the future; a naive value is read as UTC) makes the lot die at that moment; omitted, it never expires. Returns {\"ok\": bool, \"balance\": int|null, \"reason\": str|null, \"transaction_id\"?: str}; reason is one of user_unknown, user_inactive, invalid_expires_at, idempotency_conflict.",
+  "type": "object",
+  "required": [
+    "user_id",
+    "credits",
+    "idempotency_key",
+    "source"
+  ],
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "credits": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "grant",
+        "adjustment"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "adjustment",
+        "subscription_bonus"
+      ],
+      "default": "adjustment"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "identity": {
+      "type": "object",
+      "description": "Who user_id is, so a user billing has not met yet (a referee who just signed up) can be materialised instead of refused. Only these keys; a bare id never creates a row.",
+      "properties": {
+        "is_anonymous": {
+          "type": "boolean"
+        },
+        "auth_type": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
