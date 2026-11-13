@@ -32,7 +32,12 @@ dependencies = [
     # (`register_gdpr_owner`, called from apps.ready()), and 0.85.1 is where
     # the provider bridge yields to it. An older core has no such symbol, so
     # it is an ImportError at startup rather than a silent half-wiring.
-    "stapel-core>=0.85.1,<1.0",
+    #
+    # 0.96.0: a blank environment value on a boolean setting means "unset",
+    # so STRICT_CHECKOUT_RECONCILIATION= keeps the reconciliation on (core
+    # 0.93.0-0.95.x read it as False), and an unrecognised word keeps the
+    # declared default with stapel_core.conf.E004 at manage.py check.
+    "stapel-core>=0.96.0,<1.0",
 ]
 
 [project.urls]

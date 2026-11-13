@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased — proposed 0.25.0
+## [0.25.0] — 2026-11-13
 
-Minor: a new comm Function. No migration.
+Minor: a new comm Function and a raised stapel-core floor. No migration.
+Requires stapel-core 0.96.0.
 
 ### Added — `billing.credit`, the service-to-service grant
 
@@ -14,6 +15,22 @@ left and never credits twice (a Postgres test races eight duplicates). `source`
 is required (`grant` / `adjustment`), `expires_at` optional. A key already
 spent on another amount, source or a debit answers `idempotency_conflict` and
 moves nothing. Contract: `schemas/functions/billing.credit.json`.
+
+### Security — a blank `STRICT_CHECKOUT_RECONCILIATION=` keeps the reconciliation on
+
+With stapel-core 0.93.0 through 0.95.x, a boolean setting supplied as an empty
+environment variable was read as False, so `STRICT_CHECKOUT_RECONCILIATION=`
+(the blank line an env-file template leaves) switched the checkout
+reconciliation off, and `LEGACY_IDEMPOTENCY_JSON_LOOKUP=` switched off the
+pre-0.11.0 idempotency-key lookup. The floor moves to `stapel-core>=0.96.0`, where a
+blank value is "unset" and the default applies; only `0` / `false` / `no` /
+`off` turns either gate off. An unrecognised word keeps the default and fails
+`manage.py check` with `stapel_core.conf.E004`.
+
+**Check your deployment:** if the environment carries
+`STRICT_CHECKOUT_RECONCILIATION` or `LEGACY_IDEMPOTENCY_JSON_LOOKUP` with an
+empty value and ran with stapel-core 0.93.0 or newer, checkout sessions were
+granted without reconciliation for that period.
 
 ## [0.24.1] — 2026-10-22
 
