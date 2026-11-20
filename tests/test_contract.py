@@ -61,7 +61,7 @@ TRIAD = ("schema.json", "flows.json", "errors.json")
 #
 # The fifth artifact (stapel_tools.llms_txt): the module's own surface slice
 # for an agent's context, rendered from docs/capabilities.json (+ the triad).
-ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
+ARTIFACTS = TRIAD + ("schema.v2.json", "capabilities.json", "llms.txt")
 
 #: Kept in step with LLMS_BUDGET in the Makefile — the gate and the emitter
 #: have to agree on the ceiling, or `make contract` would write an artifact

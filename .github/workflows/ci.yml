@@ -48,14 +48,14 @@ jobs:
 
       - name: migration-lint (expand/contract gate, release-management.md §3)
         run: |
-          pip install "stapel-tools>=0.9.1,<1" --quiet
+          pip install "stapel-tools>=0.84.0,<1" --quiet
           stapel-migration-lint . --strict
 
       - name: Import check
         run: python -c "import stapel_billing; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
+        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.84.0,<1"
 
       - name: Tests with coverage
         run: |
@@ -173,14 +173,14 @@ jobs:
 
       - name: migration-lint (expand/contract gate, release-management.md §3)
         run: |
-          pip install "stapel-tools>=0.9.1,<1" --quiet
+          pip install "stapel-tools>=0.84.0,<1" --quiet
           stapel-migration-lint . --strict
 
       - name: Import check
         run: python -c "import stapel_billing; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
+        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.84.0,<1"
 
       - name: Tests with coverage
         run: |

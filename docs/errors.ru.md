@@ -1,6 +1,6 @@
 # Errors — Русский
 
-`57` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.ru.json`.
+`58` error keys. Canonical texts live in the code (`register_service_errors`); localized texts in `translations/errors.ru.json`.
 
 | Код | Статус | Параметры | Действие | Текст |
 |---|---|---|---|---|
@@ -27,6 +27,7 @@
 | `error.400.invalid_webhook_payload` | 400 | — | `contact_support` | Недопустимые данные вебхука Stripe |
 | `error.400.redirect_url_not_allowed` | 400 | — | `contact_support` | Origin этого URL перенаправления не входит в список разрешённых для данной установки. |
 | `error.400.redirect_url_not_configured` | 400 | — | `contact_support` | redirect_url не передан в запросе, а запасной URL не настроен. |
+| `error.400.too_many_ids` | 400 | `requested`, `limit` | `fix_input` | Слишком много идентификаторов: запрошено {requested}, максимум {limit} за один запрос |
 | `error.400.validation_error` | 400 | — | `fix_input` | Ошибка валидации |
 | `error.400.verification_failed` | 400 | — | `verify` | Проверка не пройдена |
 | `error.400.verification_invalid_factor` | 400 | — | `verify` | Этот способ подтверждения недоступен |
@@ -57,7 +58,7 @@
 | `error.422.unprocessable_entity` | 422 | — | `wait_and_retry` | Невозможно обработать данные запроса |
 | `error.423.locked` | 423 | — | `wait_and_retry` | Ресурс заблокирован |
 | `error.423.verification_locked` | 423 | — | `wait_and_retry` | Слишком много неудачных попыток — подтверждение заблокировано |
-| `error.429.rate_limit` | 429 | `retry_after_minutes` | `wait_and_retry` | Слишком много попыток. Повторите попытку через {retry_after_minutes} мин. |
+| `error.429.rate_limit` | 429 | `retry_after_display`, `retry_after`, `retry_after_minutes` | `wait_and_retry` | Слишком много попыток. Повторите попытку через {retry_after_display} ({retry_after} с, около {retry_after_minutes} мин). |
 | `error.429.too_many_requests` | 429 | — | `wait_and_retry` | Слишком много запросов. Пожалуйста, повторите попытку позже. |
 | `error.500.internal` | 500 | — | `contact_support` | Что-то пошло не так |
 | `error.503.mandate_unavailable` | 503 | — | `retry` | Не удалось проверить доступ к рабочему пространству |

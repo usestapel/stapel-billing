@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-billing"
-version = "0.25.0"
+version = "0.25.1"
 description = "Billing and payments Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,7 +37,7 @@ dependencies = [
     # so STRICT_CHECKOUT_RECONCILIATION= keeps the reconciliation on (core
     # 0.93.0-0.95.x read it as False), and an unrecognised word keeps the
     # declared default with stapel_core.conf.E004 at manage.py check.
-    "stapel-core>=0.96.0,<1.0",
+    "stapel-core>=0.99.2,<1.0",
 ]
 
 [project.urls]

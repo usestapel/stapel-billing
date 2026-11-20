@@ -24,13 +24,13 @@ pip install stapel-billing
 
 | Fact | Value |
 |---|---|
-| Version | `0.25.0` |
+| Version | `0.25.1` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 11 |
 | Config axes | 1 |
 | Usage surface | 70 |
 | Extension points | 6 |
-| Error codes | 57 |
+| Error codes | 58 |
 | Fleet dependencies | [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation

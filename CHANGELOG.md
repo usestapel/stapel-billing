@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.25.1] — 2026-11-20
+
+Patch. No migration, no consumer edit. Requires stapel-core 0.99.2.
+
+- **Contract profile 2:** `docs/schema.v2.json` beside the unchanged-profile
+  `docs/schema.json`, for a native client generator.
+- `errors.json` and `docs/errors.<lang>.md` regenerated under stapel-core 0.99
+  (`error.429.rate_limit` text and params, `param_types`, core's
+  `error.400.too_many_ids`); the committed-shape test accepts `param_types`.
+- Gates: `tests/test_contract_profile2.py` on stapel-tools 0.84.0's
+  `contract_gates` (profile 2 of the same surface, bound codes from
+  `errors.json`, every example valid, no dead `@action` declaration).
+
 ## [0.25.0] — 2026-11-13
 
 Minor: a new comm Function and a raised stapel-core floor. No migration.
